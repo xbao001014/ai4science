@@ -1,0 +1,33 @@
+# Pathology AI Knowledge Graph — Dependencies
+
+# Core
+biopython>=1.83
+requests>=2.31.0
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+pandas>=2.2.0
+openpyxl>=3.1.0          # Excel import
+pydantic>=2.7.0
+
+# LLM / extraction
+openai>=1.30.0
+langchain>=0.3.0
+langchain-openai>=0.3.0
+
+# NLP / NER
+spacy>=3.7.0
+# scispaCy model installed separately — see README
+
+# Graph
+networkx>=3.3
+neo4j>=5.20.0             # optional, only needed if USE_NEO4J=true
+
+# Visualization
+pyvis>=0.3.2
+
+# Full-text workflow (optional — fetch-fulltext tier 2)
+scansci-pdf>=0.1.0
+mineru[core]>=2.0.0
+
+# Fuzzy matching (journal name normalization)
+rapidfuzz>=3.9.0

@@ -1,0 +1,87 @@
+# ── Secrets & local config ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Databases & large/generated data ──────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+data/*
+!data/.gitkeep
+output/
+
+# Journal impact factor tables (place locally; see README)
+jcr.csv
+*.xlsx
+*.xls
+
+# PDFs and parsed full-text artifacts
+*.pdf
+fulltext_workflow/data/*
+!fulltext_workflow/data/.gitkeep
+fulltext_workflow/raw/
+fulltext_workflow/output/
+fulltext_workflow/compare_test/pdfs/
+fulltext_workflow/compare_test/cache/
+fulltext_workflow/compare_test/mineru_output/
+fulltext_workflow/compare_test/output/
+
+# Large model / MinerU caches (if present)
+models/
+.cache/
+mineru_cache/
+
+# Logs
+*.log
+logs/

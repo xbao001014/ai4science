@@ -1,0 +1,306 @@
+{
+  "diseases": [
+    {
+      "disease_id": "GC-ADC",
+      "name_zh": "胃腺癌",
+      "name_en": "Gastric Adenocarcinoma",
+      "organ_system": "digestive",
+      "icd10_code": "C16.9",
+      "total_cases": 3240,
+      "total_wsi_slides": 8917,
+      "has_ihc": true,
+      "has_molecular": true,
+      "has_followup": true,
+      "data_since_year": 2016
+    },
+    {
+      "disease_id": "NSCLC-ADC",
+      "name_zh": "肺腺癌",
+      "name_en": "Lung Adenocarcinoma",
+      "organ_system": "respiratory",
+      "icd10_code": "C34.1",
+      "total_cases": 4120,
+      "total_wsi_slides": 11240,
+      "has_ihc": true,
+      "has_molecular": true,
+      "has_followup": true,
+      "data_since_year": 2015
+    },
+    {
+      "disease_id": "CRC-ADC",
+      "name_zh": "结直肠腺癌",
+      "name_en": "Colorectal Adenocarcinoma",
+      "organ_system": "digestive",
+      "icd10_code": "C18.9",
+      "total_cases": 2890,
+      "total_wsi_slides": 7650,
+      "has_ihc": true,
+      "has_molecular": true,
+      "has_followup": true,
+      "data_since_year": 2016
+    },
+    {
+      "disease_id": "HCC",
+      "name_zh": "肝细胞癌",
+      "name_en": "Hepatocellular Carcinoma",
+      "organ_system": "digestive",
+      "icd10_code": "C22.0",
+      "total_cases": 1560,
+      "total_wsi_slides": 4200,
+      "has_ihc": true,
+      "has_molecular": false,
+      "has_followup": true,
+      "data_since_year": 2017
+    },
+    {
+      "disease_id": "BRCA-IDC",
+      "name_zh": "乳腺浸润性导管癌",
+      "name_en": "Breast Invasive Ductal Carcinoma",
+      "organ_system": "gynecological",
+      "icd10_code": "C50.9",
+      "total_cases": 3780,
+      "total_wsi_slides": 9850,
+      "has_ihc": true,
+      "has_molecular": true,
+      "has_followup": true,
+      "data_since_year": 2015
+    }
+  ],
+  "disease_data": {
+    "GC-ADC": {
+      "sample_size": {
+        "disease_id": "GC-ADC",
+        "total_cases": 3240,
+        "total_wsi_slides": 8917,
+        "cases_with_wsi": 3240,
+        "cases_with_followup": 2980
+      },
+      "tasks": [
+        {
+          "task_type": "survival_prediction",
+          "label_field": "overall_survival_months",
+          "label_completeness": 0.91,
+          "has_event_indicator": true,
+          "min_followup_months": 6,
+          "cohort_size": 2856
+        },
+        {
+          "task_type": "molecular_subtype_classification",
+          "label_field": "lauren_classification",
+          "label_completeness": 0.78,
+          "classes": ["intestinal", "diffuse", "mixed"],
+          "cohort_size": 2530
+        },
+        {
+          "task_type": "grade_classification",
+          "label_field": "who_grade",
+          "label_completeness": 0.99,
+          "classes": ["G1", "G2", "G3"],
+          "cohort_size": 3205
+        },
+        {
+          "task_type": "region_segmentation",
+          "annotation_type": "polygon",
+          "annotated_slides": 420,
+          "categories": ["tumor", "stroma", "necrosis", "normal"]
+        }
+      ],
+      "annotations": [
+        {"field": "tnm_stage", "coverage": 0.97, "available_cases": 3138},
+        {"field": "who_grade", "coverage": 0.99, "available_cases": 3205},
+        {"field": "lauren_classification", "coverage": 0.78, "available_cases": 2530},
+        {"field": "tumor_region", "coverage": 0.13, "available_cases": 420}
+      ],
+      "followup": {
+        "fields": [
+          {"field": "overall_survival_months", "coverage": 0.91, "available_cases": 2856},
+          {"field": "death_event", "coverage": 0.91, "available_cases": 2856},
+          {"field": "disease_free_survival", "coverage": 0.72, "available_cases": 2333}
+        ],
+        "median_followup_months": 36,
+        "min_followup_6m": 2920,
+        "min_followup_12m": 2601
+      },
+      "molecular_markers": [
+        {"marker_name": "HER2", "available_cases": 1890, "coverage": 0.58},
+        {"marker_name": "MSI_status", "available_cases": 1320, "coverage": 0.41},
+        {"marker_name": "EBV_status", "available_cases": 980, "coverage": 0.30},
+        {"marker_name": "PD_L1_CPS", "available_cases": 760, "coverage": 0.23}
+      ],
+      "feasibility_pools": {
+        "has_wsi": 3240,
+        "has_survival_label": 2856,
+        "has_death_event": 2856,
+        "has_msi_status": 1320,
+        "has_her2": 1890,
+        "has_tnm_stage": 3138,
+        "has_who_grade": 3205,
+        "has_tumor_region": 420,
+        "meets_followup_6m": 2920,
+        "meets_followup_12m": 2601,
+        "in_target_stage_III_IV": 1187,
+        "all_msi_survival_tnm_stage_III_IV": 743,
+        "all_survival_tnm_no_msi": 2400,
+        "all_survival_no_msi": 2601,
+        "all_grade_no_molecular": 3100
+      },
+      "wsi_specs": {
+        "scanners": [
+          {"scanner_model": "Leica Aperio AT2", "slide_count": 5210, "magnification": "40x"}
+        ],
+        "pass_rate": 0.91
+      }
+    },
+    "NSCLC-ADC": {
+      "sample_size": {
+        "disease_id": "NSCLC-ADC",
+        "total_cases": 4120,
+        "total_wsi_slides": 11240,
+        "cases_with_wsi": 4120,
+        "cases_with_followup": 3850
+      },
+      "tasks": [
+        {
+          "task_type": "survival_prediction",
+          "label_field": "overall_survival_months",
+          "label_completeness": 0.88,
+          "cohort_size": 3626
+        },
+        {
+          "task_type": "molecular_subtype_classification",
+          "label_field": "egfr_mutation",
+          "label_completeness": 0.65,
+          "cohort_size": 2678
+        },
+        {
+          "task_type": "grade_classification",
+          "label_field": "who_grade",
+          "label_completeness": 0.94,
+          "cohort_size": 3873
+        }
+      ],
+      "annotations": [
+        {"field": "tnm_stage", "coverage": 0.95, "available_cases": 3914},
+        {"field": "who_grade", "coverage": 0.94, "available_cases": 3873}
+      ],
+      "followup": {
+        "fields": [
+          {"field": "overall_survival_months", "coverage": 0.88, "available_cases": 3626},
+          {"field": "death_event", "coverage": 0.88, "available_cases": 3626}
+        ],
+        "median_followup_months": 28,
+        "min_followup_12m": 3200
+      },
+      "molecular_markers": [
+        {"marker_name": "EGFR_mutation", "available_cases": 2678, "coverage": 0.65},
+        {"marker_name": "ALK_fusion", "available_cases": 820, "coverage": 0.20},
+        {"marker_name": "PD_L1_TPS", "available_cases": 2100, "coverage": 0.51}
+      ],
+      "feasibility_pools": {
+        "has_wsi": 4120,
+        "has_survival_label": 3626,
+        "has_death_event": 3626,
+        "has_tnm_stage": 3914,
+        "has_egfr": 2678,
+        "meets_followup_12m": 3200,
+        "in_target_stage_III_IV": 1450,
+        "all_survival_tnm_no_msi": 3100,
+        "all_survival_no_msi": 3200
+      },
+      "wsi_specs": {"pass_rate": 0.89}
+    },
+    "CRC-ADC": {
+      "sample_size": {
+        "disease_id": "CRC-ADC",
+        "total_cases": 2890,
+        "total_wsi_slides": 7650,
+        "cases_with_wsi": 2890
+      },
+      "tasks": [
+        {"task_type": "survival_prediction", "label_completeness": 0.86, "cohort_size": 2485},
+        {"task_type": "molecular_subtype_classification", "label_field": "msi_status", "cohort_size": 2100}
+      ],
+      "annotations": [
+        {"field": "tnm_stage", "coverage": 0.96, "available_cases": 2774}
+      ],
+      "followup": {
+        "fields": [{"field": "overall_survival_months", "coverage": 0.86, "available_cases": 2485}],
+        "min_followup_12m": 2200
+      },
+      "molecular_markers": [
+        {"marker_name": "MSI_status", "available_cases": 2100, "coverage": 0.73}
+      ],
+      "feasibility_pools": {
+        "has_wsi": 2890,
+        "has_survival_label": 2485,
+        "has_msi_status": 2100,
+        "has_tnm_stage": 2774,
+        "meets_followup_12m": 2200,
+        "all_survival_no_msi": 2200
+      },
+      "wsi_specs": {"pass_rate": 0.90}
+    },
+    "HCC": {
+      "sample_size": {
+        "disease_id": "HCC",
+        "total_cases": 1560,
+        "total_wsi_slides": 4200,
+        "cases_with_wsi": 1560
+      },
+      "tasks": [
+        {"task_type": "survival_prediction", "label_completeness": 0.82, "cohort_size": 1279},
+        {"task_type": "grade_classification", "label_completeness": 0.91, "cohort_size": 1420}
+      ],
+      "annotations": [
+        {"field": "tnm_stage", "coverage": 0.88, "available_cases": 1373}
+      ],
+      "followup": {
+        "fields": [{"field": "overall_survival_months", "coverage": 0.82, "available_cases": 1279}],
+        "min_followup_12m": 1100
+      },
+      "molecular_markers": [],
+      "feasibility_pools": {
+        "has_wsi": 1560,
+        "has_survival_label": 1279,
+        "has_tnm_stage": 1373,
+        "meets_followup_12m": 1100,
+        "all_survival_no_msi": 1100
+      },
+      "wsi_specs": {"pass_rate": 0.87}
+    },
+    "BRCA-IDC": {
+      "sample_size": {
+        "disease_id": "BRCA-IDC",
+        "total_cases": 3780,
+        "total_wsi_slides": 9850,
+        "cases_with_wsi": 3780
+      },
+      "tasks": [
+        {"task_type": "survival_prediction", "label_completeness": 0.90, "cohort_size": 3402},
+        {"task_type": "molecular_subtype_classification", "label_field": "er_pr_her2", "cohort_size": 3500}
+      ],
+      "annotations": [
+        {"field": "tnm_stage", "coverage": 0.98, "available_cases": 3704},
+        {"field": "who_grade", "coverage": 0.96, "available_cases": 3629}
+      ],
+      "followup": {
+        "fields": [{"field": "overall_survival_months", "coverage": 0.90, "available_cases": 3402}],
+        "min_followup_12m": 3100
+      },
+      "molecular_markers": [
+        {"marker_name": "HER2", "available_cases": 3780, "coverage": 1.0},
+        {"marker_name": "ER_status", "available_cases": 3750, "coverage": 0.99},
+        {"marker_name": "PR_status", "available_cases": 3720, "coverage": 0.98}
+      ],
+      "feasibility_pools": {
+        "has_wsi": 3780,
+        "has_survival_label": 3402,
+        "has_her2": 3780,
+        "has_tnm_stage": 3704,
+        "meets_followup_12m": 3100,
+        "all_survival_no_msi": 3100
+      },
+      "wsi_specs": {"pass_rate": 0.92}
+    }
+  }
+}
