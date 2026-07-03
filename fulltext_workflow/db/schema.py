@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 
 import config
 
@@ -19,7 +19,7 @@ def _ensure_dir() -> None:
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
     _ensure_dir()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -255,6 +255,10 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_lrs_limitation ON limitation_resolution_signals(limitation_id);
         CREATE INDEX IF NOT EXISTS idx_lrs_signal ON limitation_resolution_signals(signal_type);
         CREATE INDEX IF NOT EXISTS idx_rel_limitation ON relations(relation, object_id);
+        CREATE INDEX IF NOT EXISTS idx_relations_pmid ON relations(source_pmid);
+        CREATE INDEX IF NOT EXISTS idx_relations_rel_pmid ON relations(relation, source_pmid);
+CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
+        CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
     """)
 
 
@@ -696,12 +700,16 @@ def clear_limitation_lifecycle() -> None:
         conn.execute("DELETE FROM limitation_temporal")
 
 
-def upsert_limitation_temporal(rows: list[dict[str, Any]]) -> int:
+def upsert_limitation_temporal(
+    rows: list[dict[str, Any]],
+    *,
+    chunk_size: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> int:
     if not rows:
         return 0
-    with get_conn() as conn:
-        conn.executemany(
-            """INSERT INTO limitation_temporal
+    chunk = chunk_size or config.GAP_LIFECYCLE_UPSERT_CHUNK
+    sql = """INSERT INTO limitation_temporal
                (limitation_id, limitation_name, first_year, last_year, paper_cnt,
                 asserted_cnt, hypothesized_cnt, early_cnt, recent_cnt, recent_ratio,
                 temporal_status, avg_cite, avg_cite_per_year, impact_tier, computed_at)
@@ -720,59 +728,76 @@ def upsert_limitation_temporal(rows: list[dict[str, Any]]) -> int:
                  avg_cite=excluded.avg_cite,
                  avg_cite_per_year=excluded.avg_cite_per_year,
                  impact_tier=excluded.impact_tier,
-                 computed_at=CURRENT_TIMESTAMP""",
-            [
-                (
-                    r["limitation_id"],
-                    r["limitation_name"],
-                    r.get("first_year"),
-                    r.get("last_year"),
-                    r.get("paper_cnt"),
-                    r.get("asserted_cnt"),
-                    r.get("hypothesized_cnt"),
-                    r.get("early_cnt"),
-                    r.get("recent_cnt"),
-                    r.get("recent_ratio"),
-                    r.get("temporal_status"),
-                    r.get("avg_cite"),
-                    r.get("avg_cite_per_year"),
-                    r.get("impact_tier"),
-                )
-                for r in rows
-            ],
+                 computed_at=CURRENT_TIMESTAMP"""
+
+    def _tuple(r: dict[str, Any]) -> tuple:
+        return (
+            r["limitation_id"],
+            r["limitation_name"],
+            r.get("first_year"),
+            r.get("last_year"),
+            r.get("paper_cnt"),
+            r.get("asserted_cnt"),
+            r.get("hypothesized_cnt"),
+            r.get("early_cnt"),
+            r.get("recent_cnt"),
+            r.get("recent_ratio"),
+            r.get("temporal_status"),
+            r.get("avg_cite"),
+            r.get("avg_cite_per_year"),
+            r.get("impact_tier"),
         )
-    return len(rows)
+
+    total = len(rows)
+    with get_conn() as conn:
+        for start in range(0, total, chunk):
+            batch = rows[start : start + chunk]
+            conn.executemany(sql, [_tuple(r) for r in batch])
+            if on_progress:
+                on_progress(min(start + len(batch), total), total)
+    return total
 
 
-def insert_limitation_resolution_signals(rows: list[dict[str, Any]]) -> int:
+def insert_limitation_resolution_signals(
+    rows: list[dict[str, Any]],
+    *,
+    chunk_size: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> int:
     if not rows:
         return 0
-    with get_conn() as conn:
-        conn.executemany(
-            """INSERT INTO limitation_resolution_signals
+    chunk = chunk_size or config.GAP_LIFECYCLE_UPSERT_CHUNK
+    sql = """INSERT INTO limitation_resolution_signals
                (limitation_id, signal_type, anchor_pmid, followup_pmid,
                 anchor_year, followup_year, shared_entities, confidence)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            [
-                (
-                    r["limitation_id"],
-                    r["signal_type"],
-                    r.get("anchor_pmid"),
-                    r.get("followup_pmid"),
-                    r.get("anchor_year"),
-                    r.get("followup_year"),
-                    r.get("shared_entities"),
-                    r.get("confidence", 0.5),
-                )
-                for r in rows
-            ],
+               VALUES (?,?,?,?,?,?,?,?)"""
+
+    def _tuple(r: dict[str, Any]) -> tuple:
+        return (
+            r["limitation_id"],
+            r["signal_type"],
+            r.get("anchor_pmid"),
+            r.get("followup_pmid"),
+            r.get("anchor_year"),
+            r.get("followup_year"),
+            r.get("shared_entities"),
+            r.get("confidence", 0.5),
         )
-    return len(rows)
+
+    total = len(rows)
+    with get_conn() as conn:
+        for start in range(0, total, chunk):
+            batch = rows[start : start + chunk]
+            conn.executemany(sql, [_tuple(r) for r in batch])
+            if on_progress:
+                on_progress(min(start + len(batch), total), total)
+    return total
 
 
 def get_limitation_temporal_rows(
     focus: str | None = None,
     temporal_status: str | None = None,
+    temporal_statuses: list[str] | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
@@ -780,7 +805,11 @@ def get_limitation_temporal_rows(
     if focus:
         clauses.append("LOWER(limitation_name) LIKE LOWER(?)")
         params.append(f"%{focus}%")
-    if temporal_status:
+    if temporal_statuses:
+        placeholders = ",".join("?" * len(temporal_statuses))
+        clauses.append(f"temporal_status IN ({placeholders})")
+        params.extend(temporal_statuses)
+    elif temporal_status:
         clauses.append("temporal_status = ?")
         params.append(temporal_status)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""

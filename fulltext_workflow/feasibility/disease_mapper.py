@@ -61,6 +61,8 @@ DISEASE_ALIASES: dict[str, str] = {
     "breast": "BRCA-IDC",
     "乳腺": "BRCA-IDC",
     "乳腺癌": "BRCA-IDC",
+    "bilateral breast": "BRCA-IDC",
+    "multifocal breast": "BRCA-IDC",
 }
 
 DISEASE_NAMES: dict[str, tuple[str, str]] = {

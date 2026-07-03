@@ -92,7 +92,7 @@ def llm_call_structured(system: str, user: str) -> dict:
             with _concurrency:
                 _rate_limit_wait()
                 response = _client.chat.completions.create(
-                    model=config.LLM_MODEL,
+                    model=config.LLM_MODEL_EXTRACT,
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},

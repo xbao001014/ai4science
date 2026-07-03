@@ -13,6 +13,7 @@ from llm_utils import llm_extra_body, truncate_for_llm
 _client = OpenAI(
     api_key=config.OPENAI_API_KEY,
     base_url=config.OPENAI_API_BASE,
+    timeout=config.LLM_REQUEST_TIMEOUT,
 )
 
 
@@ -40,6 +41,39 @@ def _sanitize_assistant_message(msg_dict: dict[str, Any]) -> dict[str, Any]:
         if isinstance(fn, dict):
             fn["arguments"] = _sanitize_tool_arguments(fn.get("arguments"))
     return msg_dict
+
+
+def bind_tools_with_focus(
+    tools: dict[str, Any],
+    focus: str | None,
+) -> dict[str, Any]:
+    """Inject default focus into tool calls when the model omits it."""
+    if not focus or not str(focus).strip():
+        return tools
+
+    default_focus = str(focus).strip()
+    bound: dict[str, Any] = {}
+
+    for name, fn in tools.items():
+        try:
+            has_focus = "focus" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            has_focus = False
+        if not has_focus:
+            bound[name] = fn
+            continue
+
+        def _make_wrapper(f: Any, foc: str):
+            def _wrapped(**kwargs: Any) -> Any:
+                if not kwargs.get("focus"):
+                    kwargs["focus"] = foc
+                return f(**kwargs)
+
+            return _wrapped
+
+        bound[name] = _make_wrapper(fn, default_focus)
+
+    return bound
 
 
 def _safe_invoke_tool(fn: Any, fn_args: dict[str, Any]) -> dict[str, Any]:
@@ -73,10 +107,16 @@ def run_tool_agent(
     if max_tokens is None:
         max_tokens = config.LLM_MAX_TOKENS
 
-    for _ in range(max_iters):
+    for iteration in range(max_iters):
+        yield {
+            "type": "llm_request_start",
+            "role": role,
+            "iteration": iteration + 1,
+            "max_iters": max_iters,
+        }
         try:
             response = _client.chat.completions.create(
-                model=config.LLM_MODEL,
+                model=config.LLM_MODEL_AGENT,
                 messages=messages,
                 tools=tool_schemas,
                 tool_choice="auto",
@@ -111,6 +151,13 @@ def run_tool_agent(
                 "role": role,
                 "name": fn_name,
                 "args": fn_args,
+                "call_id": tc.id,
+            }
+
+            yield {
+                "type": "tool_running",
+                "role": role,
+                "name": fn_name,
                 "call_id": tc.id,
             }
 
@@ -156,11 +203,75 @@ def run_tool_agent(
             })
 
 
-def last_assistant_content(messages: list[dict]) -> str:
+def best_assistant_content(
+    messages: list[dict],
+    *,
+    min_chars: int = 300,
+) -> str:
+    """Prefer the last tool-free assistant reply; avoid pre-tool thinking snippets."""
+    tool_free: list[str] = []
+    any_content: list[str] = []
     for m in reversed(messages):
-        if m.get("role") == "assistant" and m.get("content"):
-            return m["content"]
+        if m.get("role") != "assistant":
+            continue
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        any_content.append(content)
+        if not m.get("tool_calls"):
+            tool_free.append(content)
+
+    if tool_free:
+        return tool_free[0]
+    if any_content:
+        best = max(any_content, key=len)
+        if len(best) >= min_chars:
+            return best
+        return best
     return ""
+
+
+def looks_like_proposal(text: str) -> bool:
+    if len(text.strip()) < 400:
+        return False
+    markers = (
+        "## 一",
+        "## 二",
+        "研究背景",
+        "REVISION_NOTE",
+        "## 1.",
+        "# 研究",
+        "## Research",
+    )
+    return any(m in text for m in markers)
+
+
+def finalize_assistant_content(
+    messages: list[dict],
+    *,
+    instruction: str,
+    temperature: float = 0.35,
+    max_tokens: int | None = None,
+) -> str:
+    """One-shot completion without tools after a tool loop ends early."""
+    if max_tokens is None:
+        max_tokens = max(config.LLM_MAX_TOKENS, 8192)
+    messages.append({"role": "user", "content": instruction})
+    response = _client.chat.completions.create(
+        model=config.LLM_MODEL_AGENT,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        extra_body=llm_extra_body(config.OPENAI_API_BASE),
+    )
+    content = (response.choices[0].message.content or "").strip()
+    if content:
+        messages.append({"role": "assistant", "content": content})
+    return content
+
+
+def last_assistant_content(messages: list[dict]) -> str:
+    return best_assistant_content(messages)
 
 
 def parse_json_block(text: str, fallback: dict | None = None) -> dict:

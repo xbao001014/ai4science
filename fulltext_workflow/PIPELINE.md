@@ -28,6 +28,8 @@ PUBMED_API_KEY=your-ncbi-key          # 推荐
 DASHSCOPE_API_KEY=sk-xxx              # 或 OPENAI_API_KEY
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=deepseek-v4-flash
+LLM_MODEL_EXTRACT=deepseek-v4-flash   # extract 章节抽取
+LLM_MODEL_AGENT=qwen3.7-plus          # gap-debate / idea-pipeline / gap_ui
 
 # 可选：引用 enrichment 提供商（S2 403 时用 openalex）
 CITATION_PROVIDER=auto
@@ -82,6 +84,7 @@ flowchart TD
 | 分析 | `analyze` | 推荐 | 静态 SQL Gap 报告 |
 | 辩论/方案 | `gap-debate` / `idea-pipeline` | 可选 | 需 LLM + 可选 LIS API |
 | UI | `streamlit run gap_ui.py` | 可选 | 交互式五标签页 |
+| **建库一键** | `run-db` | 可选 | fetch → enrich → import-if → fulltext → extract |
 
 ---
 
@@ -285,6 +288,34 @@ flowchart TD
 
 ## 3. 一键流水线
 
+### 3.1 仅建库（`run-db`）
+
+只填充 `kg_fulltext.db`，不含建图、Gap 分析、辩论：
+
+```powershell
+# 默认：fetch → enrich-s2 → import-if → fetch-fulltext → extract（全量待抽取）
+& $py main.py run-db
+
+# 增量 fetch + 核心章节抽取
+& $py main.py run-db --since-days 14 --core-only
+
+# 跳过引用/IF（纯元数据 + 全文 + 抽取）
+& $py main.py run-db --skip-enrich
+
+# 试跑抽取 30 篇
+& $py main.py run-db --limit 30
+```
+
+PowerShell 脚本等价：
+
+```powershell
+.\run_pipeline.ps1 -Stage db
+.\run_pipeline.ps1 -Stage db -SinceDays 14 -CoreOnly
+.\run_pipeline.ps1 -Stage db -SkipEnrich
+```
+
+### 3.2 完整流水线（`run-all`）
+
 ```powershell
 # 内置：fetch → fetch-fulltext → extract → build → analyze → stats
 # 不含 enrich-s2 / import-if / bootstrap-landscape
@@ -354,6 +385,8 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py fetch-fulltext                     # 耗时长
 & $py main.py extract --limit 0 --core-only      # 全量，核心章节
 & $py main.py compute-gap-lifecycle              # limitation 时间画像 + 填补信号
+# 仅时间画像（跳过 resolution，约快 10x）：
+& $py main.py compute-gap-lifecycle --temporal-only
 & $py main.py build
 & $py main.py analyze
 & $py main.py bootstrap-landscape --force        # 若用 idea-pipeline / gap_ui 可行性
@@ -399,7 +432,9 @@ FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=
 ## 8. run_pipeline.ps1 用法
 
 ```powershell
-.\run_pipeline.ps1                          # 交互菜单
+.\run_pipeline.ps1                          # 交互菜单（含 d = run-db）
+.\run_pipeline.ps1 -Stage db                # 仅建库流水线
+.\run_pipeline.ps1 -Stage db -CoreOnly      # 建库 + 核心章节抽取
 .\run_pipeline.ps1 -Stage all               # 完整流水线（含 enrich-s2 + import-if）
 .\run_pipeline.ps1 -Stage enrich            # 仅引用 + IF 导入
 .\run_pipeline.ps1 -Stage all -SkipEnrich   # 跳过引用/IF

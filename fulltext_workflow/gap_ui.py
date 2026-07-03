@@ -703,7 +703,8 @@ with st.sidebar:
 
     focus_input = st.text_input(
         "Research focus",
-        placeholder="e.g. radiomics, breast cancer",
+        placeholder="e.g. breast cancer, radiomics",
+        help="All debate gaps and tools will be scoped to this topic. Use disease names like 'breast cancer'.",
     )
     top_n_input = st.slider("Gap recommendations", 3, 10, 6)
     debate_rounds_input = st.slider("Max debate rounds", 1, 3, 2)
@@ -765,6 +766,11 @@ if run_button:
                     f"{role_badge(current_role)} phase started",
                     unsafe_allow_html=True,
                 )
+            elif etype == "llm_request_start":
+                st.caption(
+                    f"Waiting for {role_display(event.get('role', ''))} LLM "
+                    f"({event.get('iteration', '?')}/{event.get('max_iters', '?')}) …"
+                )
             elif etype == "tool_call":
                 tool_step += 1
                 role = event.get("role", "")
@@ -775,6 +781,9 @@ if run_button:
                     f"  Step {tool_step} [{role_lbl}] {meta.get('label', event['name'])} "
                     f"· `{args}`"
                 )
+            elif etype == "tool_running":
+                meta = TOOL_META.get(event["name"], {"label": event["name"]})
+                st.caption(f"    … running {meta.get('label', event['name'])}")
             elif etype == "tool_result":
                 r = event.get("result", {})
                 n = len(r.get("data", r.get("gaps", r.get("results_backed", []))))
@@ -1000,6 +1009,8 @@ elif st.session_state["events"]:
                         role = event.get("role", "")
                         lbl = IDEA_TOOL_META.get(event["name"], event["name"])
                         st.write(f"  [{role}] {lbl} · `{event.get('args', {})}`")
+                    elif et == "finalizing_draft":
+                        st.caption(event.get("message", "Generating full proposal…"))
                     elif et == "draft":
                         st.success(f"Draft v{event['round']} — {len(event['content'])} chars")
                         rl = st.session_state.get("proposal_rounds", [])
@@ -1027,6 +1038,12 @@ elif st.session_state["events"]:
             p1, p2 = st.columns(2)
             p1.metric("Final score", f"{st.session_state.get('final_score', 0):.1f}/10")
             p2.metric("Rounds", st.session_state.get("final_rounds", 1))
+            if len(proposal.strip()) < 400 or not any(
+                m in proposal for m in ("## 一", "研究背景", "REVISION_NOTE")
+            ):
+                st.warning(
+                    "Proposal looks incomplete. Re-run generation or check API / tool errors in the status log."
+                )
             st.markdown("### Final Proposal")
             st.markdown(proposal)
             st.download_button(

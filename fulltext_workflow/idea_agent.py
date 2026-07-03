@@ -13,9 +13,18 @@ from datetime import datetime
 from typing import Any, Generator
 
 import config
-from analysis.agent_utils import last_assistant_content, parse_json_block, run_tool_agent
+from analysis.agent_utils import (
+    best_assistant_content,
+    bind_tools_with_focus,
+    finalize_assistant_content,
+    last_assistant_content,
+    looks_like_proposal,
+    parse_json_block,
+    run_tool_agent,
+)
 from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
+from feasibility.disease_mapper import map_gap_to_disease
 from db.schema import get_conn, init_db
 
 init_gap_registry()
@@ -200,6 +209,98 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
 
 IDEA_TOOL_SCHEMAS: list[dict] = _IDEA_TOOL_SCHEMAS + GRAPH_TOOL_SCHEMAS + FEASIBILITY_TOOL_SCHEMAS
 
+_GAP_ANCHOR_RULES = """\
+【锚定研究空白 — 全程不可更换主题】
+用户选定的研究空白如下（方案必须始终围绕此主题，禁止改题）：
+{gap_text}
+
+硬性规则：
+- 所有工具查询的 keyword/focus 必须与本空白中的疾病/任务相关（不得改查鼻咽癌、肺癌等其他病种）。
+- 方信可行性请用 disease_id={disease_id}（{disease_reason}）；乳腺/乳腺癌课题 organ_system 用 breast/mammary，禁止 gynecological。
+- 方信数据不足时：在方案中标注「数据对接局限」，**不得**更换为 API 返回的其他病种（如 BYA、鼻咽癌 survival）凑可行性。
+- 修订轮次仅改进同一空白下的方案深度，不得替换为全新课题。
+"""
+
+_CRITIC_ANCHOR_EXTRA = """\
+- 评审不得建议更换为其他病种或全新课题；feasibility 失败应要求补充乳腺/原病种数据路径，而非改做鼻咽癌等。
+- feasibility_assess 的 disease_id 应与空白病种一致（推荐 {disease_id}），勿随意使用无关 API 返回 ID。
+"""
+
+
+def _short_tool_focus(gap_text: str) -> str:
+    """Shorter focus string for graph tools (disease phrase)."""
+    text = gap_text.strip()
+    lower = text.lower()
+    for phrase in (
+        "bilateral breast cancer",
+        "multifocal breast cancer",
+        "breast cancer",
+        "breast",
+        "乳腺癌",
+        "乳腺",
+    ):
+        if phrase in lower or phrase in text:
+            return "Breast Cancer" if "breast" in phrase else phrase
+    return text[:80]
+
+
+def bind_idea_tools(tools: dict[str, Any], gap_text: str | None) -> dict[str, Any]:
+    """Bind focus + keyword tool args to the anchored gap text."""
+    if not gap_text or not gap_text.strip():
+        return tools
+    import inspect
+
+    anchor = gap_text.strip()
+    tool_focus = _short_tool_focus(anchor)
+    bound = bind_tools_with_focus(tools, tool_focus)
+
+    for name, fn in tools.items():
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            continue
+        if "keyword" not in params:
+            continue
+
+        def _wrap_keyword(f: Any, keyword: str):
+            def _wrapped(**kwargs: Any) -> Any:
+                if not kwargs.get("keyword"):
+                    kwargs["keyword"] = keyword
+                return f(**kwargs)
+
+            return _wrapped
+
+        bound[name] = _wrap_keyword(fn, anchor[:200])
+
+    return bound
+
+
+def _gap_disease_hint(gap_text: str) -> tuple[str, str]:
+    disease_id, conf, reason = map_gap_to_disease(gap_text)
+    if disease_id:
+        return disease_id, f"{reason} (confidence {conf:.2f})"
+    return "BRCA-IDC", "default for breast-related gaps; verify via D-01 if different"
+
+
+def _gap_anchor_block(gap_text: str) -> str:
+    disease_id, disease_reason = _gap_disease_hint(gap_text)
+    return _GAP_ANCHOR_RULES.format(
+        gap_text=gap_text.strip(),
+        disease_id=disease_id,
+        disease_reason=disease_reason,
+    )
+
+
+def _system_with_gap_anchor(base: str, gap_text: str, *, role: str) -> str:
+    if not gap_text or not gap_text.strip():
+        return base
+    extra = _gap_anchor_block(gap_text)
+    if role == "critic":
+        disease_id, _ = _gap_disease_hint(gap_text)
+        extra += _CRITIC_ANCHOR_EXTRA.format(disease_id=disease_id)
+    return base + "\n\n" + extra
+
+
 GENERATOR_SYSTEM_PROMPT = """\
 你是一位 pathomics/radiomics 科研方案设计专家，擅长将影像组学/病理组学与深度学习结合，
 设计具有临床价值、技术创新性和可执行性的研究方案。
@@ -212,7 +313,8 @@ GENERATOR_SYSTEM_PROMPT = """\
 - 调用 SQL 工具 + graph_* 图工具 + 方信可行性工具（至少 5 个工具，含 1 个 graph_*）。
 - 优先使用 metrics_for_topic（含 evidence_quote）和 author_limitations_for_topic。
 - 使用 pathology_disease_catalog / pathology_tasks_for_disease 确认方信 Mock 数据支撑。
-- 注意语料局限：KG 基于已提取的全文/摘要子集，不得过度外推。
+- 最后一轮回复必须是**完整方案正文**（含全部章节），禁止只写「让我调用某工具」而不输出方案。
+- 工具查询完成后，必须再发一条**不含 tool_calls** 的最终消息输出完整 Markdown。
 
 输出完整 Markdown 方案，末尾添加：
 REVISION_NOTE: <50字内说明本版本核心改动，第一版写"初始版本">
@@ -274,6 +376,33 @@ CRITIC_SYSTEM_PROMPT = """\
 
 ACCEPT_SCORE = 8.0
 
+_FINALIZE_PROPOSAL_INSTRUCTION = """\
+你已完成（或应当已完成）知识图谱工具查询。请**立即**输出完整 Markdown 研究方案：
+- 必须包含九个章节（一至八 + 方信数据对接参数）及末尾 REVISION_NOTE 行
+- 不要调用任何工具；不要只写计划或「让我检查…」
+- 基于上文工具返回的数据撰写，缺数据处注明语料局限
+"""
+
+
+def _ensure_proposal_draft(
+    gen_messages: list[dict],
+    *,
+    gap_text: str,
+    round_num: int,
+    draft: str | None = None,
+) -> tuple[str, bool]:
+    """Return (draft, was_finalized)."""
+    text = (draft if draft is not None else best_assistant_content(gen_messages)).strip()
+    if looks_like_proposal(text):
+        return text, False
+    instruction = (
+        f"{_FINALIZE_PROPOSAL_INSTRUCTION}\n\n"
+        f"{_gap_anchor_block(gap_text)}\n\n"
+        f"请输出方案 v{round_num}。"
+    )
+    finalized = finalize_assistant_content(gen_messages, instruction=instruction).strip()
+    return (finalized or text), bool(finalized)
+
 
 def stream_idea_agent(
     gap_text: str,
@@ -284,11 +413,18 @@ def stream_idea_agent(
     yield {"type": "start", "gap_text": gap_text, "max_rounds": max_rounds}
 
     gap_context = ""
+    disease_id, disease_reason = _gap_disease_hint(gap_text)
+    gap_context = (
+        f"\n\n方信病种映射建议：disease_id={disease_id} ({disease_reason})"
+    )
     if gap_data:
-        gap_context = (
+        gap_context += (
             "\n\nKG analysis supporting data:\n"
             f"```json\n{json.dumps(gap_data, ensure_ascii=False, indent=2)[:2000]}\n```"
         )
+
+    idea_tools = bind_idea_tools(IDEA_TOOLS, gap_text)
+    anchor_block = _gap_anchor_block(gap_text)
 
     current_draft = ""
     last_feedback: dict = {}
@@ -301,6 +437,7 @@ def stream_idea_agent(
         if round_num == 1:
             gen_user = (
                 f"请针对以下 pathomics/radiomics 研究空白，生成完整研究方案（v1）：\n\n"
+                f"{anchor_block}\n\n"
                 f"**研究空白**：\n{gap_text}\n{gap_context}\n\n"
                 "先调用至少 5 个工具（含 1 个 graph_*），再输出完整方案。"
             )
@@ -311,22 +448,30 @@ def stream_idea_agent(
                 for item in last_feedback.get("critical_issues", [])
             )
             gen_user = (
+                f"{anchor_block}\n\n"
+                f"**锚定研究空白（不可改题）**：\n{gap_text}\n\n"
                 f"评审反馈（v{round_num - 1}）：\n"
                 f"**评分**：{last_feedback.get('overall_score', 0):.1f}/10\n"
                 f"**修改方向**：{last_feedback.get('revision_priority', '')}\n"
                 f"**问题列表**：\n{issues_text}\n"
                 f"**KG核实**：{last_feedback.get('kg_verification', '')}\n\n"
-                f"请生成修订方案（v{round_num}），必要时先补充工具证据。"
+                f"请在同一研究空白下生成修订方案（v{round_num}），不得更换疾病或课题；"
+                "必要时先补充工具证据。"
             )
 
         gen_messages: list[dict] = [
-            {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _system_with_gap_anchor(
+                    GENERATOR_SYSTEM_PROMPT, gap_text, role="generator"
+                ),
+            },
             {"role": "user", "content": gen_user},
         ]
         agent_failed = False
         for event in run_tool_agent(
             messages=gen_messages,
-            tools=IDEA_TOOLS,
+            tools=idea_tools,
             tool_schemas=IDEA_TOOL_SCHEMAS,
             role="generator",
             max_iters=20,
@@ -337,7 +482,16 @@ def stream_idea_agent(
                 yield event
                 break
             yield event
-        current_draft = last_assistant_content(gen_messages)
+        pre_draft = best_assistant_content(gen_messages)
+        if not looks_like_proposal(pre_draft):
+            yield {
+                "type": "finalizing_draft",
+                "round": round_num,
+                "message": "Tool loop ended without a full proposal; requesting final Markdown…",
+            }
+        current_draft, _ = _ensure_proposal_draft(
+            gen_messages, gap_text=gap_text, round_num=round_num, draft=pre_draft
+        )
         if agent_failed and not current_draft:
             yield {
                 "type": "final",
@@ -353,19 +507,26 @@ def stream_idea_agent(
             break
 
         critic_user = (
+            f"{anchor_block}\n\n"
             f"请评审以下研究方案（v{round_num}）：\n\n"
-            f"**原始空白**：\n{gap_text}\n\n"
+            f"**原始空白（评审不得偏离）**：\n{gap_text}\n\n"
             f"**方案**：\n{current_draft}\n\n"
+            f"方信 feasibility 请优先使用 disease_id={disease_id}。\n"
             "先调用 feasibility_assess 核验方信数据可行性，再调用至少 1 个 KG 工具核实关键声明，"
             "最后输出 JSON 评审。"
         )
         critic_messages: list[dict] = [
-            {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _system_with_gap_anchor(
+                    CRITIC_SYSTEM_PROMPT, gap_text, role="critic"
+                ),
+            },
             {"role": "user", "content": critic_user},
         ]
         for event in run_tool_agent(
             messages=critic_messages,
-            tools=IDEA_TOOLS,
+            tools=idea_tools,
             tool_schemas=IDEA_TOOL_SCHEMAS,
             role="critic",
             max_iters=12,

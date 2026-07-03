@@ -4,10 +4,10 @@
 #   .\run_pipeline.ps1 -Stage all       # 跑完整推荐流水线（不含 gap-debate）
 #   .\run_pipeline.ps1 -Stage fetch     # 只跑某一阶段
 #   .\run_pipeline.ps1 -Stage weekly          # 每周增量（fetch 最近 14 天 EDAT）
-#   .\run_pipeline.ps1 -Stage fetch -SinceDays 14
+#   .\run_pipeline.ps1 -Stage db            # 仅建库：fetch → enrich → fulltext → extract
 
 param(
-    [ValidateSet("init", "fetch", "enrich", "fulltext", "extract", "build", "analyze", "debate", "landscape", "stats", "all", "quick", "weekly")]
+    [ValidateSet("init", "fetch", "enrich", "fulltext", "extract", "build", "analyze", "debate", "landscape", "stats", "all", "quick", "weekly", "db")]
     [string]$Stage = "",
     [int]$ExtractLimit = 0,
     [int]$SinceDays = 0,
@@ -52,6 +52,7 @@ Full-Text Workflow Pipeline
   8  bootstrap-landscape
   9  gap-debate
   0  run-all (quick, limit=30)
+  d  run-db (fetch → enrich → fulltext → extract)
   s  stats
   q  quit
 "@
@@ -71,6 +72,7 @@ if (-not $Stage) {
         "8" { $Stage = "landscape" }
         "9" { $Stage = "debate" }
         "0" { $Stage = "quick" }
+        "d" { $Stage = "db" }
         "s" { $Stage = "stats" }
         "q" { exit 0 }
         default { Write-Host "Invalid"; exit 1 }
@@ -133,6 +135,14 @@ switch ($Stage) {
         $qa = @("run-all", "--limit", "30")
         if ($NoResume) { $qa += "--no-resume" }
         Invoke-Step "run-all" $qa
+    }
+    "db" {
+        $dbArgs = @("run-db", "--limit", "$ExtractLimit")
+        if ($NoResume) { $dbArgs += "--no-resume" }
+        if ($SinceDays -gt 0) { $dbArgs += @("--since-days", "$SinceDays") }
+        if ($SkipEnrich) { $dbArgs += "--skip-enrich" }
+        if ($CoreOnly) { $dbArgs += "--core-only" }
+        Invoke-Step "run-db" $dbArgs
     }
     "all" {
         Invoke-Step "init" @("init")

@@ -5,13 +5,27 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 _ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _ROOT.parent
 
-load_dotenv(_REPO_ROOT / ".env")
-load_dotenv(_ROOT / ".env", override=False)
+# override=True: project .env wins over stale shell env for keys defined in the file
+load_dotenv(_REPO_ROOT / ".env", override=True)
+load_dotenv(_ROOT / ".env", override=True)
+_ENV_FILE = {
+    **dotenv_values(_REPO_ROOT / ".env"),
+    **{k: v for k, v in dotenv_values(_ROOT / ".env").items() if v},
+}
+
+
+def _env_first(*names: str, default: str = "") -> str:
+    """Prefer values from project .env over inherited shell environment."""
+    for name in names:
+        val = _ENV_FILE.get(name) or os.getenv(name)
+        if val:
+            return val
+    return default
 
 # Reuse main-project PubMed query groups and year range (search_queries.py)
 if str(_REPO_ROOT) not in sys.path:
@@ -55,6 +69,15 @@ GAP_WEIGHT_FEASIBILITY: float = float(os.getenv("GAP_WEIGHT_FEASIBILITY", "1.0")
 GAP_RECENT_YEARS: int = int(os.getenv("GAP_RECENT_YEARS", "3"))
 GAP_PERSISTENT_RATIO: float = float(os.getenv("GAP_PERSISTENT_RATIO", "0.3"))
 GAP_RESOLUTION_MIN_FOLLOWUP: int = int(os.getenv("GAP_RESOLUTION_MIN_FOLLOWUP", "2"))
+# Batch resolution: skip emerging (recent-only limitations); comma-separated statuses
+GAP_LIFECYCLE_RESOLUTION_STATUSES: frozenset[str] = frozenset(
+    s.strip()
+    for s in os.getenv(
+        "GAP_LIFECYCLE_RESOLUTION_STATUSES", "persistent,declining"
+    ).split(",")
+    if s.strip()
+)
+GAP_LIFECYCLE_UPSERT_CHUNK: int = int(os.getenv("GAP_LIFECYCLE_UPSERT_CHUNK", "2000"))
 
 # ── Search scope (from repo-root search_queries.py) ──────────────────────────
 # Override years via env if needed, e.g. FULLTEXT_SEARCH_YEAR_START=2024
@@ -74,15 +97,16 @@ def search_scope_label() -> str:
 PUBMED_API_KEY: str = os.getenv("PUBMED_API_KEY", "")
 PUBMED_EMAIL: str = os.getenv("PUBMED_EMAIL", "your@email.com")
 
-OPENAI_API_BASE: str = os.getenv(
-    "OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+OPENAI_API_BASE: str = _env_first(
+    "OPENAI_API_BASE", default="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
-OPENAI_API_KEY: str = (
-    os.getenv("DASHSCOPE_API_KEY")
-    or os.getenv("OPENAI_API_KEY")
-    or os.getenv("DEEPSEEK_API_KEY", "")
+OPENAI_API_KEY: str = _env_first(
+    "OPENAI_API_KEY", "DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"
 )
-LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
+LLM_MODEL: str = _env_first("LLM_MODEL", default="deepseek-v4-flash")
+# extract: section triple extraction; agent: gap-debate / idea-pipeline / gap_ui
+LLM_MODEL_EXTRACT: str = _env_first("LLM_MODEL_EXTRACT", default=LLM_MODEL)
+LLM_MODEL_AGENT: str = _env_first("LLM_MODEL_AGENT", default="qwen3.7-plus")
 LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "16384"))
 LLM_MAX_INPUT_CHARS: int = int(os.getenv("LLM_MAX_INPUT_CHARS", "800000"))
 LLM_MAX_TOOL_RESULT_CHARS: int = int(
@@ -106,6 +130,7 @@ EXTRACT_MAX_SECTION_CHARS: int = int(os.getenv("EXTRACT_MAX_SECTION_CHARS", "120
 EXTRACT_SKIP_STUDY_LLM: bool = os.getenv("EXTRACT_SKIP_STUDY_LLM", "false").lower() == "true"
 TOOL_TOP_N: int = int(os.getenv("TOOL_TOP_N", "30"))
 GRAPH_TOP_N: int = int(os.getenv("GRAPH_TOP_N", "25"))
+GRAPH_REACH_PAPER_SAMPLE: int = int(os.getenv("GRAPH_REACH_PAPER_SAMPLE", "40"))
 
 STUDY_TYPES: list[str] = [
     "ai_algorithm",

@@ -32,7 +32,7 @@ def cmd_import_if(args: argparse.Namespace) -> None:
     from utils.if_importer import import_impact_factors
 
     init_db()
-    excel_path = args.excel or config.JCR_IF_PATH
+    excel_path = getattr(args, "excel", None) or config.JCR_IF_PATH
     if_year = args.if_year if args.if_year is not None else config.JCR_IF_YEAR
     if not Path(excel_path).exists():
         raise FileNotFoundError(
@@ -121,7 +121,11 @@ def cmd_compute_gap_lifecycle(args: argparse.Namespace) -> None:
     from db.schema import init_db
 
     init_db()
-    stats = run_gap_lifecycle(force=not args.no_force)
+    stats = run_gap_lifecycle(
+        force=not args.no_force,
+        temporal_only=args.temporal_only,
+        verbose=True,
+    )
     print("\n[Gap-Lifecycle] Summary:")
     for key, value in stats.items():
         print(f"  {key}: {value}")
@@ -233,6 +237,27 @@ def cmd_run_all(args: argparse.Namespace) -> None:
     print(f"\nDone in {(time.time() - t0) / 60:.1f} minutes.")
 
 
+def cmd_run_db(args: argparse.Namespace) -> None:
+    """Populate SQLite only: fetch → citations/IF → fulltext → extract."""
+    print("=" * 60)
+    print(f"  Database Pipeline — {config.search_scope_label()}")
+    print("  fetch → enrich-s2 → import-if → fetch-fulltext → extract")
+    print("=" * 60)
+    t0 = time.time()
+
+    cmd_fetch(args)
+    if not args.skip_enrich:
+        cmd_enrich_s2(args)
+        cmd_import_if(args)
+    else:
+        print("\n[run-db] Skipping enrich-s2 and import-if (--skip-enrich).")
+    cmd_fetch_fulltext(args)
+    cmd_extract(args)
+    cmd_stats(args)
+
+    print(f"\n[run-db] Done in {(time.time() - t0) / 60:.1f} minutes.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=f"Isolated full-text KG workflow ({config.search_scope_label()})"
@@ -317,7 +342,12 @@ def main() -> None:
     p_lifecycle.add_argument(
         "--no-force",
         action="store_true",
-        help="Skip clearing existing lifecycle tables before recompute",
+        help="Skip clearing existing limitation_temporal before recompute",
+    )
+    p_lifecycle.add_argument(
+        "--temporal-only",
+        action="store_true",
+        help="Only compute/write limitation_temporal (skip resolution; much faster)",
     )
     p_debate = sub.add_parser("gap-debate", help="LLM debate multi-agent gap analysis")
     p_debate.add_argument("--focus", "-f", default=None)
@@ -374,6 +404,49 @@ def main() -> None:
     p_all.add_argument("--no-resume", action="store_true")
     p_all.add_argument("--limit", type=int, default=30, help="Extraction limit")
 
+    p_db = sub.add_parser(
+        "run-db",
+        help="Database pipeline: fetch → enrich-s2 → import-if → fetch-fulltext → extract",
+    )
+    p_db.add_argument("--no-resume", action="store_true")
+    p_db.add_argument(
+        "--since-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only papers indexed in PubMed within last N days (EDAT)",
+    )
+    p_db.add_argument(
+        "--skip-enrich",
+        action="store_true",
+        help="Skip enrich-s2 and import-if (citations/IF)",
+    )
+    p_db.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Extraction limit (default 0 = all pending)",
+    )
+    p_db.add_argument(
+        "--core-only",
+        action="store_true",
+        default=None,
+        help="Only core sections (faster)",
+    )
+    p_db.add_argument(
+        "--all-sections",
+        action="store_true",
+        help="Include introduction/other sections",
+    )
+    p_db.add_argument("--section-workers", type=int, default=None)
+    p_db.add_argument("--paper-workers", type=int, default=None)
+    p_db.add_argument(
+        "--if-year",
+        type=int,
+        default=None,
+        help=f"IF year for import-if (default: {config.JCR_IF_YEAR})",
+    )
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -396,6 +469,7 @@ def main() -> None:
         "stats": cmd_stats,
         "watch-fetch": cmd_watch_fetch,
         "run-all": cmd_run_all,
+        "run-db": cmd_run_db,
     }
     commands[args.command](args)
 

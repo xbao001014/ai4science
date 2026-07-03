@@ -13,10 +13,13 @@ from typing import Any
 import networkx as nx
 
 import config
+from analysis.focus_filter import focus_sql_clause
 from db.schema import get_conn
 
 _ENTITY_COOC_GRAPH: nx.Graph | None = None
 _ENTITY_TYPES = {"Disease", "Method", "Task", "Tissue", "Dataset", "Metric", "Modality"}
+_REACH_RESULTS_CACHE: dict[tuple[Any, ...], dict] = {}
+_REACH_PAPER_SAMPLE: int = config.GRAPH_REACH_PAPER_SAMPLE
 
 
 def _get_entity_cooc_graph() -> nx.Graph:
@@ -59,8 +62,234 @@ def _get_entity_cooc_graph() -> nx.Graph:
 
 
 def invalidate_cache() -> None:
-    global _ENTITY_COOC_GRAPH
+    global _ENTITY_COOC_GRAPH, _REACH_RESULTS_CACHE
     _ENTITY_COOC_GRAPH = None
+    _REACH_RESULTS_CACHE.clear()
+
+
+def _top_disease_rows(conn, *, top_diseases: int, focus: str | None) -> list:
+    if focus:
+        fc = focus_sql_clause("e.name", focus)
+        rows = conn.execute(
+            f"""
+            SELECT e.id, e.name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
+            FROM entities e
+            JOIN relations r ON r.object_id = e.id
+            WHERE e.type = 'Disease' {fc}
+            GROUP BY e.id
+            ORDER BY paper_cnt DESC
+            LIMIT ?
+            """,
+            (top_diseases,),
+        ).fetchall()
+        if rows:
+            return rows
+
+        like = f"%{focus.strip()}%"
+        method_ids = [
+            row["id"]
+            for row in conn.execute(
+                """
+                SELECT id FROM entities
+                WHERE type = 'Method' AND LOWER(name) LIKE LOWER(?)
+                LIMIT 8
+                """,
+                (like,),
+            ).fetchall()
+        ]
+        if method_ids:
+            mph = ",".join("?" * len(method_ids))
+            rows = conn.execute(
+                f"""
+                SELECT ed.id, ed.name, COUNT(DISTINCT rd.source_pmid) AS paper_cnt
+                FROM relations rm
+                JOIN relations rd ON rd.source_pmid = rm.source_pmid
+                JOIN entities ed ON ed.id = rd.object_id AND ed.type = 'Disease'
+                WHERE rm.object_id IN ({mph})
+                GROUP BY ed.id
+                ORDER BY paper_cnt DESC
+                LIMIT ?
+                """,
+                [*method_ids, top_diseases],
+            ).fetchall()
+            if rows:
+                return rows
+
+    return conn.execute(
+        """
+        SELECT e.id, e.name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
+        FROM entities e
+        JOIN relations r ON r.object_id = e.id
+        WHERE e.type = 'Disease'
+        GROUP BY e.id
+        ORDER BY paper_cnt DESC
+        LIMIT ?
+        """,
+        (top_diseases,),
+    ).fetchall()
+
+
+def _reach_one_disease(
+    conn,
+    disease_id: int,
+    *,
+    sample: int,
+    max_hops: int,
+) -> tuple[list, list]:
+    pmid_rows = conn.execute(
+        """
+        SELECT DISTINCT source_pmid AS pmid
+        FROM relations
+        WHERE object_id = ?
+        LIMIT ?
+        """,
+        (disease_id, sample),
+    ).fetchall()
+    pmids = [row["pmid"] for row in pmid_rows]
+    if not pmids:
+        return [], []
+
+    ph = ",".join("?" * len(pmids))
+    direct_rows = conn.execute(
+        f"""
+        SELECT em.id AS method_id, em.name AS method_name,
+               COUNT(DISTINCT rm.source_pmid) AS paper_cnt
+        FROM relations rm
+        JOIN entities em ON em.id = rm.object_id AND em.type = 'Method'
+        WHERE rm.source_pmid IN ({ph})
+        GROUP BY em.id
+        """,
+        pmids,
+    ).fetchall()
+
+    if max_hops < 2:
+        return direct_rows, []
+
+    bridge_rows = conn.execute(
+        f"""
+        SELECT r.object_id AS bridge_id, COUNT(*) AS freq
+        FROM relations r
+        JOIN entities e ON e.id = r.object_id
+        WHERE r.source_pmid IN ({ph}) AND e.type != 'Method'
+        GROUP BY r.object_id
+        ORDER BY freq DESC
+        LIMIT 40
+        """,
+        pmids,
+    ).fetchall()
+    bridge_ids = [row["bridge_id"] for row in bridge_rows]
+    if not bridge_ids:
+        return direct_rows, []
+
+    bph = ",".join("?" * len(bridge_ids))
+    other_papers = conn.execute(
+        f"""
+        SELECT DISTINCT r.source_pmid AS pmid
+        FROM relations r
+        WHERE r.object_id IN ({bph})
+          AND r.source_pmid NOT IN ({ph})
+        LIMIT 120
+        """,
+        [*bridge_ids, *pmids],
+    ).fetchall()
+    other_pmids = [row["pmid"] for row in other_papers]
+    if not other_pmids:
+        return direct_rows, []
+
+    oph = ",".join("?" * len(other_pmids))
+    direct_ids = {row["method_id"] for row in direct_rows}
+    gap_rows = conn.execute(
+        f"""
+        SELECT em.id AS method_id, em.name AS method_name,
+               COUNT(DISTINCT rm.source_pmid) AS paper_cnt
+        FROM relations rm
+        JOIN entities em ON em.id = rm.object_id AND em.type = 'Method'
+        WHERE rm.source_pmid IN ({oph})
+        GROUP BY em.id
+        ORDER BY paper_cnt DESC
+        LIMIT 40
+        """,
+        other_pmids,
+    ).fetchall()
+    return direct_rows, [
+        row for row in gap_rows if row["method_id"] not in direct_ids
+    ]
+
+
+def _sql_disease_method_reach(
+    *,
+    focus: str | None,
+    max_hops: int,
+    top_diseases: int,
+) -> dict:
+    sample = max(10, _REACH_PAPER_SAMPLE)
+    focus_lower = focus.lower() if focus else None
+
+    def _method_matches(name: str) -> bool:
+        return not focus_lower or focus_lower in name.lower()
+
+    with get_conn() as conn:
+        disease_rows = _top_disease_rows(
+            conn, top_diseases=top_diseases, focus=focus
+        )
+        if not disease_rows:
+            return {
+                "description": "No diseases found for reachability analysis",
+                "data": [],
+            }
+
+    results = []
+    for d_row in disease_rows:
+        with get_conn() as conn:
+            direct_rows, gap_rows = _reach_one_disease(
+                conn,
+                d_row["id"],
+                sample=sample,
+                max_hops=max_hops,
+            )
+
+        direct_methods = {row["method_id"] for row in direct_rows}
+        gap_list = [
+            {"method": row["method_name"], "method_paper_cnt": row["paper_cnt"]}
+            for row in gap_rows
+            if row["method_id"] not in direct_methods
+            and _method_matches(row["method_name"])
+        ][:8]
+
+        direct_list = sorted(
+            [
+                row["method_name"]
+                for row in direct_rows
+                if _method_matches(row["method_name"])
+            ],
+            key=lambda name: next(
+                (row["paper_cnt"] for row in direct_rows if row["method_name"] == name),
+                0,
+            ),
+            reverse=True,
+        )[:6]
+
+        if focus_lower and focus_lower not in d_row["name"].lower():
+            if not gap_list and not direct_list:
+                continue
+
+        results.append({
+            "disease": d_row["name"],
+            "disease_paper_cnt": d_row["paper_cnt"],
+            "direct_methods": direct_list,
+            "direct_method_cnt": len(direct_methods),
+            "gap_method_cnt": len(gap_list),
+            "top_gap_methods": gap_list,
+        })
+
+    results.sort(key=lambda x: x["gap_method_cnt"], reverse=True)
+    return {
+        "description": (
+            "Disease-method multi-hop reachability (sampled papers per disease). "
+            "top_gap_methods = 2-hop reachable but not directly studied."
+        ),
+        "data": results,
+    }
 
 
 def _compute_pagerank(G: nx.Graph, alpha: float = 0.85, max_iter: int = 100) -> dict:
@@ -230,91 +459,19 @@ def tool_graph_disease_method_reach(
 ) -> dict:
     if top_diseases is None:
         top_diseases = config.GRAPH_TOP_N
-    G = _get_entity_cooc_graph()
 
-    with get_conn() as conn:
-        disease_rows = conn.execute(
-            """
-            SELECT e.id, e.name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
-            FROM entities e
-            JOIN relations r ON r.object_id = e.id
-            WHERE e.type = 'Disease'
-            GROUP BY e.id
-            ORDER BY paper_cnt DESC
-            LIMIT ?
-            """,
-            (top_diseases,),
-        ).fetchall()
-        method_rows = conn.execute(
-            """
-            SELECT e.id, e.name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
-            FROM entities e
-            JOIN relations r ON r.object_id = e.id
-            WHERE e.type = 'Method'
-            GROUP BY e.id
-            """
-        ).fetchall()
+    cache_key = (focus or "", max_hops, top_diseases)
+    cached = _REACH_RESULTS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
-    method_set = {row["id"] for row in method_rows}
-    method_paper_cnt = {row["id"]: row["paper_cnt"] for row in method_rows}
-    method_name = {row["id"]: row["name"] for row in method_rows}
-
-    results = []
-    for d_row in disease_rows:
-        did = d_row["id"]
-        dname = d_row["name"]
-        if focus and focus.lower() not in dname.lower():
-            continue
-        if did not in G:
-            continue
-
-        direct_methods = {nbr for nbr in G.neighbors(did) if nbr in method_set}
-
-        two_hop_methods: set[int] = set()
-        if max_hops >= 2:
-            for mid_node in G.neighbors(did):
-                if mid_node in method_set:
-                    continue
-                for nbr2 in G.neighbors(mid_node):
-                    if nbr2 in method_set and nbr2 not in direct_methods:
-                        two_hop_methods.add(nbr2)
-
-        gap_methods = two_hop_methods - direct_methods
-        gap_list = sorted(
-            [
-                {"method": method_name[m], "method_paper_cnt": method_paper_cnt[m]}
-                for m in gap_methods
-                if m in method_name
-            ],
-            key=lambda x: x["method_paper_cnt"],
-            reverse=True,
-        )[:8]
-
-        direct_list = sorted(
-            [method_name[m] for m in direct_methods if m in method_name],
-            key=lambda m: method_paper_cnt.get(
-                next((k for k, v in method_name.items() if v == m), -1), 0
-            ),
-            reverse=True,
-        )[:6]
-
-        results.append({
-            "disease": dname,
-            "disease_paper_cnt": d_row["paper_cnt"],
-            "direct_methods": direct_list,
-            "direct_method_cnt": len(direct_methods),
-            "gap_method_cnt": len(gap_methods),
-            "top_gap_methods": gap_list,
-        })
-
-    results.sort(key=lambda x: x["gap_method_cnt"], reverse=True)
-    return {
-        "description": (
-            "Disease-method multi-hop reachability. "
-            "top_gap_methods = 2-hop reachable but not directly studied."
-        ),
-        "data": results,
-    }
+    result = _sql_disease_method_reach(
+        focus=focus,
+        max_hops=max_hops,
+        top_diseases=top_diseases,
+    )
+    _REACH_RESULTS_CACHE[cache_key] = result
+    return result
 
 
 GRAPH_TOOLS: dict[str, Any] = {

@@ -14,6 +14,7 @@ import config
 config.DB_PATH = str(_ROOT / "data" / "test_gap_lifecycle.db")
 
 from analysis.gap_lifecycle import (  # noqa: E402
+    _bulk_followup_stats,
     classify_temporal_status,
     compute_limitation_gap_status,
     compute_limitation_temporal_profiles,
@@ -25,6 +26,7 @@ from db.schema import (  # noqa: E402
     init_db,
     insert_relation,
     upsert_entity,
+    upsert_limitation_temporal,
     upsert_paper,
 )
 
@@ -136,8 +138,20 @@ def test_resolution_signal_moderate():
     profiles = compute_limitation_temporal_profiles()
     profile = next(r for r in profiles if r["limitation_name"] == "small sample size")
     signal = compute_resolution_signal(profile)
-    assert signal["followup_paper_cnt"] >= 1
-    assert signal["resolution_signal"] in ("weak", "moderate")
+    assert signal["followup_paper_cnt"] == 1
+    assert signal["resolution_signal"] == "weak"
+
+
+def test_exact_followup_count_via_bulk():
+    _setup_db()
+    _seed_persistent_fixture()
+    profiles = compute_limitation_temporal_profiles()
+    upsert_limitation_temporal(profiles)
+    stats = _bulk_followup_stats()
+    lim_id = next(
+        p["limitation_id"] for p in profiles if p["limitation_name"] == "small sample size"
+    )
+    assert stats[lim_id]["followup_paper_cnt"] == 1
 
 
 def test_declining_limitation():
@@ -174,6 +188,7 @@ if __name__ == "__main__":
     test_classify_temporal_status()
     test_persistent_limitation_profile()
     test_resolution_signal_moderate()
+    test_exact_followup_count_via_bulk()
     test_declining_limitation()
     test_run_gap_lifecycle_persists()
     test_limitation_gap_status_tool_shape()

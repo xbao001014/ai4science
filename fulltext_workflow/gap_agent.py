@@ -24,7 +24,12 @@ from datetime import datetime
 from typing import Any, Generator
 
 import config
-from analysis.agent_utils import last_assistant_content, parse_json_block, run_tool_agent
+from analysis.agent_utils import (
+    bind_tools_with_focus,
+    last_assistant_content,
+    parse_json_block,
+    run_tool_agent,
+)
 from analysis.graph_tools import GAP_TOOLS, GAP_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import build_gap_feasibility_tools
 from db.schema import db_stats, init_db
@@ -33,6 +38,50 @@ init_gap_registry()
 GAP_FEASIBILITY_TOOLS, GAP_FEASIBILITY_SCHEMAS = build_gap_feasibility_tools()
 
 ACCEPT_DEBATE_SCORE = 7.5
+
+_FOCUS_MANDATE = """\
+【研究聚焦约束 — 必须遵守】
+用户指定了研究主题：{focus}
+- 所有候选空白、验证结论与最终报告必须**直接服务于该主题**（疾病/任务/方法须与之相关）。
+- 每条空白的标题或研究问题中必须明确写出与「{focus}」的关联。
+- **禁止**输出明显无关的空白（其他癌种、心脏毒性、与主题无关的影像模态等）。
+- 若语料中该主题数据稀少，应在摘要中说明覆盖不足，**不得**用无关主题凑数。
+- 调用 KG 工具时 focus 参数必须设为 "{focus}"（系统会自动注入，但仍请显式传入）。
+"""
+
+_SKEPTIC_FOCUS_EXTRA = """\
+- 将偏离用户指定主题「{focus}」的候选空白列入 false_gaps，reason 注明 off-topic / 与聚焦主题无关。
+- 不得为无关空白浪费篇幅；verified_gaps 仅保留与「{focus}」直接相关的条目。
+"""
+
+_MODERATOR_FOCUS_EXTRA = """\
+- 最终报告中的每条 Research gap 必须与「{focus}」直接相关；剔除 Skeptic 标记的 off-topic 项。
+- Data summary 中说明本报告在「{focus}」子语料上的覆盖范围。
+"""
+
+
+def _system_with_focus(base: str, focus: str | None, *, role: str) -> str:
+    if not focus or not str(focus).strip():
+        return base
+    foc = str(focus).strip()
+    extra = _FOCUS_MANDATE.format(focus=foc)
+    if role == "skeptic":
+        extra += _SKEPTIC_FOCUS_EXTRA.format(focus=foc)
+    elif role == "moderator":
+        extra += _MODERATOR_FOCUS_EXTRA.format(focus=foc)
+    return base + "\n" + extra
+
+
+def _focus_hint(focus: str | None) -> str:
+    if not focus or not str(focus).strip():
+        return "未指定聚焦方向，进行 pathomics/radiomics 全语料分析。"
+    foc = str(focus).strip()
+    return (
+        f"【强制聚焦】{foc}\n"
+        f"- 仅分析与此主题直接相关的研究空白。\n"
+        f"- 工具调用必须带 focus=\"{foc}\"。\n"
+        f"- 禁止输出与「{foc}」无关的候选（如其他疾病领域的空白）。"
+    )
 
 OPTIMIST_SYSTEM_PROMPT = """\
 你是一位病理AI/pathomics/radiomics 研究机会分析专家（Optimist Agent）。
@@ -203,11 +252,9 @@ def stream_gap_debate_agent(
     }
 
     corpus_ctx = _corpus_context()
-    focus_hint = (
-        f"分析聚焦：{focus}。工具调用时传入 focus=\"{focus}\"。"
-        if focus
-        else "未指定聚焦方向，进行 pathomics/radiomics 全语料分析。"
-    )
+    focus_hint = _focus_hint(focus)
+    debate_tools = bind_tools_with_focus(GAP_TOOLS, focus)
+    moderator_tools = bind_tools_with_focus(GAP_FEASIBILITY_TOOLS, focus)
 
     optimist_proposal = ""
     skeptic_review: dict = {}
@@ -239,16 +286,17 @@ def stream_gap_debate_agent(
                 f"**需修订**：{debate_feedback.get('gaps_to_revise', [])}\n"
                 f"**需删除**：{debate_feedback.get('gaps_to_drop', [])}\n\n"
                 f"Skeptic 语料局限提醒：{skeptic_review.get('corpus_limitations', '')}\n\n"
+                f"{focus_hint}\n\n"
                 f"请修订候选空白（仍输出 {top_n} 条），先补充工具证据再输出 Markdown。"
             )
 
         opt_messages: list[dict] = [
-            {"role": "system", "content": OPTIMIST_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_with_focus(OPTIMIST_SYSTEM_PROMPT, focus, role="optimist")},
             {"role": "user", "content": opt_user},
         ]
         yield from run_tool_agent(
             messages=opt_messages,
-            tools=GAP_TOOLS,
+            tools=debate_tools,
             tool_schemas=GAP_TOOL_SCHEMAS,
             role="optimist",
             max_iters=18,
@@ -263,16 +311,16 @@ def stream_gap_debate_agent(
         ske_user = (
             f"请交叉验证以下 Optimist 候选空白（第 {round_num} 轮）：\n\n"
             f"{optimist_proposal}\n\n"
-            f"{corpus_ctx}\n"
+            f"{focus_hint}\n{corpus_ctx}\n"
             "先调用至少 3 个工具核实关键声明，再输出规定 JSON。"
         )
         ske_messages: list[dict] = [
-            {"role": "system", "content": SKEPTIC_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_with_focus(SKEPTIC_SYSTEM_PROMPT, focus, role="skeptic")},
             {"role": "user", "content": ske_user},
         ]
         yield from run_tool_agent(
             messages=ske_messages,
-            tools=GAP_TOOLS,
+            tools=debate_tools,
             tool_schemas=GAP_TOOL_SCHEMAS,
             role="skeptic",
             max_iters=12,
@@ -319,12 +367,12 @@ def stream_gap_debate_agent(
                "否则输出修订 JSON。")
         )
         mod_messages: list[dict] = [
-            {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_with_focus(MODERATOR_SYSTEM_PROMPT, focus, role="moderator")},
             {"role": "user", "content": mod_user},
         ]
         yield from run_tool_agent(
             messages=mod_messages,
-            tools=GAP_FEASIBILITY_TOOLS,
+            tools=moderator_tools,
             tool_schemas=GAP_FEASIBILITY_SCHEMAS,
             role="moderator",
             max_iters=10,

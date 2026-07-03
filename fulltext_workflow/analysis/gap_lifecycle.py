@@ -1,7 +1,9 @@
 """Limitation temporal profiles and heuristic gap-resolution signals."""
 from __future__ import annotations
 
+import bisect
 import json
+import time
 from typing import Any
 
 import config
@@ -12,6 +14,10 @@ from db.schema import (
     limitation_lifecycle_stats,
     upsert_limitation_temporal,
 )
+
+
+def _log(msg: str) -> None:
+    print(f"[Gap-Lifecycle] {msg}", flush=True)
 
 
 def corpus_midpoint() -> int:
@@ -146,6 +152,33 @@ def compute_limitation_temporal_profiles(
     return profiles
 
 
+def _load_paper_entities(pmids: set[str]) -> dict[str, dict[str, set[str]]]:
+    if not pmids:
+        return {}
+    out: dict[str, dict[str, set[str]]] = {}
+    pmid_list = list(pmids)
+    chunk = 900
+    for start in range(0, len(pmid_list), chunk):
+        batch = pmid_list[start : start + chunk]
+        placeholders = ",".join("?" * len(batch))
+        rows = _q(
+            f"""
+            SELECT r.source_pmid, e.name, e.type
+            FROM relations r
+            JOIN entities e ON r.object_id = e.id
+            WHERE r.source_pmid IN ({placeholders})
+              AND e.type IN ('Disease', 'Task', 'Method')
+            """,
+            tuple(batch),
+        )
+        for row in rows:
+            bucket = out.setdefault(
+                row["source_pmid"], {"Disease": set(), "Task": set(), "Method": set()}
+            )
+            bucket[row["type"]].add(row["name"])
+    return out
+
+
 class _FollowupIndex:
     """In-memory index to avoid per-limitation SQL in batch runs."""
 
@@ -153,23 +186,11 @@ class _FollowupIndex:
         self._paper_entities: dict[str, dict[str, set[str]]] = {}
         self._limitation_anchors: dict[int, list[tuple[str, int]]] = {}
         self._followups_by_disease: dict[str, list[tuple[int, str]]] = {}
+        self._followup_years: dict[str, list[int]] = {}
+        self._anchor_cache: dict[tuple[int, int], dict[str, set[str]]] = {}
         self._load()
 
     def _load(self) -> None:
-        entity_rows = _q(
-            """
-            SELECT r.source_pmid, e.name, e.type
-            FROM relations r
-            JOIN entities e ON r.object_id = e.id
-            WHERE e.type IN ('Disease', 'Task', 'Method')
-            """
-        )
-        for row in entity_rows:
-            bucket = self._paper_entities.setdefault(
-                row["source_pmid"], {"Disease": set(), "Task": set(), "Method": set()}
-            )
-            bucket[row["type"]].add(row["name"])
-
         anchor_rows = _q(
             """
             SELECT r.object_id AS limitation_id, p.pmid, p.year
@@ -179,10 +200,15 @@ class _FollowupIndex:
               AND p.year IS NOT NULL
             """
         )
+        anchor_pmids: set[str] = set()
         for row in anchor_rows:
+            pmid = row["pmid"]
+            anchor_pmids.add(pmid)
             self._limitation_anchors.setdefault(row["limitation_id"], []).append(
-                (row["pmid"], int(row["year"]))
+                (pmid, int(row["year"]))
             )
+
+        self._paper_entities = _load_paper_entities(anchor_pmids)
 
         followup_rows = _q(
             """
@@ -202,13 +228,21 @@ class _FollowupIndex:
             """
         )
         for row in followup_rows:
-            self._followups_by_disease.setdefault(row["disease"], []).append(
+            disease = row["disease"]
+            self._followups_by_disease.setdefault(disease, []).append(
                 (int(row["year"]), row["pmid"])
             )
+        for disease, items in self._followups_by_disease.items():
+            self._followup_years[disease] = [year for year, _ in items]
 
     def anchor_entities(
         self, limitation_id: int, first_year: int
     ) -> dict[str, set[str]]:
+        key = (limitation_id, first_year)
+        cached = self._anchor_cache.get(key)
+        if cached is not None:
+            return cached
+
         diseases: set[str] = set()
         tasks: set[str] = set()
         methods: set[str] = set()
@@ -219,7 +253,9 @@ class _FollowupIndex:
             diseases |= ents.get("Disease", set())
             tasks |= ents.get("Task", set())
             methods |= ents.get("Method", set())
-        return {"Disease": diseases, "Task": tasks, "Method": methods}
+        result = {"Disease": diseases, "Task": tasks, "Method": methods}
+        self._anchor_cache[key] = result
+        return result
 
     def followups(
         self,
@@ -233,8 +269,13 @@ class _FollowupIndex:
         seen: set[str] = set()
         matches: list[tuple[int, str]] = []
         for disease in diseases:
-            for year, pmid in self._followups_by_disease.get(disease, []):
-                if year <= after_year or pmid in seen:
+            items = self._followups_by_disease.get(disease)
+            if not items:
+                continue
+            years = self._followup_years.get(disease, [])
+            idx = bisect.bisect_right(years, after_year)
+            for year, pmid in items[idx:]:
+                if pmid in seen:
                     continue
                 seen.add(pmid)
                 matches.append((year, pmid))
@@ -243,6 +284,7 @@ class _FollowupIndex:
 
 
 _FOLLOWUP_INDEX: _FollowupIndex | None = None
+_BULK_FOLLOWUP_STATS_CACHE: dict[int, dict[str, Any]] | None = None
 
 
 def _get_followup_index() -> _FollowupIndex:
@@ -253,8 +295,9 @@ def _get_followup_index() -> _FollowupIndex:
 
 
 def reset_followup_index() -> None:
-    global _FOLLOWUP_INDEX
+    global _FOLLOWUP_INDEX, _BULK_FOLLOWUP_STATS_CACHE
     _FOLLOWUP_INDEX = None
+    _BULK_FOLLOWUP_STATS_CACHE = None
 
 
 def compute_resolution_signal(
@@ -312,16 +355,48 @@ def compute_resolution_signal(
     }
 
 
+def _profiles_for_resolution(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed = config.GAP_LIFECYCLE_RESOLUTION_STATUSES
+    if not allowed:
+        return profiles
+    return [p for p in profiles if p.get("temporal_status") in allowed]
+
+
 def compute_limitation_gap_status(
     focus: str | None = None,
 ) -> list[dict[str, Any]]:
-    reset_followup_index()
-    index = _get_followup_index()
-    profiles = compute_limitation_temporal_profiles(focus=focus)
+    """Temporal + resolution rows for agent tools (bulk follow-up stats, not per-row scan)."""
+    from db.schema import get_limitation_temporal_rows
+
+    cached = get_limitation_temporal_rows(
+        focus=focus,
+        temporal_statuses=sorted(config.GAP_LIFECYCLE_RESOLUTION_STATUSES),
+    )
+    if cached:
+        profiles = cached
+    else:
+        profiles = compute_limitation_temporal_profiles(focus=focus)
+
+    targets = _profiles_for_resolution(profiles)
+    stats_map = _bulk_followup_stats()
     rows: list[dict[str, Any]] = []
-    for profile in profiles:
-        signal = compute_resolution_signal(profile, index=index)
-        rows.append({**profile, **signal})
+    for profile in targets:
+        stat = stats_map.get(profile["limitation_id"], {})
+        followup_cnt = int(stat.get("followup_paper_cnt") or 0)
+        first_fu = stat.get("first_followup_year")
+        resolution_signal = _classify_resolution_signal(
+            profile.get("first_year"),
+            profile.get("last_year"),
+            followup_cnt,
+            first_fu,
+        )
+        rows.append({
+            **profile,
+            "followup_paper_cnt": followup_cnt,
+            "first_followup_year": first_fu,
+            "resolution_signal": resolution_signal,
+        })
+
     rows.sort(
         key=lambda r: (
             {"moderate": 3, "weak": 2, "none": 1}.get(r["resolution_signal"], 0),
@@ -332,14 +407,263 @@ def compute_limitation_gap_status(
     return rows[: config.TOOL_TOP_N]
 
 
+def _resolution_status_filter_sql(alias: str = "lt") -> str:
+    allowed = config.GAP_LIFECYCLE_RESOLUTION_STATUSES
+    if not allowed:
+        return ""
+    placeholders = ",".join("?" * len(allowed))
+    return f" AND {alias}.temporal_status IN ({placeholders})"
+
+
+def _load_followup_by_disease() -> tuple[
+    dict[str, list[tuple[int, str]]], dict[str, list[int]]
+]:
+    """Preload follow-up papers grouped by disease (one scan)."""
+    rows = _q(
+        """
+        SELECT DISTINCT p.pmid, p.year, ed.name AS disease
+        FROM papers p
+        JOIN relations rd ON rd.source_pmid = p.pmid
+        JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
+        WHERE p.year IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM relations rm
+              JOIN entities em ON rm.object_id = em.id
+              WHERE rm.source_pmid = p.pmid
+                AND em.type IN ('Task', 'Method')
+                AND rm.evidence_section IN ('results', 'methods')
+          )
+        ORDER BY ed.name, p.year, p.pmid
+        """
+    )
+    by_disease: dict[str, list[tuple[int, str]]] = {}
+    years_map: dict[str, list[int]] = {}
+    for row in rows:
+        disease = row["disease"]
+        by_disease.setdefault(disease, []).append((int(row["year"]), row["pmid"]))
+    for disease, items in by_disease.items():
+        years_map[disease] = [year for year, _ in items]
+    return by_disease, years_map
+
+
+def _load_anchor_diseases_by_limitation() -> dict[int, tuple[int, int | None, set[str]]]:
+    """limitation_id -> (first_year, last_year, diseases on early anchor papers)."""
+    allowed = tuple(config.GAP_LIFECYCLE_RESOLUTION_STATUSES)
+    status_filter = _resolution_status_filter_sql("lt")
+    params: list[Any] = list(allowed) if allowed else []
+
+    rows = _q(
+        f"""
+        SELECT lt.limitation_id,
+               lt.first_year,
+               lt.last_year,
+               ed.name AS disease
+        FROM limitation_temporal lt
+        JOIN relations r ON r.object_id = lt.limitation_id
+            AND r.relation = 'REPORTS_LIMITATION'
+        JOIN papers p ON p.pmid = r.source_pmid
+        JOIN relations rd ON rd.source_pmid = r.source_pmid
+        JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
+        WHERE p.year <= lt.first_year + 1
+          {status_filter}
+          AND EXISTS (
+              SELECT 1 FROM relations rm
+              JOIN entities em ON rm.object_id = em.id
+              WHERE rm.source_pmid = r.source_pmid
+                AND em.type IN ('Method', 'Task')
+          )
+        """,
+        tuple(params),
+    )
+    out: dict[int, tuple[int, int | None, set[str]]] = {}
+    for row in rows:
+        lid = int(row["limitation_id"])
+        if lid not in out:
+            out[lid] = (int(row["first_year"]), row.get("last_year"), set())
+        out[lid][2].add(row["disease"])
+    return out
+
+
+def _followup_stats_merged(
+    diseases: set[str],
+    after_year: int,
+    followup_by_disease: dict[str, list[tuple[int, str]]],
+    followup_years: dict[str, list[int]],
+) -> tuple[int, int | None]:
+    """Count all distinct follow-up pmids after after_year and earliest matching year."""
+    import heapq
+
+    if not diseases:
+        return 0, None
+
+    heap: list[tuple[int, str, str, int]] = []
+    for disease in diseases:
+        items = followup_by_disease.get(disease)
+        if not items:
+            continue
+        years = followup_years.get(disease, [])
+        idx = bisect.bisect_right(years, after_year)
+        if idx < len(items):
+            year, pmid = items[idx]
+            heapq.heappush(heap, (year, pmid, disease, idx + 1))
+
+    seen: set[str] = set()
+    first_year: int | None = None
+
+    while heap:
+        year, pmid, disease, next_idx = heapq.heappop(heap)
+        items = followup_by_disease[disease]
+
+        if next_idx < len(items):
+            ny, np = items[next_idx]
+            heapq.heappush(heap, (ny, np, disease, next_idx + 1))
+
+        if pmid in seen:
+            continue
+        seen.add(pmid)
+        if first_year is None or year < first_year:
+            first_year = year
+
+    return len(seen), first_year
+
+
+def _bulk_followup_stats(
+    *, verbose: bool = False, use_cache: bool = True
+) -> dict[int, dict[str, Any]]:
+    """Multi-step: preload followup index + anchor diseases, aggregate in Python."""
+    global _BULK_FOLLOWUP_STATS_CACHE
+    if use_cache and _BULK_FOLLOWUP_STATS_CACHE is not None:
+        return _BULK_FOLLOWUP_STATS_CACHE
+
+    t0 = time.time()
+    if verbose:
+        _log("  Loading follow-up papers by disease…")
+    followup_by_disease, followup_years = _load_followup_by_disease()
+    if verbose:
+        _log(
+            f"  {sum(len(v) for v in followup_by_disease.values())} rows, "
+            f"{len(followup_by_disease)} diseases in {time.time() - t0:.1f}s"
+        )
+
+    t1 = time.time()
+    if verbose:
+        _log("  Loading anchor diseases for eligible limitations…")
+    anchors = _load_anchor_diseases_by_limitation()
+    if verbose:
+        _log(f"  {len(anchors)} limitations in {time.time() - t1:.1f}s")
+
+    t2 = time.time()
+    if verbose:
+        _log("  Aggregating follow-up stats…")
+    result: dict[int, dict[str, Any]] = {}
+    for i, (limitation_id, (first_year, last_year, diseases)) in enumerate(
+        anchors.items(), start=1
+    ):
+        cnt, first_fu = _followup_stats_merged(
+            diseases, first_year, followup_by_disease, followup_years
+        )
+        result[limitation_id] = {
+            "limitation_id": limitation_id,
+            "first_year": first_year,
+            "last_year": last_year,
+            "followup_paper_cnt": cnt,
+            "first_followup_year": first_fu,
+        }
+        if verbose and i % 1000 == 0:
+            _log(f"  Aggregated {i}/{len(anchors)}")
+
+    if verbose:
+        _log(f"  Aggregation done in {time.time() - t2:.1f}s")
+    if use_cache:
+        _BULK_FOLLOWUP_STATS_CACHE = result
+    return result
+
+
+def _classify_resolution_signal(
+    first_year: int | None,
+    last_year: int | None,
+    followup_paper_cnt: int,
+    first_followup_year: int | None,
+) -> str:
+    if followup_paper_cnt >= config.GAP_RESOLUTION_MIN_FOLLOWUP:
+        if first_followup_year and last_year and first_followup_year > last_year:
+            return "moderate"
+        if first_followup_year and first_year and first_followup_year > first_year:
+            return "moderate"
+        return "weak"
+    if followup_paper_cnt == 1:
+        return "weak"
+    return "none"
+
+
 def compute_resolution_signal_rows(
     profiles: list[dict[str, Any]],
+    *,
+    verbose: bool = False,
+    use_bulk_sql: bool = True,
 ) -> list[dict[str, Any]]:
     """Build DB rows for limitation_resolution_signals."""
+    targets = _profiles_for_resolution(profiles)
+    if verbose:
+        skipped = len(profiles) - len(targets)
+        _log(
+            f"Resolution targets: {len(targets)} "
+            f"(skipped {skipped} by status filter "
+            f"{sorted(config.GAP_LIFECYCLE_RESOLUTION_STATUSES)})"
+        )
+
+    db_rows: list[dict[str, Any]] = []
+    empty_shared = json.dumps({"diseases": [], "tasks": [], "methods": []})
+
+    if use_bulk_sql:
+        if verbose:
+            _log("  Follow-up resolution (indexed)…")
+        t0 = time.time()
+        stats_map = _bulk_followup_stats(verbose=verbose)
+        if verbose:
+            _log(f"  Resolution stats ready in {time.time() - t0:.1f}s")
+
+        for profile in targets:
+            limitation_id = profile["limitation_id"]
+            row = stats_map.get(limitation_id, {})
+            followup_cnt = int(row.get("followup_paper_cnt") or 0)
+            first_fu = row.get("first_followup_year")
+            signal = _classify_resolution_signal(
+                profile.get("first_year"),
+                profile.get("last_year"),
+                followup_cnt,
+                first_fu,
+            )
+
+            if signal in ("weak", "moderate"):
+                db_rows.append({
+                    "limitation_id": limitation_id,
+                    "signal_type": "topic_followup",
+                    "anchor_pmid": None,
+                    "followup_pmid": None,
+                    "anchor_year": profile.get("first_year"),
+                    "followup_year": first_fu,
+                    "shared_entities": empty_shared,
+                    "confidence": 0.7 if signal == "moderate" else 0.45,
+                })
+
+            if profile.get("temporal_status") == "declining":
+                db_rows.append({
+                    "limitation_id": limitation_id,
+                    "signal_type": "mention_decline",
+                    "anchor_pmid": None,
+                    "followup_pmid": None,
+                    "anchor_year": profile.get("first_year"),
+                    "followup_year": profile.get("last_year"),
+                    "shared_entities": empty_shared,
+                    "confidence": 0.55,
+                })
+        return db_rows
+
     reset_followup_index()
     index = _get_followup_index()
-    db_rows: list[dict[str, Any]] = []
-    for profile in profiles:
+    total = len(targets)
+    for i, profile in enumerate(targets, start=1):
         limitation_id = profile["limitation_id"]
         signal = compute_resolution_signal(profile, index=index)
         shared = signal.get("shared_entities") or {}
@@ -369,6 +693,9 @@ def compute_resolution_signal_rows(
                 "shared_entities": shared_json,
                 "confidence": 0.55,
             })
+
+        if verbose and (i % 500 == 0 or i == total):
+            _log(f"Resolution progress: {i}/{total}")
 
     return db_rows
 
@@ -454,22 +781,65 @@ def compute_combo_gap_temporal(focus: str | None = None) -> list[dict[str, Any]]
     return gaps[:40]
 
 
-def run_gap_lifecycle(*, force: bool = True) -> dict[str, Any]:
+def run_gap_lifecycle(
+    *,
+    force: bool = True,
+    temporal_only: bool = False,
+    verbose: bool = True,
+) -> dict[str, Any]:
     """Batch compute and persist limitation temporal + resolution signals."""
+    t0 = time.time()
     reset_followup_index()
+
+    if verbose:
+        _log("Clearing old lifecycle rows…")
     with get_conn() as conn:
+        conn.execute("PRAGMA synchronous=NORMAL")
         if force:
             conn.execute("DELETE FROM limitation_resolution_signals")
             conn.execute("DELETE FROM limitation_temporal")
         else:
             conn.execute("DELETE FROM limitation_resolution_signals")
 
+    if verbose:
+        _log("Computing temporal profiles…")
     profiles = compute_limitation_temporal_profiles()
-    upsert_limitation_temporal(profiles)
-    resolution_rows = compute_resolution_signal_rows(profiles)
-    insert_limitation_resolution_signals(resolution_rows)
+    if verbose:
+        _log(f"  {len(profiles)} profiles in {time.time() - t0:.1f}s")
+
+    def _progress(done: int, total: int) -> None:
+        if verbose:
+            _log(f"  Upsert progress: {done}/{total}")
+
+    t1 = time.time()
+    if verbose:
+        _log("Writing limitation_temporal…")
+    upsert_limitation_temporal(profiles, on_progress=_progress)
+    if verbose:
+        _log(f"  Done in {time.time() - t1:.1f}s")
+
+    resolution_rows: list[dict[str, Any]] = []
+    if not temporal_only:
+        t2 = time.time()
+        if verbose:
+            _log("Computing resolution signals…")
+        resolution_rows = compute_resolution_signal_rows(profiles, verbose=verbose)
+        if verbose:
+            _log(f"  {len(resolution_rows)} signals in {time.time() - t2:.1f}s")
+
+        t3 = time.time()
+        if verbose:
+            _log("Writing limitation_resolution_signals…")
+        insert_limitation_resolution_signals(resolution_rows, on_progress=_progress)
+        if verbose:
+            _log(f"  Done in {time.time() - t3:.1f}s")
+    elif verbose:
+        _log("Skipped resolution (--temporal-only)")
 
     stats = limitation_lifecycle_stats()
     stats["profiles_computed"] = len(profiles)
     stats["signals_computed"] = len(resolution_rows)
+    stats["elapsed_seconds"] = round(time.time() - t0, 1)
+    if verbose:
+        _log(f"Finished in {stats['elapsed_seconds']}s")
     return stats

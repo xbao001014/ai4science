@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 import config
+from analysis.focus_filter import focus_sql_clause
 from analysis.impact_scoring import aggregate_paper_impact
 from db.schema import get_conn
 
@@ -18,9 +19,7 @@ def _q(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def _focus_clause(column: str, focus: str | None) -> str:
-    if not focus:
-        return ""
-    return f" AND LOWER({column}) LIKE LOWER('%{focus}%')"
+    return focus_sql_clause(column, focus)
 
 
 def tool_author_stated_gaps(focus: str | None = None) -> dict:
