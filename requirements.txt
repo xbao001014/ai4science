@@ -24,6 +24,7 @@ neo4j>=5.20.0             # optional, only needed if USE_NEO4J=true
 
 # Visualization
 pyvis>=0.3.2
+plotly>=5.22.0
 
 # Full-text workflow (optional — fetch-fulltext tier 2)
 scansci-pdf>=0.1.0

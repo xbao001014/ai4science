@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 import config
-from analysis.focus_filter import focus_sql_clause
+from analysis.focus_filter import focus_pmid_in_clause, focus_sql_clause, normalize_focus
 from analysis.impact_scoring import aggregate_paper_impact
 from db.schema import get_conn
 
@@ -82,9 +82,110 @@ def tool_disease_task_coverage(focus: str | None = None) -> dict:
     return {"description": desc, "data": rows}
 
 
+def tool_corpus_focus_coverage(focus: str | None = None) -> dict:
+    """Corpus scale for a focus topic vs full KG (call before gap claims)."""
+    from db.schema import db_stats
+
+    global_stats = db_stats()
+    f = normalize_focus(focus)
+    if not f:
+        return {
+            "description": (
+                "Full-corpus statistics (no focus filter). "
+                "Provide focus to compare topic subset vs whole KG."
+            ),
+            "focus": None,
+            "global": {
+                "papers": global_stats["papers"],
+                "extracted": global_stats["extracted"],
+                "fulltext_available": global_stats["fulltext_available"],
+                "relations_fulltext": global_stats["relations_fulltext"],
+            },
+            "focus_subset": None,
+            "coverage_ratio": None,
+            "analysis_ready": False,
+            "warnings": ["No focus keyword — subset stats not computed."],
+        }
+
+    pmid_clause = focus_pmid_in_clause("p.pmid", f)
+    row = _q(f"""
+        SELECT COUNT(DISTINCT p.pmid) AS focus_papers,
+               SUM(CASE WHEN p.extraction_done = 1 THEN 1 ELSE 0 END) AS focus_extracted
+        FROM papers p
+        WHERE 1=1 {pmid_clause}
+    """)
+    counts = row[0] if row else {"focus_papers": 0, "focus_extracted": 0}
+    focus_papers = int(counts.get("focus_papers") or 0)
+    focus_extracted = int(counts.get("focus_extracted") or 0)
+
+    lim_cnt = _q(f"""
+        SELECT COUNT(*) AS cnt FROM relations r
+        WHERE r.relation = 'REPORTS_LIMITATION'
+        {focus_pmid_in_clause('r.source_pmid', f)}
+    """)
+    method_cnt = _q(f"""
+        SELECT COUNT(DISTINCT e.id) AS cnt
+        FROM relations r
+        JOIN entities e ON r.object_id = e.id AND e.type = 'Method'
+        WHERE r.relation = 'APPLIES_METHOD'
+        {focus_pmid_in_clause('r.source_pmid', f)}
+    """)
+    disease_cnt = _q(f"""
+        SELECT COUNT(DISTINCT e.id) AS cnt
+        FROM relations r
+        JOIN entities e ON r.object_id = e.id AND e.type = 'Disease'
+        WHERE r.relation = 'TARGETS_DISEASE'
+        {focus_sql_clause('e.name', f)}
+    """)
+    top_diseases = _q(f"""
+        SELECT e.name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
+        FROM relations r
+        JOIN entities e ON r.object_id = e.id AND e.type = 'Disease'
+        WHERE r.relation = 'TARGETS_DISEASE' {focus_sql_clause('e.name', f)}
+        GROUP BY e.id
+        ORDER BY paper_cnt DESC
+        LIMIT 5
+    """)
+
+    ratio = round(focus_papers / max(global_stats["papers"], 1), 4)
+    warnings: list[str] = []
+    if focus_papers < 30:
+        warnings.append(
+            f"Focus subset has only {focus_papers} papers — "
+            "temporal/combo statistics are low-confidence; do not cite corpus-wide totals."
+        )
+    if focus_papers == 0:
+        warnings.append("No papers match this focus — gaps may reflect missing extraction, not true absence.")
+
+    return {
+        "description": (
+            f"Corpus coverage for focus '{f}' vs full KG. "
+            "Use focus_subset counts in gap claims; never substitute global.papers."
+        ),
+        "focus": f,
+        "global": {
+            "papers": global_stats["papers"],
+            "extracted": global_stats["extracted"],
+            "fulltext_available": global_stats["fulltext_available"],
+        },
+        "focus_subset": {
+            "papers": focus_papers,
+            "extracted": focus_extracted,
+            "limitation_relations": int(lim_cnt[0]["cnt"]) if lim_cnt else 0,
+            "method_entities": int(method_cnt[0]["cnt"]) if method_cnt else 0,
+            "disease_entities": int(disease_cnt[0]["cnt"]) if disease_cnt else 0,
+            "top_diseases": top_diseases,
+        },
+        "coverage_ratio": ratio,
+        "analysis_ready": focus_papers >= 30,
+        "warnings": warnings,
+    }
+
+
 def tool_method_disease_combo_gap(focus: str | None = None) -> dict:
-    mf = _focus_clause("e.name", focus)
-    df = _focus_clause("e.name", focus)
+    f = normalize_focus(focus)
+    df = focus_sql_clause("e.name", f)
+    mf = focus_pmid_in_clause("r.source_pmid", f) if f else ""
     top_methods = _q(f"""
         SELECT e.name
         FROM relations r JOIN entities e ON r.object_id=e.id
@@ -172,14 +273,18 @@ def tool_metric_evidence_quality(focus: str | None = None) -> dict:
 
 
 def tool_limitation_temporal_profile(focus: str | None = None) -> dict:
+    from analysis.focus_filter import normalize_focus
     from analysis.gap_lifecycle import compute_limitation_temporal_profiles
     from db.schema import get_limitation_temporal_rows
 
-    cached = get_limitation_temporal_rows(focus=focus, limit=config.TOOL_TOP_N)
-    if cached:
-        rows = cached
+    f = normalize_focus(focus)
+    if f:
+        rows = compute_limitation_temporal_profiles(focus=f)[: config.TOOL_TOP_N]
     else:
-        rows = compute_limitation_temporal_profiles(focus=focus)[: config.TOOL_TOP_N]
+        cached = get_limitation_temporal_rows(focus=None, limit=config.TOOL_TOP_N)
+        rows = cached if cached else compute_limitation_temporal_profiles(focus=None)[
+            : config.TOOL_TOP_N
+        ]
     desc = (
         "Limitation temporal profile: first/last year, recent_ratio, temporal_status "
         "(persistent/emerging/declining/stable)"
@@ -362,6 +467,7 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
 # ── Tool registry for LLM agents ─────────────────────────────────────────────
 
 SQL_TOOLS: dict[str, Callable[..., dict]] = {
+    "corpus_focus_coverage": tool_corpus_focus_coverage,
     "author_stated_gaps": tool_author_stated_gaps,
     "limitation_impact_rank": tool_limitation_impact_rank,
     "limitation_temporal_profile": tool_limitation_temporal_profile,
@@ -376,6 +482,23 @@ SQL_TOOLS: dict[str, Callable[..., dict]] = {
 }
 
 TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "corpus_focus_coverage",
+            "description": (
+                "Compare focus-topic paper counts vs full KG. "
+                "Call FIRST when a focus is set — never cite global.papers for topic-specific claims."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": "string", "description": "Disease/topic keyword"},
+                },
+                "required": [],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

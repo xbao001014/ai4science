@@ -83,11 +83,11 @@ def compute_limitation_temporal_profiles(
     """Build limitation temporal rows from relations + papers (live compute)."""
     midpoint = corpus_midpoint()
     recent_cutoff = recent_year_cutoff()
-    focus_sql = ""
+    from analysis.focus_filter import focus_pmid_in_clause, normalize_focus
+
+    f = normalize_focus(focus)
+    focus_sql = focus_pmid_in_clause("r.source_pmid", f)
     params: list[Any] = [midpoint, recent_cutoff]
-    if focus:
-        focus_sql = " AND LOWER(e.name) LIKE LOWER(?)"
-        params.append(f"%{focus}%")
 
     base_rows = _q(
         f"""
@@ -366,16 +366,18 @@ def compute_limitation_gap_status(
     focus: str | None = None,
 ) -> list[dict[str, Any]]:
     """Temporal + resolution rows for agent tools (bulk follow-up stats, not per-row scan)."""
+    from analysis.focus_filter import normalize_focus
     from db.schema import get_limitation_temporal_rows
 
-    cached = get_limitation_temporal_rows(
-        focus=focus,
-        temporal_statuses=sorted(config.GAP_LIFECYCLE_RESOLUTION_STATUSES),
-    )
-    if cached:
-        profiles = cached
+    f = normalize_focus(focus)
+    if f:
+        profiles = compute_limitation_temporal_profiles(focus=f)
     else:
-        profiles = compute_limitation_temporal_profiles(focus=focus)
+        cached = get_limitation_temporal_rows(
+            focus=None,
+            temporal_statuses=sorted(config.GAP_LIFECYCLE_RESOLUTION_STATUSES),
+        )
+        profiles = cached if cached else compute_limitation_temporal_profiles(focus=None)
 
     targets = _profiles_for_resolution(profiles)
     stats_map = _bulk_followup_stats()
@@ -702,11 +704,15 @@ def compute_resolution_signal_rows(
 
 def compute_combo_gap_temporal(focus: str | None = None) -> list[dict[str, Any]]:
     """Method×disease combos with temporal gap_phase."""
-    mf = ""
-    df = ""
-    if focus:
-        mf = f" AND LOWER(e.name) LIKE LOWER('%{focus}%')"
-        df = mf
+    from analysis.focus_filter import (
+        focus_pmid_in_clause,
+        focus_sql_clause,
+        normalize_focus,
+    )
+
+    f = normalize_focus(focus)
+    mf = focus_pmid_in_clause("r.source_pmid", f) if f else ""
+    df = focus_sql_clause("e.name", f) if f else ""
 
     top_methods = _q(f"""
         SELECT e.name

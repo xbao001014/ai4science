@@ -99,6 +99,11 @@ from debate_labels import (  # noqa: E402
     humanize_debate_report,
     role_display,
 )
+from analysis.gap_tools import tool_method_disease_combo_gap  # noqa: E402
+from viz.gap_viz import (  # noqa: E402
+    build_gap_viz_bundle,
+    plotly_available,
+)
 
 init_db()
 
@@ -111,6 +116,7 @@ ROLE_COLOR = {
 }
 
 TOOL_META: dict[str, dict] = {
+    "corpus_focus_coverage": {"label": "Focus Corpus Coverage", "category": "Corpus Diagnostics"},
     "author_stated_gaps": {"label": "Author-Stated Gaps", "category": "Full-Text Evidence"},
     "limitation_impact_rank": {"label": "Limitation × Impact", "category": "Impact Weighting"},
     "limitation_temporal_profile": {
@@ -136,6 +142,7 @@ TOOL_META: dict[str, dict] = {
 }
 
 CATEGORY_COLOR = {
+    "Corpus Diagnostics": "#009688",
     "Full-Text Evidence": "#795548",
     "Temporal Gap": "#607d8b",
     "Coverage Gap": "#d62728",
@@ -674,6 +681,96 @@ def role_badge(role: str) -> str:
     )
 
 
+def render_gap_visualization_tab(
+    events: list[dict],
+    *,
+    report_text: str = "",
+    focus_hint: str = "",
+) -> None:
+    """MVP charts: debate funnel, method×disease heatmap, lit×data scatter, tool treemap."""
+    st.subheader("Gap Discovery Visualizations")
+    st.caption(
+        "Charts summarize the debate session and tool evidence. "
+        "Lower-left on the scatter plot ≈ large literature gap + ample cohort data."
+    )
+
+    if not plotly_available():
+        st.error(
+            "Missing **plotly**. Install with:\n\n"
+            "```powershell\n"
+            "..\\.venv\\Scripts\\pip.exe install plotly\n"
+            "```"
+        )
+        return
+
+    focus = (focus_hint or "").strip() or None
+    use_corpus_preview = st.checkbox(
+        "Fill missing charts from live corpus tools",
+        value=not events,
+        help="When debate did not call combo/cross tools, query the KG directly.",
+    )
+
+    def _combo_fetch() -> list[dict]:
+        return tool_method_disease_combo_gap(focus=focus).get("gaps", [])
+
+    def _cross_fetch() -> list[dict]:
+        return tool_literature_data_cross_matrix(focus=focus).get("data", [])
+
+    bundle = build_gap_viz_bundle(
+        events,
+        report_text=report_text,
+        focus=focus,
+        tool_meta=TOOL_META,
+        category_colors=CATEGORY_COLOR,
+        combo_fetcher=_combo_fetch if use_corpus_preview else None,
+        cross_fetcher=_cross_fetch if use_corpus_preview else None,
+    )
+
+    stats = bundle["funnel_stats"]
+    if events or report_text:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Scout candidates", stats.get("scout_candidates", 0))
+        c2.metric("Verified", stats.get("verified", 0))
+        c3.metric("Weak evidence", stats.get("weak_evidence", 0))
+        c4.metric("False gaps", stats.get("false_gaps", 0))
+        c5.metric("Final gaps", stats.get("final_gaps", 0))
+
+    col_l, col_r = st.columns(2)
+    with col_l:
+        if bundle["funnel_fig"] is not None:
+            st.plotly_chart(bundle["funnel_fig"], use_container_width=True)
+        elif not events:
+            st.info("Run Gap Debate to populate the debate funnel.")
+        else:
+            st.info("Not enough debate data for funnel chart.")
+
+    with col_r:
+        if bundle["treemap_fig"] is not None:
+            st.plotly_chart(bundle["treemap_fig"], use_container_width=True)
+        else:
+            st.info("Tool treemap appears after agents call KG tools.")
+
+    if bundle["combo_fig"] is not None:
+        st.plotly_chart(bundle["combo_fig"], use_container_width=True)
+    elif use_corpus_preview:
+        st.warning("No method × disease combo data (KG may be empty — run extract first).")
+    else:
+        st.info(
+            "Method × disease heatmap needs `method_disease_combo_gap` in the debate, "
+            "or enable corpus preview above."
+        )
+
+    if bundle["cross_fig"] is not None:
+        st.plotly_chart(bundle["cross_fig"], use_container_width=True)
+    elif use_corpus_preview:
+        st.warning("No literature × data cross rows (bootstrap landscape + extract KG first).")
+    else:
+        st.info(
+            "Lit × data scatter needs `literature_data_cross_matrix` during debate, "
+            "or enable corpus preview."
+        )
+
+
 # Session state
 for _k, _v in [
     ("events", []), ("report", ""), ("run_focus", ""), ("run_top_n", 6),
@@ -829,8 +926,9 @@ if run_button:
 
 st.divider()
 
-tab_debate, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs([
+tab_debate, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs([
     "Debate Process",
+    "Visualization",
     "Evidence & Literature",
     "Gap Report",
     "Data Feasibility (Fangxin LIS)",
@@ -844,6 +942,8 @@ if not st.session_state["events"]:
             "The system runs **Opportunity Scout** → **Evidence Reviewer** → **Final Synthesizer**."
         )
         render_debate_role_guide()
+    with tab_viz:
+        render_gap_visualization_tab([], focus_hint=focus_input)
     with tab_evidence:
         st.info("Run Gap Debate to populate evidence and literature.")
     with tab_report:
@@ -911,6 +1011,13 @@ elif st.session_state["events"]:
                         render_feasibility_result(rdict)
                     else:
                         render_tool_result(name, rdict)
+
+    with tab_viz:
+        render_gap_visualization_tab(
+            st.session_state["events"],
+            report_text=st.session_state.get("report", ""),
+            focus_hint=st.session_state.get("run_focus") or focus_input,
+        )
 
     with tab_evidence:
         evidence = extract_evidence(st.session_state["events"])

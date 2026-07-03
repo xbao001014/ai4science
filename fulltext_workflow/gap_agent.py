@@ -32,6 +32,7 @@ from analysis.agent_utils import (
 )
 from analysis.graph_tools import GAP_TOOLS, GAP_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import build_gap_feasibility_tools
+from analysis.focus_filter import normalize_focus
 from db.schema import db_stats, init_db
 
 init_gap_registry()
@@ -61,9 +62,9 @@ _MODERATOR_FOCUS_EXTRA = """\
 
 
 def _system_with_focus(base: str, focus: str | None, *, role: str) -> str:
-    if not focus or not str(focus).strip():
+    foc = normalize_focus(focus)
+    if not foc:
         return base
-    foc = str(focus).strip()
     extra = _FOCUS_MANDATE.format(focus=foc)
     if role == "skeptic":
         extra += _SKEPTIC_FOCUS_EXTRA.format(focus=foc)
@@ -73,13 +74,15 @@ def _system_with_focus(base: str, focus: str | None, *, role: str) -> str:
 
 
 def _focus_hint(focus: str | None) -> str:
-    if not focus or not str(focus).strip():
+    foc = normalize_focus(focus)
+    if not foc:
         return "未指定聚焦方向，进行 pathomics/radiomics 全语料分析。"
-    foc = str(focus).strip()
     return (
         f"【强制聚焦】{foc}\n"
         f"- 仅分析与此主题直接相关的研究空白。\n"
+        f"- 必须先调用 corpus_focus_coverage，再调用其他工具。\n"
         f"- 工具调用必须带 focus=\"{foc}\"。\n"
+        f"- 禁止用全库论文总数替代 focus 子集规模。\n"
         f"- 禁止输出与「{foc}」无关的候选（如其他疾病领域的空白）。"
     )
 
@@ -91,12 +94,14 @@ OPTIMIST_SYSTEM_PROMPT = """\
 results 章节 metric 证据、方法-疾病组合空白、图结构分析）。
 
 工具使用规则：
+- 若指定了 focus，**第一个工具调用必须是 corpus_focus_coverage**；摘要中必须写明 focus_subset.papers 与 global.papers 的区别。
 - 调用至少 5 个工具，其中至少 1 个 graph_* 图遍历工具。
 - 优先使用 limitation_temporal_profile / limitation_gap_status（局限时间画像 + 跟进信号）。
 - 配合 author_stated_gaps / limitation_impact_rank（作者自述局限 + 引用影响力）。
 - 使用 combo_gap_temporal 识别后期出现跟进的方法×疾病组合。
 - 使用 hotspot_entities、recent_highcite_papers 识别高影响力前沿方向。
 - 所有定量陈述必须引用工具返回的确切数值（含 first_year、recent_ratio、resolution_signal、avg_cite、impact_score）。
+- focus 子集 papers < 30 时，禁止声称 persistent 时间趋势或引用全库规模；须标注「语料覆盖不足」。
 
 输出格式（Markdown，禁止 emoji）：
 
@@ -125,14 +130,21 @@ SKEPTIC_SYSTEM_PROMPT = """\
 你的职责是交叉验证 Optimist 提出的候选空白，识别假空白、证据不足和过度推断。
 
 审查原则：
+- 若指定 focus，**必须先调用 corpus_focus_coverage**，并在 corpus_limitations 中引用 focus_subset 规模。
 - 独立调用知识图谱工具（至少 3 个）核实 Optimist 的关键数据声明。
 - 必须调用 limitation_temporal_profile 与 limitation_gap_status 核查时间维度。
 - 对 temporal_status=declining 且 resolution_signal=moderate 的 limitation，不得标为 persistent gap。
 - 对 temporal_status=persistent 且 resolution_signal=none 的 limitation，可提升置信度。
 - 对每条空白检查支撑论文数、avg_cite、impact_tier；单篇低引论文不得过度 extrapolate。
-- 注意语料局限：extracted 论文数可能远小于 PubMed 总量，combo gap 仅反映已提取子集。
+- 注意语料局限：global.papers 是全库规模；focus 子集可能仅数十篇，不得混用。
 - 若 citation/IF 数据缺失（impact_tier=Unknown），在 corpus_limitations 中注明需运行 enrich-s2 / import-if。
-- 区分「真空白」与「尚未提取/尚未入库」。
+- 区分「真空白」「语料未覆盖」「证据不足」三者，分类规则见下。
+
+分类规则（严格执行）：
+- **false_gaps**：Optimist 引用的数字与工具结果矛盾；或把全库规模当成 focus 证据；或与 graph_disease_method_reach 等工具直接反驳。
+- **weak_evidence_gaps**：临床方向合理，但 focus 子集过小、工具数据稀疏、或仅能基于「未找到」推断；不得标为 false。
+- **verified_gaps**：Optimist 每条定量声明均能在本轮工具输出中找到对应字段。
+
 - 质疑小样本 extrapolation 和未探索组合在语料外是否已有大量工作。
 
 输出格式（严格 JSON，包裹在 ```json ... ``` 代码块内）：
@@ -223,18 +235,36 @@ MODERATOR_SYSTEM_PROMPT = """\
 """
 
 
-def _corpus_context() -> str:
+def _corpus_context(focus: str | None = None) -> str:
+    from analysis.gap_tools import tool_corpus_focus_coverage
+
     stats = db_stats()
-    return (
-        f"\n\n语料统计（必须在分析中引用）：\n"
-        f"- PubMed 论文总数: {stats['papers']}\n"
-        f"- 全文可用: {stats['fulltext_available']}\n"
-        f"- 已 LLM 提取: {stats['extracted']}\n"
-        f"- S2 引用已 enrichment: {stats.get('s2_enriched', 0)}\n"
-        f"- 期刊 IF 已导入: {stats.get('journals_with_if', 0)}\n"
-        f"- 全文关系数: {stats['relations_fulltext']}\n"
-        f"- 摘要关系数: {stats['relations_abstract']}\n"
-    )
+    coverage = tool_corpus_focus_coverage(focus=focus)
+    lines = [
+        "\n\n语料统计（必须在分析中引用）：",
+        f"- 全库 PubMed 论文总数: {stats['papers']}",
+        f"- 全库全文可用: {stats['fulltext_available']}",
+        f"- 全库已 LLM 提取: {stats['extracted']}",
+        f"- S2 引用已 enrichment: {stats.get('s2_enriched', 0)}",
+        f"- 全文关系数: {stats['relations_fulltext']}",
+    ]
+
+    foc = normalize_focus(focus)
+    sub = coverage.get("focus_subset")
+    if foc and sub:
+        lines.extend([
+            f"\n**Focus「{foc}」子语料（topic-specific 声明只能用下列数字）**：",
+            f"- Focus 论文数: {sub['papers']}（全库 {stats['papers']}，"
+            f"占比 {coverage.get('coverage_ratio', 0):.2%}）",
+            f"- Focus 已提取: {sub.get('extracted', 0)}",
+            f"- Focus limitation 关系数: {sub.get('limitation_relations', 0)}",
+            f"- Focus method 实体数: {sub.get('method_entities', 0)}",
+            f"- analysis_ready (>=30 papers): {coverage.get('analysis_ready', False)}",
+        ])
+        for w in coverage.get("warnings") or []:
+            lines.append(f"- 警告: {w}")
+
+    return "\n".join(lines)
 
 
 def stream_gap_debate_agent(
@@ -244,6 +274,7 @@ def stream_gap_debate_agent(
     accept_score: float = ACCEPT_DEBATE_SCORE,
 ) -> Generator[dict, None, None]:
     """Debate multi-agent gap identification loop."""
+    focus = normalize_focus(focus)
     yield {
         "type": "start",
         "focus": focus,
@@ -251,7 +282,7 @@ def stream_gap_debate_agent(
         "max_debate_rounds": max_debate_rounds,
     }
 
-    corpus_ctx = _corpus_context()
+    corpus_ctx = _corpus_context(focus)
     focus_hint = _focus_hint(focus)
     debate_tools = bind_tools_with_focus(GAP_TOOLS, focus)
     moderator_tools = bind_tools_with_focus(GAP_FEASIBILITY_TOOLS, focus)
@@ -274,10 +305,16 @@ def stream_gap_debate_agent(
         yield {"type": "phase_start", "round": round_num, "role": "optimist"}
 
         if round_num == 1:
+            coverage_first = (
+                "第一步必须调用 corpus_focus_coverage（若已指定 focus）。\n"
+                if focus
+                else ""
+            )
             opt_user = (
                 f"请识别 {top_n} 条 pathomics/radiomics 研究空白候选。\n"
+                f"{coverage_first}"
                 f"{focus_hint}\n{corpus_ctx}\n"
-                "先调用至少 5 个工具（含 1 个 graph_*），再输出候选空白 Markdown。"
+                "再调用至少 5 个工具（含 1 个 graph_*），最后输出候选空白 Markdown。"
             )
         else:
             opt_user = (
@@ -312,7 +349,9 @@ def stream_gap_debate_agent(
             f"请交叉验证以下 Optimist 候选空白（第 {round_num} 轮）：\n\n"
             f"{optimist_proposal}\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
-            "先调用至少 3 个工具核实关键声明，再输出规定 JSON。"
+            + ("先调用 corpus_focus_coverage，再调用至少 3 个工具核实关键声明。\n"
+               if focus else "先调用至少 3 个工具核实关键声明，")
+            + "最后输出规定 JSON（区分 verified / weak_evidence / false）。"
         )
         ske_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(SKEPTIC_SYSTEM_PROMPT, focus, role="skeptic")},
