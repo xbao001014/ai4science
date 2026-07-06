@@ -88,6 +88,21 @@ SEARCH_YEAR_END = int(os.getenv("FULLTEXT_SEARCH_YEAR_END", str(SEARCH_YEAR_END)
 # 0 = disabled (full year-window search). CLI --since-days overrides this.
 FETCH_EDAT_DAYS: int = int(os.getenv("FETCH_EDAT_DAYS", "0"))
 
+# Weekly hotspot detection (papers.created_at ingest window)
+def _default_hotspot_window() -> int:
+    explicit = os.getenv("HOTSPOT_WINDOW_DAYS")
+    if explicit:
+        return int(explicit)
+    if FETCH_EDAT_DAYS > 0:
+        return FETCH_EDAT_DAYS
+    return 14
+
+
+HOTSPOT_WINDOW_DAYS: int = _default_hotspot_window()
+HOTSPOT_PRIOR_WINDOW_DAYS: int = int(os.getenv("HOTSPOT_PRIOR_WINDOW_DAYS", "14"))
+HOTSPOT_MIN_RECENT_PAPERS: int = int(os.getenv("HOTSPOT_MIN_RECENT_PAPERS", "2"))
+HOTSPOT_TOP_N: int = int(os.getenv("HOTSPOT_TOP_N", "20"))
+
 
 def search_scope_label() -> str:
     n = len(get_enabled_groups())

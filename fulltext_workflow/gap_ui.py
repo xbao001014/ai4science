@@ -139,6 +139,7 @@ TOOL_META: dict[str, dict] = {
     "feasibility_assess": {"label": "V-01 Feasibility Assess", "category": "Data Feasibility"},
     "data_gap_analysis": {"label": "V-02 Data Gap Analysis", "category": "Data Feasibility"},
     "literature_data_cross_matrix": {"label": "Lit × Data Matrix", "category": "Data Feasibility"},
+    "emerging_gap_opportunities": {"label": "Weekly Hot × Gap", "category": "Weekly Hotspot"},
 }
 
 CATEGORY_COLOR = {
@@ -150,6 +151,7 @@ CATEGORY_COLOR = {
     "Graph Analysis": "#e377c2",
     "Impact Weighting": "#ff9800",
     "Data Feasibility": "#17a2b8",
+    "Weekly Hotspot": "#8bc34a",
 }
 
 IDEA_TOOL_META: dict[str, str] = {
@@ -771,6 +773,129 @@ def render_gap_visualization_tab(
         )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_weekly_hotspot_payload(_version: int, window_days: int) -> dict:
+    from analysis.weekly_hotspot import (
+        compare_with_previous_week,
+        compute_emerging_gap_opportunities,
+        compute_weekly_hotspots,
+    )
+
+    payload = compute_weekly_hotspots(window_days=window_days)
+    payload["week_over_week"] = compare_with_previous_week(payload)
+    payload["emerging_gap_opportunities"] = compute_emerging_gap_opportunities(
+        window_days=window_days,
+        payload=payload,
+    )
+    return payload
+
+
+def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
+    """Weekly ingest hotspots, WoW deltas, gap opportunities, optional LLM brief."""
+    from analysis.hotspot_brief import save_hotspot_brief
+    from analysis.weekly_hotspot import (
+        generate_hotspot_report,
+        list_weekly_hotspot_weeks,
+        save_hotspot_report,
+        week_id,
+    )
+    from db.schema import weekly_hotspot_stats
+
+    st.subheader("Weekly Research Hotspots")
+    st.caption(
+        f"Ingest window: **{config.HOTSPOT_WINDOW_DAYS}d** (`papers.created_at`) · "
+        "Week-over-week uses persisted snapshots."
+    )
+
+    hs = weekly_hotspot_stats()
+    weeks = list_weekly_hotspot_weeks()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Snapshot weeks", hs.get("hotspot_runs", 0))
+    c2.metric("Snapshot rows", hs.get("hotspot_snapshot_rows", 0))
+    c3.metric("Current week", week_id())
+    c4.metric("Prior snapshot", weeks[1] if len(weeks) > 1 else "—")
+
+    window_days = st.slider(
+        "Window (days)",
+        7,
+        30,
+        config.HOTSPOT_WINDOW_DAYS,
+        key="hotspot_window_days",
+    )
+    payload = _load_weekly_hotspot_payload(len(weeks), window_days)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Papers ingested", payload.get("papers_ingested", 0))
+    m2.metric("Top method", (payload.get("emerging_methods") or [{}])[0].get("name", "—"))
+    m3.metric("Gap opportunities", len(payload.get("emerging_gap_opportunities") or []))
+
+    wow = payload.get("week_over_week") or {}
+    if wow.get("has_baseline"):
+        st.markdown(f"**Week-over-week** vs `{wow.get('previous_week_id')}`")
+        for board, title in [("method", "Methods"), ("disease", "Diseases"), ("combo", "Combos")]:
+            b = wow.get("boards", {}).get(board, {})
+            new_e = ", ".join(r["label"][:40] for r in b.get("new_entrants", [])[:3]) or "—"
+            cooled = ", ".join(r["label"][:40] for r in b.get("cooled", [])[:3]) or "—"
+            st.caption(f"{title}: new [{new_e}] · cooled [{cooled}]")
+    else:
+        st.info(
+            f"No prior snapshot ({wow.get('previous_week_id', '?')}). "
+            "Run **Save snapshot report** weekly to enable comparison."
+        )
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        if st.button("Refresh hotspots", use_container_width=True):
+            _load_weekly_hotspot_payload.clear()
+            st.rerun()
+    with col_b:
+        save_btn = st.button("Save snapshot report", use_container_width=True)
+    with col_c:
+        brief_btn = st.button("Generate LLM brief", use_container_width=True)
+
+    if save_btn:
+        path, saved = save_hotspot_report(persist=True)
+        st.success(f"Saved {path} ({saved.get('snapshot_rows', 0)} rows)")
+        _load_weekly_hotspot_payload.clear()
+        st.rerun()
+
+    if brief_btn:
+        with st.spinner(f"Generating brief ({config.LLM_MODEL_AGENT})…"):
+            brief_path, brief_text, _ = save_hotspot_brief(persist=True)
+        st.session_state["hotspot_brief"] = brief_text
+        st.success(f"Brief saved: {brief_path}")
+
+    tab_m, tab_d, tab_c, tab_o, tab_l = st.tabs([
+        "Methods",
+        "Diseases",
+        "Hot Combos",
+        "Gap Opportunities",
+        "Limitations",
+    ])
+    with tab_m:
+        safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
+    with tab_d:
+        safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
+    with tab_c:
+        safe_table(pd.DataFrame(payload.get("hot_combos", [])))
+    with tab_o:
+        opps = payload.get("emerging_gap_opportunities", [])
+        if opps:
+            safe_table(pd.DataFrame(opps))
+        else:
+            st.info("No hot×gap crosses in this window.")
+    with tab_l:
+        safe_table(pd.DataFrame(payload.get("new_limitations", [])))
+
+    if st.session_state.get("hotspot_brief"):
+        st.divider()
+        st.markdown("### LLM Brief")
+        st.markdown(st.session_state["hotspot_brief"])
+
+    with st.expander("Full markdown report preview", expanded=False):
+        st.markdown(generate_hotspot_report(payload, wow=wow))
+
+
 # Session state
 for _k, _v in [
     ("events", []), ("report", ""), ("run_focus", ""), ("run_top_n", 6),
@@ -778,6 +903,7 @@ for _k, _v in [
     ("idea_events", []), ("proposal", ""), ("proposal_gap_text", ""),
     ("proposal_rounds", []), ("final_rounds", 1), ("final_score", 0.0),
     ("landscape_msg", ""),
+    ("hotspot_brief", ""),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -926,8 +1052,9 @@ if run_button:
 
 st.divider()
 
-tab_debate, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs([
+tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs([
     "Debate Process",
+    "Weekly Hotspot",
     "Visualization",
     "Evidence & Literature",
     "Gap Report",
@@ -942,6 +1069,8 @@ if not st.session_state["events"]:
             "The system runs **Opportunity Scout** → **Evidence Reviewer** → **Final Synthesizer**."
         )
         render_debate_role_guide()
+    with tab_hotspot:
+        render_weekly_hotspot_tab(focus_hint=focus_input)
     with tab_viz:
         render_gap_visualization_tab([], focus_hint=focus_input)
     with tab_evidence:
@@ -1011,6 +1140,11 @@ elif st.session_state["events"]:
                         render_feasibility_result(rdict)
                     else:
                         render_tool_result(name, rdict)
+
+    with tab_hotspot:
+        render_weekly_hotspot_tab(
+            focus_hint=st.session_state.get("run_focus") or focus_input,
+        )
 
     with tab_viz:
         render_gap_visualization_tab(

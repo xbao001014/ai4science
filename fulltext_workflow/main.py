@@ -221,6 +221,69 @@ def cmd_idea_pipeline(args: argparse.Namespace) -> None:
     save_pipeline_report(report, out)
 
 
+def cmd_compute_weekly_hotspots(args: argparse.Namespace) -> None:
+    from analysis.weekly_hotspot import compute_weekly_hotspots
+    from db.schema import init_db
+
+    init_db()
+    payload = compute_weekly_hotspots(
+        window_days=args.days,
+        prior_days=args.prior_days,
+    )
+    print("\n[Weekly-Hotspot] Summary:")
+    print(f"  week_id          : {payload['week_id']}")
+    print(f"  window_days      : {payload['window_days']}")
+    print(f"  papers_ingested  : {payload['papers_ingested']}")
+    print(f"  emerging_methods : {len(payload['emerging_methods'])}")
+    print(f"  heating_diseases : {len(payload['heating_diseases'])}")
+    print(f"  hot_combos       : {len(payload['hot_combos'])}")
+    print(f"  new_limitations  : {len(payload['new_limitations'])}")
+    if payload["emerging_methods"]:
+        top = payload["emerging_methods"][0]
+        print(f"  top_method       : {top['name']} (score={top['emerging_score']})")
+
+
+def cmd_hotspot_report(args: argparse.Namespace) -> None:
+    from analysis.weekly_hotspot import save_hotspot_report
+    from db.schema import init_db
+
+    init_db()
+    path, payload = save_hotspot_report(
+        args.output,
+        window_days=args.days,
+        prior_days=args.prior_days,
+        persist=not args.no_persist,
+    )
+    print(f"[Hotspot-Report] Saved to {path}")
+    print(f"  papers_ingested={payload['papers_ingested']}, week={payload['week_id']}")
+    if payload.get("snapshot_rows") is not None:
+        print(f"  snapshot_rows={payload['snapshot_rows']}")
+    wow = payload.get("week_over_week") or {}
+    if wow.get("has_baseline"):
+        print(f"  week_over_week vs {wow['previous_week_id']}: OK")
+    else:
+        print(f"  week_over_week: no baseline ({wow.get('previous_week_id', '?')})")
+
+
+def cmd_hotspot_brief(args: argparse.Namespace) -> None:
+    from analysis.hotspot_brief import save_hotspot_brief
+    from db.schema import init_db
+
+    init_db()
+    if not config.OPENAI_API_KEY:
+        print("[Hotspot-Brief] OPENAI_API_KEY / DASHSCOPE_API_KEY not set.")
+        sys.exit(1)
+    path, text, payload = save_hotspot_brief(
+        args.output,
+        window_days=args.days,
+        prior_days=args.prior_days,
+        persist=not args.no_persist,
+    )
+    print(f"[Hotspot-Brief] Saved to {path}")
+    print(f"  model={config.LLM_MODEL_AGENT}, week={payload['week_id']}")
+    print(f"  opportunities={len(payload.get('emerging_gap_opportunities', []))}")
+
+
 def cmd_run_all(args: argparse.Namespace) -> None:
     print("=" * 60)
     print(f"  Full-Text Workflow — {config.search_scope_label()}")
@@ -349,6 +412,66 @@ def main() -> None:
         action="store_true",
         help="Only compute/write limitation_temporal (skip resolution; much faster)",
     )
+
+    p_hotspot = sub.add_parser(
+        "compute-weekly-hotspots",
+        help="Compute recent-ingest research hotspots (stdout summary)",
+    )
+    p_hotspot.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help=f"Recent ingest window in days (default: {config.HOTSPOT_WINDOW_DAYS})",
+    )
+    p_hotspot.add_argument(
+        "--prior-days",
+        type=int,
+        default=None,
+        help=f"Prior comparison window (default: {config.HOTSPOT_PRIOR_WINDOW_DAYS})",
+    )
+
+    p_hotspot_report = sub.add_parser(
+        "hotspot-report",
+        help="Generate weekly hotspot markdown report",
+    )
+    p_hotspot_report.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help=f"Recent ingest window (default: {config.HOTSPOT_WINDOW_DAYS})",
+    )
+    p_hotspot_report.add_argument(
+        "--prior-days",
+        type=int,
+        default=None,
+        help=f"Prior comparison window (default: {config.HOTSPOT_PRIOR_WINDOW_DAYS})",
+    )
+    p_hotspot_report.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output path (default: output/weekly_hotspot_{week_id}.md)",
+    )
+    p_hotspot_report.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Skip writing snapshot to DB (no week-over-week next run)",
+    )
+
+    p_brief = sub.add_parser(
+        "hotspot-brief",
+        help="LLM weekly hotspot trend brief (qwen3.7-plus / LLM_MODEL_AGENT)",
+    )
+    p_brief.add_argument("--days", type=int, default=None)
+    p_brief.add_argument("--prior-days", type=int, default=None)
+    p_brief.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output path (default: output/weekly_hotspot_brief_{week_id}.md)",
+    )
+    p_brief.add_argument("--no-persist", action="store_true")
+
     p_debate = sub.add_parser("gap-debate", help="LLM debate multi-agent gap analysis")
     p_debate.add_argument("--focus", "-f", default=None)
     p_debate.add_argument("--top", "-n", type=int, default=6)
@@ -463,6 +586,9 @@ def main() -> None:
         "viz": cmd_viz,
         "analyze": cmd_analyze,
         "compute-gap-lifecycle": cmd_compute_gap_lifecycle,
+        "compute-weekly-hotspots": cmd_compute_weekly_hotspots,
+        "hotspot-report": cmd_hotspot_report,
+        "hotspot-brief": cmd_hotspot_brief,
         "gap-debate": cmd_gap_debate,
         "bootstrap-landscape": cmd_bootstrap_landscape,
         "idea-pipeline": cmd_idea_pipeline,

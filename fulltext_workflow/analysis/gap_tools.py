@@ -476,6 +476,9 @@ SQL_TOOLS: dict[str, Callable[..., dict]] = {
     "hotspot_entities": tool_hotspot_entities,
     "recent_highcite_papers": tool_recent_highcite_papers,
     "literature_impact_priority_matrix": tool_literature_impact_priority_matrix,
+    "emerging_gap_opportunities": lambda focus=None: __import__(
+        "analysis.weekly_hotspot", fromlist=["tool_emerging_gap_opportunities"]
+    ).tool_emerging_gap_opportunities(focus),
     "disease_task_coverage": tool_disease_task_coverage,
     "method_disease_combo_gap": tool_method_disease_combo_gap,
     "metric_evidence_quality": tool_metric_evidence_quality,
@@ -609,6 +612,22 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "literature_impact_priority_matrix",
             "description": (
                 "Method×disease gaps with citation/IF impact_score and gap_priority_score."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"focus": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "emerging_gap_opportunities",
+            "description": (
+                "Weekly heating method×disease crossed with literature gap "
+                "(opportunity_score = emerging_score + gap tier). "
+                "Use for recent follow-up directions."
             ),
             "parameters": {
                 "type": "object",

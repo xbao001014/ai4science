@@ -187,6 +187,35 @@ CREATE TABLE IF NOT EXISTS limitation_resolution_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_lrs_limitation ON limitation_resolution_signals(limitation_id);
 CREATE INDEX IF NOT EXISTS idx_lrs_signal ON limitation_resolution_signals(signal_type);
+
+CREATE TABLE IF NOT EXISTS weekly_hotspot_runs (
+    week_id             TEXT PRIMARY KEY,
+    snapshot_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    window_days         INTEGER NOT NULL,
+    prior_window_days   INTEGER NOT NULL,
+    papers_ingested     INTEGER DEFAULT 0,
+    report_path         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS weekly_hotspot_snapshots (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_id             TEXT NOT NULL,
+    board               TEXT NOT NULL,
+    item_key            TEXT NOT NULL,
+    entity_type         TEXT,
+    rank_pos            INTEGER,
+    recent_cnt          INTEGER,
+    prior_cnt           INTEGER,
+    velocity            REAL,
+    emerging_score      REAL,
+    avg_cite            REAL,
+    avg_if              REAL,
+    gap_phase           TEXT,
+    top_pmids           TEXT,
+    UNIQUE(week_id, board, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_whs_week_board ON weekly_hotspot_snapshots(week_id, board);
+CREATE INDEX IF NOT EXISTS idx_whs_board_score ON weekly_hotspot_snapshots(board, emerging_score);
 """
 
 
@@ -259,6 +288,34 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_relations_rel_pmid ON relations(relation, source_pmid);
 CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
         CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
+
+        CREATE TABLE IF NOT EXISTS weekly_hotspot_runs (
+            week_id             TEXT PRIMARY KEY,
+            snapshot_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            window_days         INTEGER NOT NULL,
+            prior_window_days   INTEGER NOT NULL,
+            papers_ingested     INTEGER DEFAULT 0,
+            report_path         TEXT
+        );
+        CREATE TABLE IF NOT EXISTS weekly_hotspot_snapshots (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_id             TEXT NOT NULL,
+            board               TEXT NOT NULL,
+            item_key            TEXT NOT NULL,
+            entity_type         TEXT,
+            rank_pos            INTEGER,
+            recent_cnt          INTEGER,
+            prior_cnt           INTEGER,
+            velocity            REAL,
+            emerging_score      REAL,
+            avg_cite            REAL,
+            avg_if              REAL,
+            gap_phase           TEXT,
+            top_pmids           TEXT,
+            UNIQUE(week_id, board, item_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_whs_week_board ON weekly_hotspot_snapshots(week_id, board);
+        CREATE INDEX IF NOT EXISTS idx_whs_board_score ON weekly_hotspot_snapshots(board, emerging_score);
     """)
 
 
@@ -875,5 +932,107 @@ def limitation_lifecycle_stats() -> dict[str, int]:
                 """SELECT COUNT(DISTINCT limitation_id)
                    FROM limitation_resolution_signals
                    WHERE signal_type='topic_followup' AND confidence >= 0.7"""
+            ).fetchone()[0],
+        }
+
+
+def upsert_weekly_hotspot_run(
+    week_id: str,
+    *,
+    window_days: int,
+    prior_window_days: int,
+    papers_ingested: int,
+    report_path: str = "",
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO weekly_hotspot_runs
+               (week_id, window_days, prior_window_days, papers_ingested, report_path, snapshot_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(week_id) DO UPDATE SET
+                 window_days=excluded.window_days,
+                 prior_window_days=excluded.prior_window_days,
+                 papers_ingested=excluded.papers_ingested,
+                 report_path=excluded.report_path,
+                 snapshot_at=CURRENT_TIMESTAMP""",
+            (week_id, window_days, prior_window_days, papers_ingested, report_path),
+        )
+
+
+def replace_weekly_hotspot_snapshots(week_id: str, rows: list[dict[str, Any]]) -> int:
+    """Replace all snapshot rows for a week. Returns rows written."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM weekly_hotspot_snapshots WHERE week_id=?", (week_id,))
+        if not rows:
+            return 0
+        conn.executemany(
+            """INSERT INTO weekly_hotspot_snapshots
+               (week_id, board, item_key, entity_type, rank_pos,
+                recent_cnt, prior_cnt, velocity, emerging_score,
+                avg_cite, avg_if, gap_phase, top_pmids)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    week_id,
+                    r["board"],
+                    r["item_key"],
+                    r.get("entity_type"),
+                    r.get("rank_pos"),
+                    r.get("recent_cnt"),
+                    r.get("prior_cnt"),
+                    r.get("velocity"),
+                    r.get("emerging_score"),
+                    r.get("avg_cite"),
+                    r.get("avg_if"),
+                    r.get("gap_phase"),
+                    r.get("top_pmids"),
+                )
+                for r in rows
+            ],
+        )
+        return len(rows)
+
+
+def get_weekly_hotspot_snapshots(
+    week_id: str,
+    board: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["week_id = ?"]
+    params: list[Any] = [week_id]
+    if board:
+        clauses.append("board = ?")
+        params.append(board)
+    where = " AND ".join(clauses)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT week_id, board, item_key, entity_type, rank_pos,
+                       recent_cnt, prior_cnt, velocity, emerging_score,
+                       avg_cite, avg_if, gap_phase, top_pmids
+                FROM weekly_hotspot_snapshots
+                WHERE {where}
+                ORDER BY board, rank_pos ASC, emerging_score DESC""",
+            tuple(params),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_weekly_hotspot_weeks(limit: int = 12) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT week_id FROM weekly_hotspot_runs
+               ORDER BY snapshot_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [r["week_id"] for r in rows]
+
+
+def weekly_hotspot_stats() -> dict[str, int]:
+    with get_conn() as conn:
+        return {
+            "hotspot_runs": conn.execute(
+                "SELECT COUNT(*) FROM weekly_hotspot_runs"
+            ).fetchone()[0],
+            "hotspot_snapshot_rows": conn.execute(
+                "SELECT COUNT(*) FROM weekly_hotspot_snapshots"
             ).fetchone()[0],
         }

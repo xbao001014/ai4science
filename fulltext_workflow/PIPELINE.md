@@ -342,6 +342,7 @@ PowerShell 脚本等价：
 | `viz/visualize.py` | Pyvis HTML 可视化 |
 | `analysis/gap_tools.py` | SQL Gap 工具 + impact 加权 |
 | `analysis/impact_scoring.py` | citation/IF → impact_score |
+| `analysis/weekly_hotspot.py` | 每周入库热点（velocity + emerging_score） |
 | `analysis/feasibility_tools.py` | 病理数据可行性 LLM 工具 |
 | `analysis/graph_tools.py` | 实体图分析（PageRank/社区/可达性） |
 | `gap_agent.py` | Gap 辩论多智能体 |
@@ -409,6 +410,9 @@ $py = "..\.venv\Scripts\python.exe"
 ```ini
 FULLTEXT_SEARCH_YEAR_END=2026          # 每年 1 月更新
 FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=关闭
+HOTSPOT_WINDOW_DAYS=14                 # weekly 热点检测窗口（默认跟 FETCH_EDAT_DAYS）
+HOTSPOT_PRIOR_WINDOW_DAYS=14           # 上一窗口，用于算 velocity
+HOTSPOT_MIN_RECENT_PAPERS=2            # 实体至少 N 篇新入库论文才上榜
 ```
 
 每周一条命令：
@@ -420,10 +424,56 @@ FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=
 & $py main.py enrich-s2
 & $py main.py fetch-fulltext
 & $py main.py extract --limit 0 --core-only
+& $py main.py hotspot-report              # 近期研究热点报告
+& $py main.py compute-weekly-hotspots     # 仅打印摘要
 & $py main.py compute-gap-lifecycle
 & $py main.py build
 & $py main.py analyze
 ```
+
+**热点报告**输出：`output/weekly_hotspot_{week_id}.md`（基于 `papers.created_at` 入库窗口 + velocity，与全量 `hotspot_entities` 不同）。
+
+### Weekly Hotspot P1 — 快照与周环比
+
+P0 用 `created_at` 双窗口算 velocity；**一次性 bulk 入库时 prior_cnt 常为 0**，周环比应依赖**持久化快照**。
+
+**表结构**（`kg_fulltext.db`）：
+
+| 表 | 作用 |
+|----|------|
+| `weekly_hotspot_runs` | 每周元数据（week_id、窗口、入库论文数、报告路径） |
+| `weekly_hotspot_snapshots` | 各榜单行（board、item_key、rank、score、top_pmids） |
+
+**board 类型**：`method` / `disease` / `task` / `combo` / `limitation`  
+**combo 的 item_key**：`{method}|{disease}`
+
+**周环比逻辑**（`compare_with_previous_week`）：
+
+| 信号 | 定义 |
+|------|------|
+| New entrants | 本周 Top N 有、上周快照无 |
+| Cooled | 上周 Top N 有、本周 Top N 无 |
+| Rank changes | 两周均上榜，排名变化 ≥3 |
+
+`hotspot-report` 默认 **先对比、再写报告、再持久化** 本周快照。第二次起报告含 `## Week-over-Week` 节。
+
+```powershell
+& $py main.py hotspot-report                    # 持久化快照
+& $py main.py hotspot-report --no-persist       # 仅报告，不写库
+```
+
+**与 weekly 流水线**：`run_pipeline.ps1 -Stage weekly` 在 extract 后自动 `hotspot-report`（已含 P1 持久化）。
+
+**P2（已实现）**：`gap_ui` **Weekly Hotspot** 标签页、`hotspot-brief` LLM 简报、`emerging_gap_opportunities` 工具。
+
+```powershell
+& $py main.py hotspot-brief              # LLM 一页趋势简报（LLM_MODEL_AGENT）
+& $py streamlit run gap_ui.py            # 「Weekly Hotspot」标签页
+```
+
+- **emerging_gap_opportunities**：`opportunity_score = emerging_score + literature_gap 分档`
+- **hotspot-brief**：读取热点 JSON → `qwen3.7-plus` 生成中文周报摘要
+- **gap_ui**：方法/病种/组合/交叉机会表格 + WoW + 一键简报
 
 **不要**每周使用 `--no-resume` 或对勘误文跑 `reset_empty_extraction`。
 

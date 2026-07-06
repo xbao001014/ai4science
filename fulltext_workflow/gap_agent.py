@@ -100,6 +100,7 @@ results 章节 metric 证据、方法-疾病组合空白、图结构分析）。
 - 配合 author_stated_gaps / limitation_impact_rank（作者自述局限 + 引用影响力）。
 - 使用 combo_gap_temporal 识别后期出现跟进的方法×疾病组合。
 - 使用 hotspot_entities、recent_highcite_papers 识别高影响力前沿方向。
+- 使用 emerging_gap_opportunities 识别「近期升温 × 文献空白」交叉机会（weekly 热点）。
 - 所有定量陈述必须引用工具返回的确切数值（含 first_year、recent_ratio、resolution_signal、avg_cite、impact_score）。
 - focus 子集 papers < 30 时，禁止声称 persistent 时间趋势或引用全库规模；须标注「语料覆盖不足」。
 

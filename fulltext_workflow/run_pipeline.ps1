@@ -127,6 +127,8 @@ switch ($Stage) {
         Invoke-Step "fetch-fulltext" @("fetch-fulltext")
         $weeklyExtract = @("extract", "--limit", "$ExtractLimit", "--core-only")
         Invoke-Step "extract" $weeklyExtract
+        Invoke-Step "hotspot-report" @("hotspot-report")
+        Invoke-Step "hotspot-brief" @("hotspot-brief")
         Invoke-Step "build" @("build")
         Invoke-Step "analyze" @("analyze")
         Invoke-Step "stats" @("stats")
