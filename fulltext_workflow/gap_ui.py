@@ -100,6 +100,12 @@ from debate_labels import (  # noqa: E402
     role_display,
 )
 from analysis.gap_tools import tool_method_disease_combo_gap  # noqa: E402
+from utils.tool_result_summary import (  # noqa: E402
+    extract_corpus_focus_metrics,
+    format_tool_result_summary,
+    is_summary_result,
+    record_count,
+)
 from viz.gap_viz import (  # noqa: E402
     build_gap_viz_bundle,
     plotly_available,
@@ -540,6 +546,36 @@ def render_tool_result(name: str, result: dict) -> None:
     if desc:
         st.caption(desc)
 
+    if name == "corpus_focus_coverage":
+        metrics = extract_corpus_focus_metrics(result)
+        if metrics is not None:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Focus papers", metrics["focus_papers"])
+            c2.metric("Focus extracted", metrics["focus_extracted"])
+            c3.metric("Global papers", metrics["global_papers"])
+            ratio = metrics["coverage_ratio"]
+            ratio_text = f"{ratio * 100:.2f}%" if isinstance(ratio, (int, float)) else "—"
+            c4.metric("Coverage ratio", ratio_text)
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Method entities", metrics["method_entities"])
+            c6.metric("Disease entities", metrics["disease_entities"])
+            c7.metric("Limitation relations", metrics["limitation_relations"])
+            c8.metric(
+                "Analysis ready",
+                "Yes" if metrics["analysis_ready"] else "No",
+            )
+
+            top_diseases = metrics.get("top_diseases") or []
+            if top_diseases:
+                st.markdown("**Top matched diseases**")
+                safe_table(pd.DataFrame(top_diseases), height=min(260, 40 + len(top_diseases) * 35))
+
+            warnings = metrics.get("warnings") or []
+            for warning in warnings:
+                st.warning(warning)
+            return
+
     if "data" in result and isinstance(result["data"], list) and result["data"]:
         safe_table(pd.DataFrame(result["data"]), height=min(400, 40 + len(result["data"]) * 35))
         return
@@ -623,14 +659,19 @@ def extract_papers(events: list[dict]) -> list[dict]:
 def compute_stats(events: list[dict]) -> dict:
     calls = sum(1 for e in events if e.get("type") == "tool_call")
     records = 0
+    summaries = 0
     for e in events:
         if e.get("type") != "tool_result":
             continue
+        tool_name = e.get("name", "")
         r = e.get("result", {})
-        records += len(r.get("data", r.get("gaps", r.get("results_backed", []))))
+        records += record_count(r)
+        if is_summary_result(tool_name, r):
+            summaries += 1
     return {
         "tools_called": calls,
         "records_retrieved": records,
+        "summary_results": summaries,
         "papers_found": len(extract_papers(events)),
         "evidence_rows": len(extract_evidence(events)),
     }
@@ -946,6 +987,7 @@ with st.sidebar:
         for label, val in [
             ("Tools called", s["tools_called"]),
             ("Records", s["records_retrieved"]),
+            ("Summary results", s["summary_results"]),
             ("Evidence rows", s["evidence_rows"]),
         ]:
             st.metric(label, val)
@@ -1009,8 +1051,8 @@ if run_button:
                 st.caption(f"    … running {meta.get('label', event['name'])}")
             elif etype == "tool_result":
                 r = event.get("result", {})
-                n = len(r.get("data", r.get("gaps", r.get("results_backed", []))))
-                st.write(f"    → {n} records")
+                summary = format_tool_result_summary(event.get("name", ""), r)
+                st.write(f"    → {summary}")
             elif etype == "tool_error":
                 st.warning(f"[{event.get('role')}] {event['name']}: {event.get('error')}")
             elif etype == "optimist_proposal":
