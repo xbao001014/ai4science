@@ -8,6 +8,14 @@ from analysis.gap_tools import tool_method_disease_combo_gap, _combo_support_pap
 from analysis.impact_scoring import aggregate_paper_impact, total_priority_score
 from feasibility.client import PathologyDataClient
 from feasibility.hypothesis import HypothesisRequest, new_hypothesis_id
+from feasibility.http_api import HttpPathologyApi, PathologyHttpError
+from feasibility.v11_queries import (
+    attribute_distribution,
+    disease_patient_count,
+    molecular_positivity,
+    subtype_distribution,
+    text_disease_match_summary,
+)
 
 _client = PathologyDataClient()
 
@@ -212,12 +220,101 @@ def tool_literature_data_cross_matrix(focus: str | None = None) -> dict:
     }
 
 
+def _require_disease_id(disease_id: str | None, description: str) -> dict | None:
+    if not disease_id or not str(disease_id).strip():
+        return {"error": "disease_id is required", "description": description}
+    return None
+
+
+def tool_disease_cohort_stats(disease_id: str | None = None) -> dict:
+    err = _require_disease_id(disease_id, "V1.1 §7.1/7.2 cohort stats")
+    if err:
+        return err
+    try:
+        api = HttpPathologyApi()
+        stats = disease_patient_count(api, disease_code=str(disease_id).strip())
+        return {"description": "V1.1 disease patient/specimen/slide stats", **stats}
+    except PathologyHttpError as exc:
+        return {"error": str(exc), "description": "V1.1 cohort stats"}
+
+
+def tool_subtype_distribution(disease_id: str | None = None) -> dict:
+    err = _require_disease_id(disease_id, "V1.1 §7.4 subtype distribution")
+    if err:
+        return err
+    try:
+        api = HttpPathologyApi()
+        result = subtype_distribution(api, disease_code=str(disease_id).strip())
+        return {"description": "V1.1 §7.4 subtype distribution", **result}
+    except PathologyHttpError as exc:
+        return {"error": str(exc), "description": "V1.1 subtype distribution"}
+
+
+def tool_attribute_distribution(
+    disease_id: str | None = None,
+    attribute_keyword: str | None = None,
+) -> dict:
+    err = _require_disease_id(disease_id, "V1.1 §7.3 attribute distribution")
+    if err:
+        return err
+    try:
+        api = HttpPathologyApi()
+        result = attribute_distribution(
+            api,
+            disease_code=str(disease_id).strip(),
+            attribute_keyword=attribute_keyword,
+        )
+        return {"description": "V1.1 §7.3 attribute distribution", **result}
+    except PathologyHttpError as exc:
+        return {"error": str(exc), "description": "V1.1 attribute distribution"}
+
+
+def tool_molecular_positivity(
+    disease_id: str | None = None,
+    biomarker_name: str = "HER2",
+) -> dict:
+    err = _require_disease_id(disease_id, "V1.1 §7.8 molecular positivity")
+    if err:
+        return err
+    try:
+        api = HttpPathologyApi()
+        result = molecular_positivity(
+            api,
+            disease_code=str(disease_id).strip(),
+            biomarker_name=biomarker_name or "HER2",
+        )
+        return {"description": "V1.1 §7.8 molecular/IHC positivity", **result}
+    except PathologyHttpError as exc:
+        return {"error": str(exc), "description": "V1.1 molecular positivity"}
+
+
+def tool_text_disease_matches(
+    disease_id: str | None = None,
+    pending_only: bool = False,
+) -> dict:
+    try:
+        api = HttpPathologyApi()
+        result = text_disease_match_summary(
+            api,
+            disease_code=str(disease_id).strip() if disease_id else None,
+            pending_only=pending_only,
+        )
+        return {"description": "V1.1 §7.5–7.7 text disease matches", **result}
+    except PathologyHttpError as exc:
+        return {"error": str(exc), "description": "V1.1 text disease matches"}
+
+
 FEASIBILITY_TOOLS: dict[str, Callable[..., dict]] = {
     "pathology_disease_catalog": tool_pathology_disease_catalog,
     "pathology_tasks_for_disease": tool_pathology_tasks_for_disease,
     "feasibility_assess": tool_feasibility_assess,
     "data_gap_analysis": tool_data_gap_analysis,
     "literature_data_cross_matrix": tool_literature_data_cross_matrix,
+    "disease_cohort_stats": tool_disease_cohort_stats,
+    "subtype_distribution": tool_subtype_distribution,
+    "attribute_distribution": tool_attribute_distribution,
+    "molecular_positivity": tool_molecular_positivity,
+    "text_disease_matches": tool_text_disease_matches,
 }
 
 FEASIBILITY_TOOL_SCHEMAS: list[dict] = [
@@ -311,6 +408,75 @@ FEASIBILITY_TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "focus": {"type": "string", "description": "Optional keyword filter"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "disease_cohort_stats",
+            "description": "V1.1 §7.1/7.2: patient/specimen/slide counts for a DiseaseCode.",
+            "parameters": {
+                "type": "object",
+                "properties": {"disease_id": {"type": "string"}},
+                "required": ["disease_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subtype_distribution",
+            "description": "V1.1 §7.4: subtype patient distribution for a disease.",
+            "parameters": {
+                "type": "object",
+                "properties": {"disease_id": {"type": "string"}},
+                "required": ["disease_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attribute_distribution",
+            "description": "V1.1 §7.3: attribute/option distribution (stage, grade, severity…).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "disease_id": {"type": "string"},
+                    "attribute_keyword": {"type": "string"},
+                },
+                "required": ["disease_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "molecular_positivity",
+            "description": "V1.1 §7.8: IHC/molecular positivity rate within a disease cohort.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "disease_id": {"type": "string"},
+                    "biomarker_name": {"type": "string"},
+                },
+                "required": ["disease_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "text_disease_matches",
+            "description": "V1.1 §7.5–7.7: text disease hit/mapping/pending-review summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "disease_id": {"type": "string"},
+                    "pending_only": {"type": "boolean"},
                 },
                 "required": [],
             },

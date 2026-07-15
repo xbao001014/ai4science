@@ -56,9 +56,10 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
-    page_title="Pathomics/Radiomics — Gap Debate",
+    page_title="Pathology AI - Research Gap Analysis",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -83,11 +84,16 @@ import config  # noqa: E402
 from db.schema import db_stats, get_all_landscape, init_db, landscape_count  # noqa: E402
 from analysis.feasibility_tools import (  # noqa: E402
     FEASIBILITY_TOOLS,
+    tool_attribute_distribution,
     tool_data_gap_analysis,
+    tool_disease_cohort_stats,
     tool_feasibility_assess,
     tool_literature_data_cross_matrix,
+    tool_molecular_positivity,
     tool_pathology_disease_catalog,
     tool_pathology_tasks_for_disease,
+    tool_subtype_distribution,
+    tool_text_disease_matches,
 )
 from feasibility.landscape import bootstrap_landscape  # noqa: E402
 from pipeline import assess_gap_feasibility  # noqa: E402
@@ -106,6 +112,7 @@ from utils.tool_result_summary import (  # noqa: E402
     is_summary_result,
     record_count,
 )
+from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
 from viz.gap_viz import (  # noqa: E402
     build_gap_viz_bundle,
     plotly_available,
@@ -145,6 +152,11 @@ TOOL_META: dict[str, dict] = {
     "feasibility_assess": {"label": "V-01 Feasibility Assess", "category": "Data Feasibility"},
     "data_gap_analysis": {"label": "V-02 Data Gap Analysis", "category": "Data Feasibility"},
     "literature_data_cross_matrix": {"label": "Lit × Data Matrix", "category": "Data Feasibility"},
+    "disease_cohort_stats": {"label": "V1.1 Cohort Stats", "category": "Data Feasibility"},
+    "subtype_distribution": {"label": "V1.1 Subtype Dist.", "category": "Data Feasibility"},
+    "attribute_distribution": {"label": "V1.1 Attribute Dist.", "category": "Data Feasibility"},
+    "molecular_positivity": {"label": "V1.1 Molecular Positivity", "category": "Data Feasibility"},
+    "text_disease_matches": {"label": "V1.1 Text Matches", "category": "Data Feasibility"},
     "emerging_gap_opportunities": {"label": "Weekly Hot × Gap", "category": "Weekly Hotspot"},
 }
 
@@ -187,6 +199,26 @@ FEAS_API_META: dict[str, dict] = {
         "name": "Task types (inferred from LIS data)",
         "endpoint": "(client-side · landscape cache)",
     },
+    "cohort": {
+        "name": "Patient / specimen / slide counts",
+        "endpoint": "GET …/sample-count-by-hospital + /diseases/patients|slides (V1.1 §7.1–7.2)",
+    },
+    "subtype": {
+        "name": "Subtype distribution",
+        "endpoint": "GET …/patients/disease-subtypes (V1.1 §7.4)",
+    },
+    "attribute": {
+        "name": "Attribute distribution",
+        "endpoint": "GET …/patients/disease-attributes (V1.1 §7.3)",
+    },
+    "molecular": {
+        "name": "Molecular / IHC positivity",
+        "endpoint": "GET …/molecular-results (V1.1 §7.8)",
+    },
+    "text": {
+        "name": "Text disease matches",
+        "endpoint": "GET …/text-disease-matches (V1.1 §7.5–7.7)",
+    },
     "V-01": {
         "name": "Feasibility assess",
         "endpoint": "(client-side · aggregates LIS GET endpoints)",
@@ -207,6 +239,18 @@ TASK_TYPE_OPTIONS = [
 
 # Fallback when landscape/API catalog is empty (offline mock tests only)
 _MOCK_DISEASE_FALLBACK = ["GC-ADC", "NSCLC-ADC", "CRC-ADC", "HCC", "BRCA-IDC"]
+MAIN_TAB_LABELS = [
+    "Debate Process",
+    "Weekly Hotspot",
+    "Visualization",
+    "Evidence & Literature",
+    "Gap Report",
+    "Data Feasibility (Fangxin LIS)",
+    "Research Proposal",
+]
+MAIN_TAB_BY_SLUG = {normalize_tab_label(label): label for label in MAIN_TAB_LABELS}
+_DATA_TAB_LABEL = "Data Feasibility (Fangxin LIS)"
+_PROPOSAL_TAB_LABEL = "Research Proposal"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -268,6 +312,62 @@ def safe_table(df: pd.DataFrame, height: int | None = None, **_kwargs) -> None:
         st.markdown(df.to_html(index=False), unsafe_allow_html=True)
 
 
+def remember_main_tab(label_or_slug: str) -> None:
+    slug = (
+        label_or_slug
+        if label_or_slug in MAIN_TAB_BY_SLUG
+        else normalize_tab_label(label_or_slug)
+    )
+    if slug not in MAIN_TAB_BY_SLUG:
+        return
+    st.session_state["active_main_tab"] = slug
+    try:
+        st.query_params["main_tab"] = slug
+    except Exception:
+        pass
+
+
+def remember_main_tab_for(label: str):
+    def _remember() -> None:
+        remember_main_tab(label)
+
+    return _remember
+
+
+def get_requested_main_tab() -> str:
+    try:
+        raw = st.query_params.get("main_tab", "")
+    except Exception:
+        raw = ""
+    slug = str(raw or "").strip().lower()
+    if slug in MAIN_TAB_BY_SLUG:
+        st.session_state["active_main_tab"] = slug
+        return slug
+    saved = str(st.session_state.get("active_main_tab", "")).strip().lower()
+    if saved in MAIN_TAB_BY_SLUG:
+        return saved
+    default = normalize_tab_label(MAIN_TAB_LABELS[0])
+    st.session_state["active_main_tab"] = default
+    return default
+
+
+def bootstrap_main_tab_state() -> None:
+    get_requested_main_tab()
+
+
+def render_main_tab_sync() -> None:
+    slug = get_requested_main_tab()
+    try:
+        st.query_params["main_tab"] = slug
+    except Exception:
+        pass
+    components.html(
+        build_tab_sync_script(MAIN_TAB_LABELS, slug),
+        height=0,
+        width=0,
+    )
+
+
 def render_feasibility_result(result: dict) -> None:
     """Render V-01 / V-02 API response with metrics."""
     if "error" in result:
@@ -311,10 +411,11 @@ def render_feasibility_result(result: dict) -> None:
 
 def render_data_feasibility_tab(focus_hint: str = "") -> None:
     """Streamlit tab: Fangxin LIS API / pathology_data_api_spec interfaces."""
-    st.subheader("Fangxin Pathology Data APIs")
+    st.subheader("Fangxin Pathology Data APIs (schema V1.1)")
     st.caption(
-        f"Live Fangxin LIS data via `{config.PATHOLOGY_API_BASE_URL}`. "
-        "See repo [api_document.md](../api_document.md)."
+        f"Live Fangxin LIS via `{config.PATHOLOGY_API_BASE_URL}`. "
+        "Aligned with `数据库接口更新V1.1.pdf` query semantics (§7) over existing GET endpoints. "
+        "See [api_document.md](../api_document.md)."
     )
 
     lc = landscape_count()
@@ -337,7 +438,11 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 f"(top: {format_disease_option(disease_ids[0], disease_catalog)})."
             )
     with c1:
-        if st.button("Bootstrap Landscape", use_container_width=True):
+        if st.button(
+            "Bootstrap Landscape",
+            use_container_width=True,
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             with st.spinner("Fetching diseases + sample stats from LIS API …"):
                 res = bootstrap_landscape(force=False)
                 load_feasibility_disease_catalog.clear()
@@ -349,7 +454,11 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                     )
                 st.rerun()
     with c2:
-        if st.button("Force Reload", use_container_width=True):
+        if st.button(
+            "Force Reload",
+            use_container_width=True,
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             with st.spinner("Force reloading from LIS API …"):
                 bootstrap_landscape(force=True)
                 load_feasibility_disease_catalog.clear()
@@ -362,15 +471,34 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
         with st.expander("Cached landscape snapshot", expanded=False):
             for row in get_all_landscape():
                 cat = row["payload"].get("catalog", {})
+                v11 = row["payload"].get("v11") or {}
+                mol_n = len(v11.get("molecular_positivity") or [])
                 st.markdown(
                     f"**{row['disease_id']}** — {cat.get('name_zh', '')} "
-                    f"({cat.get('total_cases', 0)} cases) · updated {row.get('updated_at', '')}"
+                    f"({cat.get('total_cases', 0)} cases) · "
+                    f"subtypes={len(v11.get('subtype_distribution') or [])} · "
+                    f"attrs={len(v11.get('attribute_distribution') or [])} · "
+                    f"markers={mol_n} · updated {row.get('updated_at', '')}"
                 )
 
     st.divider()
 
-    sub_catalog, sub_v01, sub_v02, sub_cross, sub_gap = st.tabs([
+    (
+        sub_catalog,
+        sub_subtype,
+        sub_attr,
+        sub_mol,
+        sub_text,
+        sub_v01,
+        sub_v02,
+        sub_cross,
+        sub_gap,
+    ) = st.tabs([
         "D-01 / D-02 Catalog",
+        "Subtype (§7.4)",
+        "Attributes (§7.3)",
+        "Molecular (§7.8)",
+        "Text Matches (§7.5–7.7)",
         "V-01 Feasibility",
         "V-02 Gap Analysis",
         "Lit × Data Matrix",
@@ -386,10 +514,23 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 organ_options,
                 format_func=lambda x: x or "(all)",
                 key="feas_organ",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
         with col_b:
-            min_cases = st.number_input("min_cases", 1, 5000, 50, step=10, key="feas_min_cases")
-        if st.button("Query D-01", key="btn_d01"):
+            min_cases = st.number_input(
+                "min_cases",
+                1,
+                5000,
+                50,
+                step=10,
+                key="feas_min_cases",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+        if st.button(
+            "Query D-01",
+            key="btn_d01",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             d01 = tool_pathology_disease_catalog(
                 organ_system=organ or None,
                 min_cases=int(min_cases),
@@ -407,11 +548,198 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
             disease_ids,
             format_func=lambda did: format_disease_option(did, disease_catalog),
             key="feas_d02_disease",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
         )
-        if st.button("Query D-02", key="btn_d02"):
-            st.session_state["d02_result"] = tool_pathology_tasks_for_disease(d02_id)
+        c_d02a, c_d02b = st.columns(2)
+        with c_d02a:
+            if st.button(
+                "Query D-02 tasks",
+                key="btn_d02",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["d02_result"] = tool_pathology_tasks_for_disease(d02_id)
+        with c_d02b:
+            if st.button(
+                "Query cohort stats (§7.1/7.2)",
+                key="btn_cohort",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["cohort_result"] = tool_disease_cohort_stats(d02_id)
         if "d02_result" in st.session_state:
             render_tool_result("pathology_tasks_for_disease", st.session_state["d02_result"])
+        if "cohort_result" in st.session_state:
+            cr = st.session_state["cohort_result"]
+            if "error" in cr:
+                st.error(cr["error"])
+            else:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Patients", cr.get("patient_count", 0))
+                m2.metric("Specimens", cr.get("specimen_count", 0))
+                m3.metric("Slides", cr.get("slide_count", 0))
+                m4.metric("Hospitals", cr.get("hospital_count", 0))
+
+    with sub_subtype:
+        st.markdown(f"**{FEAS_API_META['subtype']['name']}** · `{FEAS_API_META['subtype']['endpoint']}`")
+        st_id = st.selectbox(
+            "disease_id",
+            disease_ids,
+            format_func=lambda did: format_disease_option(did, disease_catalog),
+            key="subtype_disease",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        if st.button(
+            "Query subtype distribution",
+            key="btn_subtype",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
+            st.session_state["subtype_result"] = tool_subtype_distribution(st_id)
+        if "subtype_result" in st.session_state:
+            r = st.session_state["subtype_result"]
+            if "error" in r:
+                st.error(r["error"])
+            else:
+                st.caption(
+                    f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
+                )
+                dist = r.get("distribution") or []
+                if dist:
+                    safe_table(pd.DataFrame(dist), height=360)
+                else:
+                    st.info("No subtype rows for this disease in the current API sample.")
+
+    with sub_attr:
+        st.markdown(
+            f"**{FEAS_API_META['attribute']['name']}** · `{FEAS_API_META['attribute']['endpoint']}`"
+        )
+        at_id = st.selectbox(
+            "disease_id",
+            disease_ids,
+            format_func=lambda did: format_disease_option(did, disease_catalog),
+            key="attr_disease",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        attr_kw = st.text_input(
+            "attribute keyword (optional)",
+            value="",
+            key="attr_keyword",
+            placeholder="分期 / 分级 / severity / Gleason …",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        if st.button(
+            "Query attribute distribution",
+            key="btn_attr",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
+            st.session_state["attr_result"] = tool_attribute_distribution(
+                at_id, attribute_keyword=attr_kw or None
+            )
+        if "attr_result" in st.session_state:
+            r = st.session_state["attr_result"]
+            if "error" in r:
+                st.error(r["error"])
+            else:
+                st.caption(
+                    f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
+                )
+                dist = r.get("distribution") or []
+                if dist:
+                    safe_table(pd.DataFrame(dist), height=360)
+                else:
+                    st.info("No attribute rows matched for this disease / keyword.")
+
+    with sub_mol:
+        st.markdown(
+            f"**{FEAS_API_META['molecular']['name']}** · `{FEAS_API_META['molecular']['endpoint']}`"
+        )
+        mol_id = st.selectbox(
+            "disease_id",
+            disease_ids,
+            format_func=lambda did: format_disease_option(did, disease_catalog),
+            key="mol_disease",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        biomarker = st.selectbox(
+            "biomarker",
+            ["HER2", "EGFR", "MSI", "P16", "Ki-67", "PD-L1", "EBER", "P40", "CK"],
+            key="mol_biomarker",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        if st.button(
+            "Query positivity",
+            type="primary",
+            key="btn_mol",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
+            st.session_state["mol_result"] = tool_molecular_positivity(mol_id, biomarker)
+        if "mol_result" in st.session_state:
+            r = st.session_state["mol_result"]
+            if "error" in r:
+                st.error(r["error"])
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Cohort patients", r.get("patient_scope", 0))
+                c2.metric("Tested", r.get("tested_patients", 0))
+                c3.metric("Positive", r.get("positive_patients", 0))
+                c4.metric("Positivity rate", f"{r.get('positivity_rate', 0):.1%}")
+
+    with sub_text:
+        st.markdown(f"**{FEAS_API_META['text']['name']}** · `{FEAS_API_META['text']['endpoint']}`")
+        st.caption(
+            "Uses text_disease_match for NLP/report hit tracing. "
+            "Dedicated disease_alias_dict REST is not exposed yet — resolve via matches + disease dict."
+        )
+        tx_options = ["(all)"] + disease_ids
+        tx_id = st.selectbox(
+            "disease_id filter",
+            tx_options,
+            format_func=lambda did: (
+                "(all diseases)"
+                if did == "(all)"
+                else format_disease_option(did, disease_catalog)
+            ),
+            key="text_disease",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        pending_only = st.checkbox(
+            "Pending review only (§7.7)",
+            value=False,
+            key="text_pending",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+        )
+        if st.button(
+            "Query text matches",
+            key="btn_text",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
+            st.session_state["text_result"] = tool_text_disease_matches(
+                None if tx_id == "(all)" else tx_id,
+                pending_only=pending_only,
+            )
+        if "text_result" in st.session_state:
+            r = st.session_state["text_result"]
+            if "error" in r:
+                st.error(r["error"])
+            else:
+                st.metric("Total matches", r.get("total_matches", 0))
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("**VerificationStatus**")
+                    vs = r.get("verification_status") or {}
+                    if vs:
+                        safe_table(
+                            pd.DataFrame(
+                                [{"status": k, "count": v} for k, v in vs.items()]
+                            )
+                        )
+                with col_b:
+                    st.markdown("**Top mentions**")
+                    mentions = r.get("top_mentions") or []
+                    if mentions:
+                        safe_table(pd.DataFrame(mentions), height=260)
+                sample = r.get("sample") or []
+                if sample:
+                    with st.expander("Sample rows", expanded=False):
+                        safe_table(pd.DataFrame(sample), height=320)
 
     with sub_v01:
         st.markdown(f"**{FEAS_API_META['V-01']['name']}** · `{FEAS_API_META['V-01']['endpoint']}`")
@@ -426,31 +754,50 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 disease_ids,
                 format_func=lambda did: format_disease_option(did, disease_catalog),
                 key="v01_disease",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
-            v01_task = st.selectbox("task_type", TASK_TYPE_OPTIONS, key="v01_task")
+            v01_task = st.selectbox(
+                "task_type",
+                TASK_TYPE_OPTIONS,
+                key="v01_task",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
             v01_followup = st.number_input(
-                "min_followup_months", 0, 60, 12, key="v01_followup",
+                "min_followup_months",
+                0,
+                60,
+                12,
+                key="v01_followup",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
         with fc2:
             v01_labels = st.text_input(
                 "required_labels (comma-separated)",
                 "overall_survival_months, death_event",
                 key="v01_labels",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
             v01_markers = st.text_input(
                 "required_molecular_markers",
                 "",
                 key="v01_markers",
                 placeholder="MSI_status, HER2",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
             v01_annotations = st.text_input(
                 "required_annotations",
                 "",
                 key="v01_annotations",
                 placeholder="tnm_stage, who_grade",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
 
-        if st.button("Run V-01 Assess", type="primary", key="btn_v01"):
+        if st.button(
+            "Run V-01 Assess",
+            type="primary",
+            key="btn_v01",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             labels = [x.strip() for x in v01_labels.split(",") if x.strip()]
             markers = [x.strip() for x in v01_markers.split(",") if x.strip()]
             annotations = [x.strip() for x in v01_annotations.split(",") if x.strip()]
@@ -470,7 +817,11 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
         st.caption(
             "Same hypothesis as V-01; highlights data bottlenecks and alternative directions."
         )
-        if st.button("Copy from V-01 form & run V-02", key="btn_v02_copy"):
+        if st.button(
+            "Copy from V-01 form & run V-02",
+            key="btn_v02_copy",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             labels = [x.strip() for x in st.session_state.get("v01_labels", "").split(",") if x.strip()]
             markers = [x.strip() for x in st.session_state.get("v01_markers", "").split(",") if x.strip()]
             annotations = [x.strip() for x in st.session_state.get("v01_annotations", "").split(",") if x.strip()]
@@ -492,8 +843,13 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
             value=focus_hint,
             key="cross_focus",
             placeholder="e.g. radiomics",
+            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
         )
-        if st.button("Build cross matrix", key="btn_cross"):
+        if st.button(
+            "Build cross matrix",
+            key="btn_cross",
+            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+        ):
             st.session_state["cross_result"] = tool_literature_data_cross_matrix(
                 focus=cross_focus or None,
             )
@@ -515,13 +871,32 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
         report_text = st.session_state.get("report", "")
         parsed_gaps = parse_gap_titles(report_text) if report_text else []
         if parsed_gaps:
-            gap_pick = st.selectbox("Select gap from debate report", parsed_gaps, key="feas_gap_pick")
-            if st.button("Assess selected gap", type="primary", key="btn_gap_assess"):
+            gap_pick = st.selectbox(
+                "Select gap from debate report",
+                parsed_gaps,
+                key="feas_gap_pick",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "Assess selected gap",
+                type="primary",
+                key="btn_gap_assess",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
                 fr = assess_gap_feasibility(gap_pick, report_text)
                 st.session_state["gap_feas_result"] = fr
         else:
-            manual_gap = st.text_area("Or enter gap title / description", height=100, key="feas_manual_gap")
-            if st.button("Assess manual gap", key="btn_manual_gap") and manual_gap.strip():
+            manual_gap = st.text_area(
+                "Or enter gap title / description",
+                height=100,
+                key="feas_manual_gap",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "Assess manual gap",
+                key="btn_manual_gap",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ) and manual_gap.strip():
                 fr = assess_gap_feasibility(manual_gap.strip(), manual_gap.strip())
                 st.session_state["gap_feas_result"] = fr
 
@@ -951,8 +1326,8 @@ for _k, _v in [
 
 # Sidebar
 with st.sidebar:
-    st.title("Gap Debate Analysis")
-    st.caption("Pathomics/Radiomics Full-Text KG")
+    st.title("Research Gap Analysis")
+    st.caption("Pathomics Full-Text KG")
     st.divider()
 
     stats = db_stats()
@@ -1094,15 +1469,12 @@ if run_button:
 
 st.divider()
 
-tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs([
-    "Debate Process",
-    "Weekly Hotspot",
-    "Visualization",
-    "Evidence & Literature",
-    "Gap Report",
-    "Data Feasibility (Fangxin LIS)",
-    "Research Proposal",
-])
+bootstrap_main_tab_state()
+
+tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs(
+    MAIN_TAB_LABELS
+)
+render_main_tab_sync()
 
 if not st.session_state["events"]:
     with tab_debate:
@@ -1257,18 +1629,35 @@ elif st.session_state["events"]:
             ["Select from report", "Enter manually"],
             horizontal=True,
             label_visibility="collapsed",
+            key="gap_source",
+            on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
         )
         if gap_source == "Select from report":
-            gap_input = st.selectbox("Select gap", parsed, key="gap_sel") if parsed else ""
+            gap_input = (
+                st.selectbox(
+                    "Select gap",
+                    parsed,
+                    key="gap_sel",
+                    on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
+                )
+                if parsed
+                else ""
+            )
             if not parsed:
                 st.info("Run Gap Debate first to populate gap titles.")
         else:
-            gap_input = st.text_area("Custom gap", height=120, key="gap_manual")
+            gap_input = st.text_area(
+                "Custom gap",
+                height=120,
+                key="gap_manual",
+                on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
+            )
 
         gen_btn = st.button(
             "Generate Research Proposal",
             type="primary",
             disabled=not (gap_input and str(gap_input).strip()),
+            on_click=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
         )
 
         if gen_btn and gap_input:

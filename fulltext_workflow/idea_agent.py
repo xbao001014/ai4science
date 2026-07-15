@@ -24,6 +24,7 @@ from analysis.agent_utils import (
 )
 from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
+from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
 from feasibility.disease_mapper import map_gap_to_disease
 from db.schema import get_conn, init_db
 
@@ -38,21 +39,15 @@ def _q(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def tool_related_papers(keyword: str) -> dict:
-    rows = _q(f"""
-        SELECT DISTINCT p.title, p.year, p.journal_name, p.study_type,
-               p.abstract, p.full_text_status, p.pmid
-        FROM papers p
-        JOIN relations r ON r.source_pmid = p.pmid
-        JOIN entities e ON r.object_id = e.id
-        WHERE LOWER(e.name) LIKE LOWER('%{keyword}%')
-           OR LOWER(p.title) LIKE LOWER('%{keyword}%')
-        ORDER BY p.year DESC
-        LIMIT {config.TOOL_TOP_N}
-    """)
-    return {"description": f"Papers related to '{keyword}'", "count": len(rows), "data": rows}
+    rows, strategy = search_papers_for_topic(keyword, limit=config.TOOL_TOP_N)
+    desc = f"Papers related to '{keyword}'"
+    if strategy not in ("full_phrase", "empty", "no_match"):
+        desc += f" (matched via {strategy})"
+    return {"description": desc, "count": len(rows), "data": rows}
 
 
 def tool_methods_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_m.name AS method,
                COUNT(DISTINCT r_m.source_pmid) AS paper_cnt,
@@ -64,8 +59,7 @@ def tool_methods_for_topic(keyword: str) -> dict:
         JOIN relations r_m ON r_m.source_pmid = p.pmid
         JOIN entities e_m ON r_m.object_id = e_m.id
         WHERE r_m.relation = 'APPLIES_METHOD' AND e_m.type = 'Method'
-          AND (LOWER(e_d.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
+          {pmid_fc}
         GROUP BY e_m.id
         ORDER BY paper_cnt DESC LIMIT {config.TOOL_TOP_N}
     """)
@@ -73,6 +67,7 @@ def tool_methods_for_topic(keyword: str) -> dict:
 
 
 def tool_datasets_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_ds.name AS dataset,
                COUNT(DISTINCT r_ds.source_pmid) AS used_by_papers
@@ -82,14 +77,14 @@ def tool_datasets_for_topic(keyword: str) -> dict:
         JOIN relations r_ds ON r_ds.source_pmid = p.pmid
         JOIN entities e_ds ON r_ds.object_id = e_ds.id
         WHERE r_ds.relation = 'USES_DATASET' AND e_ds.type = 'Dataset'
-          AND (LOWER(e_d.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
+          {pmid_fc}
         GROUP BY e_ds.id ORDER BY used_by_papers DESC LIMIT {config.TOOL_TOP_N}
     """)
     return {"description": f"Datasets in '{keyword}' research", "count": len(rows), "data": rows}
 
 
 def tool_metrics_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_mt.name AS metric, r_mt.metric_value,
                p.title, p.year, p.pmid,
@@ -101,14 +96,14 @@ def tool_metrics_for_topic(keyword: str) -> dict:
         JOIN relations r_mt ON r_mt.source_pmid = p.pmid
         JOIN entities e_mt ON r_mt.object_id = e_mt.id
         WHERE r_mt.relation = 'ACHIEVES_METRIC' AND e_mt.type = 'Metric'
-          AND (LOWER(e_d.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
+          {pmid_fc}
         ORDER BY p.year DESC LIMIT {config.TOOL_TOP_N}
     """)
     return {"description": f"Metrics with evidence for '{keyword}'", "count": len(rows), "data": rows}
 
 
 def tool_author_limitations_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("r.source_pmid", keyword)
     rows = _q(f"""
         SELECT e.name AS limitation,
                r.source_pmid, r.evidence_section, r.evidence_quote,
@@ -117,14 +112,14 @@ def tool_author_limitations_for_topic(keyword: str) -> dict:
         JOIN entities e ON r.object_id = e.id
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE (r.relation = 'REPORTS_LIMITATION' OR e.type = 'Limitation')
-          AND (LOWER(e.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
+          {pmid_fc}
         LIMIT {config.TOOL_TOP_N}
     """)
     return {"description": f"Author-stated limitations for '{keyword}'", "count": len(rows), "data": rows}
 
 
 def tool_modality_coverage_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_m.name AS modality,
                COUNT(DISTINCT r_m.source_pmid) AS paper_cnt
@@ -134,27 +129,26 @@ def tool_modality_coverage_for_topic(keyword: str) -> dict:
         JOIN relations r_m ON r_m.source_pmid = p.pmid
         JOIN entities e_m ON r_m.object_id = e_m.id
         WHERE r_m.relation = 'USES_MODALITY' AND e_m.type = 'Modality'
-          AND (LOWER(e_d.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
+          {pmid_fc}
         GROUP BY e_m.id ORDER BY paper_cnt DESC LIMIT {config.TOOL_TOP_N}
     """)
     return {"description": f"Imaging/clinical modality coverage for '{keyword}'", "count": len(rows), "data": rows}
 
 
 def tool_recent_papers_for_topic(keyword: str) -> dict:
-    rows = _q(f"""
-        SELECT DISTINCT p.title, p.year, p.journal_name, p.study_type,
-               p.abstract, p.pmid, p.full_text_status
-        FROM papers p
-        JOIN relations r ON r.source_pmid = p.pmid
-        JOIN entities e ON r.object_id = e.id
-        WHERE (LOWER(e.name) LIKE LOWER('%{keyword}%')
-               OR LOWER(p.title) LIKE LOWER('%{keyword}%'))
-          AND p.year >= {config.SEARCH_YEAR_START}
-        ORDER BY p.year DESC
-        LIMIT {config.TOOL_TOP_N}
-    """)
-    return {"description": f"Recent papers ({config.SEARCH_YEAR_START}+) for '{keyword}'", "count": len(rows), "data": rows}
+    rows, strategy = search_papers_for_topic(
+        keyword,
+        extra_where=f" AND p.year >= {config.SEARCH_YEAR_START}",
+        limit=config.TOOL_TOP_N,
+        select_columns=(
+            "p.title, p.year, p.journal_name, p.study_type, "
+            "p.abstract, p.pmid, p.full_text_status"
+        ),
+    )
+    desc = f"Recent papers ({config.SEARCH_YEAR_START}+) for '{keyword}'"
+    if strategy not in ("full_phrase", "empty", "no_match"):
+        desc += f" (matched via {strategy})"
+    return {"description": desc, "count": len(rows), "data": rows}
 
 
 _SQL_IDEA_TOOLS: dict[str, Any] = {
@@ -169,41 +163,49 @@ _SQL_IDEA_TOOLS: dict[str, Any] = {
 
 IDEA_TOOLS: dict[str, Any] = {**_SQL_IDEA_TOOLS, **GRAPH_TOOLS, **FEASIBILITY_TOOLS}
 
+_KEYWORD_SCHEMA = {
+    "type": "string",
+    "description": (
+        "2-4 core terms preferred (e.g. 'habitat imaging breast cancer'); "
+        "long gap titles are auto-decomposed when no exact match."
+    ),
+}
+
 _IDEA_TOOL_SCHEMAS: list[dict] = [
     {"type": "function", "function": {
         "name": "related_papers",
-        "description": "Retrieve papers related to a research gap keyword.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "description": "Retrieve papers related to a research gap keyword (multi-level match).",
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "methods_for_topic",
         "description": "List AI methods used in research matching the keyword.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "datasets_for_topic",
         "description": "List datasets used in research matching the keyword.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "metrics_for_topic",
         "description": "Performance metrics with full-text evidence quotes.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "author_limitations_for_topic",
         "description": "Author-stated limitations with evidence_section and evidence_quote.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "modality_coverage_for_topic",
         "description": "Modality (CT/MRI/WSI etc.) coverage for the topic.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
         "name": "recent_papers_for_topic",
         "description": f"Recent papers since {config.SEARCH_YEAR_START} for the topic.",
-        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
 ]
 

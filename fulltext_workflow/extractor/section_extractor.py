@@ -4,9 +4,7 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
 from tqdm import tqdm
 
 import config
@@ -18,24 +16,11 @@ from db.schema import (
     mark_extraction_done,
     upsert_entity,
 )
-from extractor.llm_client import llm_call_structured, truncate_input
+from extractor.entity_normalize import postprocess_triples
+from extractor.llm_client import configure_concurrency, llm_call_structured, truncate_input
+from extractor.skip_rules import skip_extraction_reason as _skip_extraction_reason
 from extractor.study_classifier import classify_study_type
-
-EntityTypeLiteral = Literal[
-    "Disease", "Method", "Task", "Tissue", "Dataset", "Metric", "Modality", "Limitation"
-]
-
-RelationLiteral = Literal[
-    "APPLIES_METHOD",
-    "TARGETS_DISEASE",
-    "OPERATES_ON",
-    "PERFORMS_TASK",
-    "USES_DATASET",
-    "ACHIEVES_METRIC",
-    "RELATED_TO",
-    "REPORTS_LIMITATION",
-    "USES_MODALITY",
-]
+from extractor.triple_models import Entity, ExtractionResult, RelationLiteral, Triple
 
 _db_lock = threading.Lock()
 
@@ -51,12 +36,49 @@ Relation types:
   USES_DATASET, ACHIEVES_METRIC, RELATED_TO (Method->Method only),
   REPORTS_LIMITATION (Paper->Limitation), USES_MODALITY (Paper->Modality)
 
-Rules:
+General rules:
   - Extract only facts clearly stated in the section text
-  - Normalize entity names concisely
   - Include evidence_quote: short verbatim phrase (max 200 chars)
   - polarity: asserted for confirmed facts, hypothesized for future work
   - Aim for 3-15 triples per section
+  - Use lowercase concise entity names
+
+Entity disambiguation:
+  - Modality = imaging/data type (CT, MRI, WSI, H&E histopathology)
+  - Task = clinical/ML objective (tumor segmentation, survival prediction)
+  - Method = HOW the task is solved (resnet-50, lasso feature selection, grad-cam)
+  - Do NOT use umbrella terms as Method when a specific technique is named
+
+Method naming policy (CRITICAL):
+  - Extract the MOST SPECIFIC implementable technique this paper uses or evaluates
+  - Prefer: model architecture, named algorithm, software tool, feature-selection procedure
+  - AVOID standalone umbrella terms unless no more specific method is stated:
+    deep learning, machine learning, artificial intelligence, AI, radiomics,
+    neural network, statistical analysis
+  - If both umbrella and specific names appear, extract ONLY the specific one
+  - Compound format: "resnet-50 transfer learning", "pyradiomics lasso selection",
+    "u-net segmentation", "federated xgboost classification"
+  - "radiomics" alone is usually NOT a Method; use the named tool/procedure instead
+
+Limitation policy:
+  - One atomic, actionable constraint per Limitation entity
+  - Canonical phrasing: "small sample size", "lack of external validation",
+    "retrospective single-center design", "class imbalance"
+  - Must be explicitly stated by authors; do not infer unstated weaknesses
+  - Do NOT extract vague field-level complaints without a concrete study flaw
+
+Examples:
+  TEXT: "We trained ResNet-50 with transfer learning on WSIs."
+  GOOD: Method="resnet-50 transfer learning", Task="classification", Modality="WSI"
+  BAD: Method="deep learning", Method="machine learning"
+
+  TEXT: "Radiomics features were extracted with PyRadiomics and selected via LASSO."
+  GOOD: Method="pyradiomics feature extraction", Method="lasso feature selection"
+  BAD: Method="radiomics"
+
+  TEXT: "Limitations include retrospective single-center design with 87 patients."
+  GOOD: Limitation="retrospective single-center design", Limitation="small sample size"
+  BAD: Limitation="study limitations"
 
 Respond with JSON:
 {"triples": [{"subject": {"name": "...", "type": "Method"}, "relation": "APPLIES_METHOD",
@@ -65,36 +87,36 @@ Respond with JSON:
 """
 
 _SECTION_HINTS = {
-    "methods": "Focus on methods, datasets, tasks, and modalities used.",
-    "results": "Focus on metrics with numeric values in metric_value (e.g. AUC=0.92).",
-    "discussion": "Focus on limitations, modalities, diseases, and tasks discussed.",
-    "limitations": "Extract Limitation entities and REPORTS_LIMITATION relations.",
-    "future_work": "Extract hypothesized limitations and future tasks; use polarity=hypothesized.",
-    "introduction": "Focus on disease, task, and modality context.",
-    "abstract": "Extract core disease, method, task, dataset, metric relations.",
-    "other": "Extract any clear pathology AI / radiomics facts.",
+    "methods": (
+        "Focus on methods, datasets, tasks, and modalities used IN THIS STUDY. "
+        "APPLIES_METHOD only for techniques implemented or evaluated here."
+    ),
+    "results": (
+        "Focus on metrics with numeric values in metric_value (e.g. AUC=0.92). "
+        "APPLIES_METHOD only for models/algorithms whose performance is reported."
+    ),
+    "discussion": (
+        "Focus on Limitation, Disease, Task, Modality. "
+        "Do NOT emit APPLIES_METHOD — generic ML/DL mentions here are not this paper's methods."
+    ),
+    "limitations": (
+        "Extract Limitation entities and REPORTS_LIMITATION relations only. "
+        "Use canonical limitation phrasing; one flaw per entity."
+    ),
+    "future_work": (
+        "Extract hypothesized Limitation and Task entities; use polarity=hypothesized. "
+        "Do NOT emit APPLIES_METHOD unless authors name a concrete new algorithm."
+    ),
+    "introduction": (
+        "Focus on Disease, Task, Modality context. "
+        "Do NOT emit APPLIES_METHOD."
+    ),
+    "abstract": (
+        "Extract core Disease, Method, Task, Dataset, Metric relations. "
+        "Prefer specific methods over umbrella terms."
+    ),
+    "other": "Extract any clear pathology AI / radiomics facts; prefer specific methods.",
 }
-
-from extractor.skip_rules import skip_extraction_reason as _skip_extraction_reason
-
-
-class Entity(BaseModel):
-    name: str
-    type: EntityTypeLiteral
-
-
-class Triple(BaseModel):
-    subject: Entity
-    relation: RelationLiteral
-    object: Entity
-    metric_value: Optional[str] = None
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    evidence_quote: Optional[str] = Field(default=None, max_length=300)
-    polarity: Literal["asserted", "hypothesized"] = "asserted"
-
-
-class ExtractionResult(BaseModel):
-    triples: list[Triple] = Field(default_factory=list)
 
 
 def _section_system(section_type: str) -> str:
@@ -121,15 +143,15 @@ def _extract_from_text(
     if not raw:
         return []
     try:
-        return ExtractionResult.model_validate(raw).triples
+        triples = ExtractionResult.model_validate(raw).triples
     except Exception:
-        valid: list[Triple] = []
+        triples = []
         for item in raw.get("triples", []):
             try:
-                valid.append(Triple.model_validate(item))
+                triples.append(Triple.model_validate(item))
             except Exception:
                 pass
-        return valid
+    return postprocess_triples(triples, section_type)
 
 
 def _save_triple(
@@ -196,16 +218,15 @@ def _relation_count(pmid: str) -> int:
             ).fetchone()[0]
 
 
+from extractor.section_utils import merge_sections_by_type
 def _extract_fulltext(
     paper: dict, paper_id: int, pmid: str, title: str, granularity: str
 ) -> int:
     sections = get_paper_sections(paper_id)
     extract_types = _section_types_for_paper(has_fulltext=True)
-    jobs = [
-        sec
-        for sec in sections
-        if sec["section_type"] in extract_types and (sec["content"] or "").strip()
-    ]
+    jobs = merge_sections_by_type(
+        sec for sec in sections if sec["section_type"] in extract_types
+    )
     before = _relation_count(pmid)
 
     def _run_one(sec) -> None:
@@ -320,11 +341,18 @@ def run_extraction(limit: int | None = None) -> None:
         papers = get_papers_for_extraction(limit=limit)
         lim = limit
 
+    llm_parallel = max(
+        config.LLM_MAX_CONCURRENT,
+        config.EXTRACT_SECTION_WORKERS * config.EXTRACT_PAPER_WORKERS,
+    )
+    configure_concurrency(llm_parallel)
+
     mode = "core sections" if config.EXTRACT_CORE_ONLY else "all sections"
     print(
         f"[Extractor] {len(papers)} papers (limit={'all' if limit == 0 else lim}), "
         f"{mode}, section_workers={config.EXTRACT_SECTION_WORKERS}, "
-        f"paper_workers={config.EXTRACT_PAPER_WORKERS}."
+        f"paper_workers={config.EXTRACT_PAPER_WORKERS}, "
+        f"llm_max_concurrent={llm_parallel}."
     )
 
     paper_workers = max(1, config.EXTRACT_PAPER_WORKERS)

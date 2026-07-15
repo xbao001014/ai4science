@@ -324,3 +324,27 @@
 
 `GET /api/v1/pathology/text-disease-matches?DiseaseCode=D_ADENOCARCINOMA&Limit=8`
 
+---
+
+## V1.1 对齐说明（库表设计 ↔ HTTP）
+
+参考文档：`数据库接口更新V1.1.pdf`（18 张表 + §7 常用查询口径）。
+
+当前对外 HTTP **仍为上述 GET 集合**；本项目在客户端按 V1.1 口径聚合：
+
+| V1.1 口径 | 客户端实现 | 主要依赖接口 |
+|-----------|------------|--------------|
+| §7.1 疾病病人数 | `disease_cohort_stats` | `/diseases/sample-count-by-hospital`, `/diseases/patients` |
+| §7.2 疾病切片数 | 同上 | `/diseases/slides` |
+| §7.3 属性分布 | `attribute_distribution` | `/patients/disease-attributes` |
+| §7.4 亚型分布 | `subtype_distribution` | `/patients/disease-subtypes` |
+| §7.5–7.7 文本映射/待审核 | `text_disease_matches` | `/text-disease-matches` |
+| §7.8 分子/IHC 阳性 | `molecular_positivity` | `/molecular-results` |
+
+尚未暴露为 REST、客户端暂不可直接查询：
+
+- `disease_alias_dict` / `disease_subtype_alias_dict`（别名解析改用 text match + diseases 模糊查询近似）
+- `slide_annotation_ref`（外部标注切片数 §7.9）
+
+`bootstrap-landscape` 会把 V1.1 扩展字段写入 `pathology_landscape.payload.v11`。
+

@@ -146,6 +146,8 @@ EXTRACT_SKIP_STUDY_LLM: bool = os.getenv("EXTRACT_SKIP_STUDY_LLM", "false").lowe
 TOOL_TOP_N: int = int(os.getenv("TOOL_TOP_N", "30"))
 GRAPH_TOP_N: int = int(os.getenv("GRAPH_TOP_N", "25"))
 GRAPH_REACH_PAPER_SAMPLE: int = int(os.getenv("GRAPH_REACH_PAPER_SAMPLE", "40"))
+# Cap co-occurrence clique size per paper (O(k^2) edges); keeps PR quality for hubs
+GRAPH_MAX_ENTITIES_PER_PAPER: int = int(os.getenv("GRAPH_MAX_ENTITIES_PER_PAPER", "40"))
 
 STUDY_TYPES: list[str] = [
     "ai_algorithm",

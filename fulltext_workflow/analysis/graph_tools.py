@@ -13,34 +13,55 @@ from typing import Any
 import networkx as nx
 
 import config
-from analysis.focus_filter import focus_sql_clause
+from analysis.focus_filter import focus_pmid_in_clause, focus_sql_clause, normalize_focus
 from db.schema import get_conn
 
-_ENTITY_COOC_GRAPH: nx.Graph | None = None
+_ENTITY_COOC_CACHE: dict[str, nx.Graph] = {}
+_PAGERANK_CACHE: dict[str, dict] = {}
 _ENTITY_TYPES = {"Disease", "Method", "Task", "Tissue", "Dataset", "Metric", "Modality"}
 _REACH_RESULTS_CACHE: dict[tuple[Any, ...], dict] = {}
 _REACH_PAPER_SAMPLE: int = config.GRAPH_REACH_PAPER_SAMPLE
+_TYPE_SQL = "('Disease','Method','Task','Tissue','Dataset','Metric','Modality')"
 
 
-def _get_entity_cooc_graph() -> nx.Graph:
-    global _ENTITY_COOC_GRAPH
-    if _ENTITY_COOC_GRAPH is not None:
-        return _ENTITY_COOC_GRAPH
+def _graph_cache_key(focus: str | None) -> str:
+    return (normalize_focus(focus) or "").lower()
 
+
+def _get_entity_cooc_graph(focus: str | None = None) -> nx.Graph:
+    """Build entity co-occurrence graph; optional focus seeds papers via disease/title."""
+    key = _graph_cache_key(focus)
+    cached = _ENTITY_COOC_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    focus_n = normalize_focus(focus)
+    pmid_clause = focus_pmid_in_clause("r.source_pmid", focus_n) if focus_n else ""
     with get_conn() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(
+            f"""
             SELECT r.source_pmid, e.id AS eid, e.name, e.type
             FROM relations r
             JOIN entities e ON r.object_id = e.id
-            WHERE e.type IN ('Disease','Method','Task','Tissue','Dataset','Metric','Modality')
-        """).fetchall()
+            WHERE e.type IN {_TYPE_SQL}
+            {pmid_clause}
+            """
+        ).fetchall()
 
     paper_entities: dict[str, list[tuple[int, str, str]]] = {}
+    seen_per_paper: dict[str, set[int]] = {}
+    max_per = max(5, config.GRAPH_MAX_ENTITIES_PER_PAPER)
     for row in rows:
         pmid = row["source_pmid"]
-        paper_entities.setdefault(pmid, []).append(
-            (row["eid"], row["name"], row["type"])
-        )
+        eid = row["eid"]
+        seen = seen_per_paper.setdefault(pmid, set())
+        if eid in seen:
+            continue
+        ents = paper_entities.setdefault(pmid, [])
+        if len(ents) >= max_per:
+            continue
+        seen.add(eid)
+        ents.append((eid, row["name"], row["type"]))
 
     G = nx.Graph()
     for ents in paper_entities.values():
@@ -57,13 +78,14 @@ def _get_entity_cooc_graph() -> nx.Graph:
                 else:
                     G.add_edge(a, b, weight=1)
 
-    _ENTITY_COOC_GRAPH = G
+    _ENTITY_COOC_CACHE[key] = G
     return G
 
 
 def invalidate_cache() -> None:
-    global _ENTITY_COOC_GRAPH, _REACH_RESULTS_CACHE
-    _ENTITY_COOC_GRAPH = None
+    global _REACH_RESULTS_CACHE
+    _ENTITY_COOC_CACHE.clear()
+    _PAGERANK_CACHE.clear()
     _REACH_RESULTS_CACHE.clear()
 
 
@@ -325,6 +347,17 @@ def _compute_pagerank(G: nx.Graph, alpha: float = 0.85, max_iter: int = 100) -> 
     return pr
 
 
+def _get_pagerank(focus: str | None = None) -> dict:
+    key = _graph_cache_key(focus)
+    cached = _PAGERANK_CACHE.get(key)
+    if cached is not None:
+        return cached
+    G = _get_entity_cooc_graph(focus)
+    pr = _compute_pagerank(G)
+    _PAGERANK_CACHE[key] = pr
+    return pr
+
+
 def tool_graph_entity_pagerank(
     entity_type: str = "Method",
     focus: str | None = None,
@@ -332,19 +365,22 @@ def tool_graph_entity_pagerank(
 ) -> dict:
     if top_n is None:
         top_n = config.GRAPH_TOP_N
-    G = _get_entity_cooc_graph()
+    focus_n = normalize_focus(focus)
+    G = _get_entity_cooc_graph(focus_n)
     if G.number_of_nodes() == 0:
         return {"description": "Entity co-occurrence graph is empty", "data": []}
 
-    pr = _compute_pagerank(G)
+    pr = _get_pagerank(focus_n)
 
+    pmid_clause = focus_pmid_in_clause("r.source_pmid", focus_n) if focus_n else ""
     with get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT e.id, e.name, e.type, COUNT(DISTINCT r.source_pmid) AS paper_cnt
             FROM entities e
             JOIN relations r ON r.object_id = e.id
             WHERE e.type = ?
+            {pmid_clause}
             GROUP BY e.id
             """,
             (entity_type,),
@@ -358,8 +394,6 @@ def tool_graph_entity_pagerank(
         if node.get("entity_type") != entity_type:
             continue
         name = node.get("name", "")
-        if focus and focus.lower() not in name.lower():
-            continue
         pc = paper_cnt_map.get(eid, 0)
         pg = pr.get(eid, 0.0)
         candidates.append({
@@ -371,9 +405,10 @@ def tool_graph_entity_pagerank(
         })
 
     candidates.sort(key=lambda x: x["pr_paper_ratio"], reverse=True)
+    scope = f"focus={focus_n!r}" if focus_n else "full corpus"
     return {
         "description": (
-            f"{entity_type} PageRank vs paper count. "
+            f"{entity_type} PageRank vs paper count ({scope}). "
             "High pr_paper_ratio = structurally important but under-studied."
         ),
         "data": candidates[:top_n],
@@ -387,7 +422,8 @@ def tool_graph_community_gaps(
 ) -> dict:
     if top_n is None:
         top_n = config.GRAPH_TOP_N
-    G = _get_entity_cooc_graph()
+    focus_n = normalize_focus(focus)
+    G = _get_entity_cooc_graph(focus_n)
     if G.number_of_nodes() < 10:
         return {"description": "Too few nodes for community detection", "data": []}
 
@@ -417,10 +453,6 @@ def tool_graph_community_gaps(
             for eid, _ in top_nodes
             if eid in G.nodes
         ]
-        if focus:
-            representatives = [r for r in representatives if focus.lower() in r.lower()]
-            if not representatives:
-                continue
 
         type_counts: dict[str, int] = {}
         for eid in comm:
@@ -441,9 +473,10 @@ def tool_graph_community_gaps(
         })
 
     community_summaries.sort(key=lambda x: x["isolation_score"], reverse=True)
+    scope = f"focus={focus_n!r}" if focus_n else "full corpus"
     return {
         "description": (
-            f"Community detection found {len(communities)} communities. "
+            f"Community detection ({scope}) found {len(communities)} communities. "
             "High isolation_score = research island = cross-community opportunity."
         ),
         "data": community_summaries[:top_n],
@@ -487,6 +520,7 @@ GRAPH_TOOL_SCHEMAS: list[dict] = [
             "name": "graph_entity_pagerank",
             "description": (
                 "PageRank on entity co-occurrence graph vs paper count. "
+                "focus seeds papers by disease/title (not entity-name substring). "
                 "High pr_paper_ratio = under-studied but structurally important entity."
             ),
             "parameters": {
@@ -496,7 +530,10 @@ GRAPH_TOOL_SCHEMAS: list[dict] = [
                         "type": "string",
                         "enum": ["Disease", "Method", "Task", "Dataset", "Modality"],
                     },
-                    "focus": {"type": "string"},
+                    "focus": {
+                        "type": "string",
+                        "description": "Disease/topic seed for paper subset",
+                    },
                     "top_n": {"type": "integer"},
                 },
                 "required": [],
@@ -509,6 +546,7 @@ GRAPH_TOOL_SCHEMAS: list[dict] = [
             "name": "graph_community_gaps",
             "description": (
                 "Community detection on entity co-occurrence graph. "
+                "focus seeds papers by disease/title. "
                 "High isolation_score = research island = cross-community gap."
             ),
             "parameters": {
@@ -516,7 +554,10 @@ GRAPH_TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "min_community_size": {"type": "integer"},
                     "top_n": {"type": "integer"},
-                    "focus": {"type": "string"},
+                    "focus": {
+                        "type": "string",
+                        "description": "Disease/topic seed for paper subset",
+                    },
                 },
                 "required": [],
             },

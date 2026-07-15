@@ -22,6 +22,7 @@ from feasibility.landscape_builder import (
     infer_tasks,
 )
 from feasibility.mock_client import MockPathologyDataClient
+from feasibility.v11_queries import build_v11_landscape_extras
 
 _MARKER_POOL_KEYS = {
     "MSI_status": "has_msi_status",
@@ -260,6 +261,12 @@ class ApiPathologyDataClient:
         self._catalog_by_code[disease_code] = catalog
         self._disease_data[disease_code] = disease_data
 
+        v11 = build_v11_landscape_extras(
+            self._api,
+            disease_code=disease_code,
+            disease_name_zh=catalog.get("name_zh"),
+        )
+
         return {
             "disease_id": disease_code,
             "catalog": catalog,
@@ -270,7 +277,9 @@ class ApiPathologyDataClient:
             "molecular": self.get_molecular_markers(disease_code),
             "feasibility_pools": pools,
             "wsi_specs": disease_data["wsi_specs"],
+            "v11": v11,
             "data_source": "fangxin_api",
+            "schema_version": "v1.1",
         }
 
     def _ensure_disease(self, disease_id: str) -> dict[str, Any]:

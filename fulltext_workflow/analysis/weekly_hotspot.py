@@ -102,9 +102,14 @@ def compute_emerging_entities(
     min_r = min_recent if min_recent is not None else config.HOTSPOT_MIN_RECENT_PAPERS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, prior_start, prior_end = _window_params(window, prior)
+    # Method heat should reflect techniques applied in papers, not RELATED_TO
+    # co-mentions of umbrella terms (deep learning / radiomics / ...).
+    relation_filter = (
+        "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
+    )
 
     rows = _q(
-        """
+        f"""
         WITH recent_pmids AS (
             SELECT pmid FROM papers WHERE created_at >= datetime('now', ?)
         ),
@@ -136,6 +141,7 @@ def compute_emerging_entities(
         JOIN papers p ON r.source_pmid = p.pmid
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE e.type = ?
+          {relation_filter}
         GROUP BY e.id
         HAVING recent_cnt >= ?
         """,
@@ -153,13 +159,17 @@ def compute_emerging_entities(
 
 def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) -> list[str]:
     recent_start, _, _ = _window_params(window_days, 0)
+    relation_filter = (
+        "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
+    )
     rows = _q(
-        """
+        f"""
         SELECT DISTINCT p.pmid
         FROM papers p
         JOIN relations r ON r.source_pmid = p.pmid
         JOIN entities e ON r.object_id = e.id
         WHERE e.name = ? AND e.type = ?
+          {relation_filter}
           AND p.created_at >= datetime('now', ?)
         ORDER BY COALESCE(p.citation_count, 0) DESC, p.year DESC
         LIMIT 3

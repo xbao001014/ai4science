@@ -366,6 +366,7 @@ def tool_limitation_impact_rank(focus: str | None = None) -> dict:
 
 def tool_hotspot_entities(focus: str | None = None) -> dict:
     fc = _focus_clause("e.name", focus)
+    # Method heat uses APPLIES_METHOD only (exclude RELATED_TO umbrella co-mentions).
     rows = _q(f"""
         SELECT e.name, e.type,
                COUNT(DISTINCT r.source_pmid) AS paper_cnt,
@@ -377,12 +378,16 @@ def tool_hotspot_entities(focus: str | None = None) -> dict:
         LEFT JOIN papers p ON r.source_pmid = p.pmid
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE 1=1 {fc}
+          AND (e.type != 'Method' OR r.relation = 'APPLIES_METHOD')
         GROUP BY e.id
         HAVING paper_cnt >= 2
         ORDER BY heat_score DESC
         LIMIT {config.TOOL_TOP_N}
     """)
-    desc = "Hot entities: paper_cnt × avg_citation (requires enrich-s2)"
+    desc = (
+        "Hot entities: paper_cnt × avg_citation (requires enrich-s2); "
+        "Method counted via APPLIES_METHOD only"
+    )
     if focus:
         desc += f" (focus: {focus})"
     return {"description": desc, "data": rows}

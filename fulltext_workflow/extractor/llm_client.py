@@ -119,5 +119,11 @@ def llm_call_structured(system: str, user: str) -> dict:
     return {}
 
 
+def configure_concurrency(max_concurrent: int) -> None:
+    """Resize global LLM semaphore (call at extraction startup)."""
+    global _concurrency
+    _concurrency = threading.Semaphore(max(1, max_concurrent))
+
+
 def truncate_input(text: str) -> str:
     return truncate_for_llm(text, config.EXTRACT_MAX_SECTION_CHARS)

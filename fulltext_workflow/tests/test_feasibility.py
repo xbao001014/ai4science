@@ -11,10 +11,23 @@ if str(_ROOT) not in sys.path:
 
 os.environ["PATHOLOGY_DATA_PROVIDER"] = "mock"
 
+import config
+
+config.PATHOLOGY_DATA_PROVIDER = "mock"
+
 from feasibility.mock_client import MockPathologyDataClient as PathologyDataClient
 from feasibility.disease_mapper import map_gap_to_disease
 from feasibility.hypothesis import HypothesisRequest
 from evolution_agent import evolve_hypothesis
+import analysis.feasibility_tools as feasibility_tools
+
+feasibility_tools._client = PathologyDataClient()
+evolve_hypothesis.__globals__.setdefault("_client", None)
+from feasibility.client import get_pathology_client
+# evolution_agent holds module-level client; rebind to mock
+import evolution_agent as evolution_agent_mod
+
+evolution_agent_mod._client = PathologyDataClient()
 
 
 def test_get_diseases():

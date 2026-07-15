@@ -130,6 +130,38 @@ def _map_via_api_search(
     return None, 0.0, "no API disease match"
 
 
+def _map_via_text_matches(gap_text: str) -> tuple[str | None, float, str]:
+    """V1.1 §7.5 — resolve via text_disease_match + disease dict when API is available."""
+    try:
+        from feasibility.http_api import HttpPathologyApi
+        from feasibility.v11_queries import resolve_disease_by_mention
+        import config
+
+        if (config.PATHOLOGY_DATA_PROVIDER or "api").lower() == "mock":
+            return None, 0.0, "mock provider"
+        api = HttpPathologyApi()
+        # Prefer Chinese disease tokens from gap text
+        tokens = re.findall(r"[\u4e00-\u9fff]{2,8}", gap_text)
+        for token in tokens[:6]:
+            hits = resolve_disease_by_mention(api, token, limit=80)
+            if hits:
+                top = hits[0]
+                conf = 0.88 if top.get("source") == "text_disease_match" else 0.75
+                if top.get("confidence") is not None:
+                    try:
+                        conf = max(conf, min(0.95, float(top["confidence"])))
+                    except (TypeError, ValueError):
+                        pass
+                return (
+                    str(top["disease_code"]),
+                    conf,
+                    f"V1.1 text match: {token} -> {top.get('disease_name_zh')}",
+                )
+    except Exception:
+        pass
+    return None, 0.0, "no text match"
+
+
 def map_gap_to_disease(
     gap_text: str,
     known_diseases: list[str] | None = None,
@@ -148,6 +180,9 @@ def map_gap_to_disease(
         api_result = _map_via_api_search(gap_text, client)
         if api_result[0]:
             return api_result
+        text_result = _map_via_text_matches(gap_text)
+        if text_result[0]:
+            return text_result
 
     for alias, disease_id in DISEASE_ALIASES.items():
         if alias in text:
@@ -180,6 +215,9 @@ def map_gap_to_disease(
             return did, 0.85, f"token alias: {token}"
 
     if client is not None:
+        text_result = _map_via_text_matches(gap_text)
+        if text_result[0]:
+            return text_result
         broad = client.search_diseases(gap_text[:20], limit=3)
         best = _pick_best_disease(broad, gap_text)
         if best:
