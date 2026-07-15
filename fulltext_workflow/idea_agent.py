@@ -493,6 +493,32 @@ def stream_idea_agent(
     last_feedback: dict = {}
     final_score = 0.0
     completed_rounds = 0
+    feasibility_score: float | None = None
+    if gap_data:
+        assess = gap_data.get("feasibility_assessment") or {}
+        raw = assess.get("feasibility_score")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                feasibility_score = float(raw)
+            except (TypeError, ValueError):
+                pass
+
+    def _capture_feasibility_from_event(event: dict) -> None:
+        nonlocal feasibility_score
+        if event.get("type") != "tool_result":
+            return
+        if event.get("name") not in ("feasibility_assess", "tool_feasibility_assess"):
+            return
+        result = event.get("result")
+        if not isinstance(result, dict):
+            return
+        raw = result.get("feasibility_score")
+        if raw is None or str(raw).strip() == "":
+            return
+        try:
+            feasibility_score = float(raw)
+        except (TypeError, ValueError):
+            pass
 
     for round_num in range(1, max_rounds + 1):
         yield {"type": "round_start", "round": round_num, "max_rounds": max_rounds}
@@ -545,6 +571,7 @@ def stream_idea_agent(
                 agent_failed = True
                 yield event
                 break
+            _capture_feasibility_from_event(event)
             yield event
         pre_draft = best_assistant_content(gen_messages)
         if not looks_like_proposal(pre_draft):
@@ -562,6 +589,7 @@ def stream_idea_agent(
                 "content": "",
                 "rounds": completed_rounds,
                 "final_score": final_score,
+                "feasibility_score": feasibility_score,
                 "aborted": True,
             }
             return
@@ -608,6 +636,7 @@ def stream_idea_agent(
                 agent_failed = True
                 yield event
                 break
+            _capture_feasibility_from_event(event)
             yield event
         critic_text = last_assistant_content(critic_messages)
         if agent_failed and not critic_text:
@@ -625,9 +654,18 @@ def stream_idea_agent(
             },
         )
         final_score = float(last_feedback.get("overall_score") or 0.0)
-        feas_score = float(last_feedback.get("feasibility_score") or 1.0)
+        raw_feas = last_feedback.get("feasibility_score")
+        if raw_feas is not None and str(raw_feas).strip() != "":
+            try:
+                feasibility_score = float(raw_feas)
+            except (TypeError, ValueError):
+                pass
+        # Missing critic score must not block accept; only assessed low scores do.
+        feas_for_accept = (
+            feasibility_score if feasibility_score is not None else 1.0
+        )
         accept = bool(last_feedback.get("accept", False)) or final_score >= accept_score
-        if feas_score < config.FEASIBILITY_SCORE_MARGINAL:
+        if feas_for_accept < config.FEASIBILITY_SCORE_MARGINAL:
             accept = False
         completed_rounds = round_num
 
@@ -637,6 +675,7 @@ def stream_idea_agent(
             "content": critic_text,
             "score": final_score,
             "accept": accept,
+            "feasibility_score": feasibility_score,
             "dimension_scores": last_feedback.get("dimension_scores", {}),
             "strengths": last_feedback.get("strengths", []),
             "critical_issues": last_feedback.get("critical_issues", []),
@@ -651,6 +690,7 @@ def stream_idea_agent(
         "content": current_draft,
         "rounds": completed_rounds,
         "final_score": final_score,
+        "feasibility_score": feasibility_score,
     }
 
 
@@ -659,7 +699,7 @@ def run_idea_agent(
     gap_data: dict | None = None,
     max_rounds: int = 3,
     verbose: bool = False,
-) -> str:
+) -> tuple[str, dict]:
     print(f"\n{'='*60}")
     print("Research Proposal — Generator x Critic")
     print(f"  Gap: {gap_text[:80]}...")
@@ -667,6 +707,11 @@ def run_idea_agent(
     print(f"{'='*60}\n")
 
     proposal = ""
+    meta: dict = {
+        "final_score": 0.0,
+        "feasibility_score": None,
+        "rounds": 0,
+    }
     for event in stream_idea_agent(gap_text=gap_text, gap_data=gap_data, max_rounds=max_rounds):
         etype = event["type"]
         if etype == "round_start":
@@ -681,12 +726,21 @@ def run_idea_agent(
             print(f"\n  [draft v{event['round']}] {len(event['content'])} chars")
         elif etype == "feedback":
             print(f"\n  [critic] score={event['score']:.1f}/10  accept={event['accept']}")
+            if event.get("feasibility_score") is not None:
+                meta["feasibility_score"] = event["feasibility_score"]
         elif etype == "final":
             proposal = event["content"]
-            print(f"\nFinalised after {event['rounds']} round(s), score {event['final_score']:.1f}/10\n")
+            meta["final_score"] = float(event.get("final_score") or 0.0)
+            meta["rounds"] = int(event.get("rounds") or 0)
+            if event.get("feasibility_score") is not None:
+                meta["feasibility_score"] = event["feasibility_score"]
+            print(
+                f"\nFinalised after {event['rounds']} round(s), "
+                f"score {event['final_score']:.1f}/10\n"
+            )
         elif etype == "error":
             print(f"\n[warning] {event['content']}")
-    return proposal
+    return proposal, meta
 
 
 if __name__ == "__main__":
@@ -709,7 +763,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    proposal = run_idea_agent(gap_text=gap_text, max_rounds=args.rounds, verbose=args.verbose)
+    proposal, _meta = run_idea_agent(gap_text=gap_text, max_rounds=args.rounds, verbose=args.verbose)
 
     print("\n" + "=" * 60)
     print(proposal[:2000] + ("..." if len(proposal) > 2000 else ""))

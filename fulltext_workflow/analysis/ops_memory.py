@@ -164,6 +164,7 @@ def persist_proposal(
     proposal_path: str = "",
     proposal_md: str = "",
     feasibility_score: float | None = None,
+    critic_score: float | None = None,
     status: str = "",
     write_file: bool = True,
 ) -> int:
@@ -200,6 +201,7 @@ def persist_proposal(
         proposal_path=path,
         proposal_md=stored_md,
         feasibility_score=feasibility_score,
+        critic_score=critic_score,
         status=status or "generated",
     )
     if path:

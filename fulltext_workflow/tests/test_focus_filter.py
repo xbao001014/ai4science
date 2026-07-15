@@ -15,6 +15,7 @@ config.DB_PATH = str(_ROOT / "data" / "test_focus_filter.db")
 
 from analysis.focus_filter import (  # noqa: E402
     debate_or_corpus_papers,
+    focus_sql_clause,
     normalize_focus,
 )
 from analysis.gap_lifecycle import compute_limitation_temporal_profiles  # noqa: E402
@@ -118,6 +119,44 @@ def test_debate_or_corpus_papers_falls_back_when_debate_has_no_titles():
     assert any("nasopharyngeal" in (r.get("title") or "").lower() for r in rows)
 
 
+def _seed_polyp_fixture() -> None:
+    paper = upsert_paper({
+        "pmid": "91000100",
+        "title": "AI detection of colorectal polyps on colonoscopy",
+        "year": 2024,
+        "abstract": "CAD for colorectal polyps.",
+        "extraction_done": 1,
+    })
+    disease_id = upsert_entity("colorectal polyps", "Disease")
+    insert_relation(
+        "Paper", paper, "TARGETS_DISEASE", "Disease", disease_id,
+        source_pmid="91000100", evidence_section="methods",
+    )
+
+
+def test_focus_sql_zh_polyp_expands_english():
+    clause = focus_sql_clause("p.title", "肠息肉")
+    assert "colorectal polyp" in clause.lower()
+    assert "colorectal" in clause.lower()
+
+
+def test_corpus_coverage_zh_polyp_nonzero_on_fixture():
+    _setup()
+    _seed_polyp_fixture()
+    cov = tool_corpus_focus_coverage(focus="肠息肉")
+    assert cov["focus_subset"]["papers"] >= 1
+
+
+def test_corpus_coverage_zh_polyp_matches_english_baseline():
+    _setup()
+    _seed_polyp_fixture()
+    zh = tool_corpus_focus_coverage(focus="肠息肉")["focus_subset"]["papers"]
+    en = tool_corpus_focus_coverage(focus="colorectal polyp")["focus_subset"]["papers"]
+    assert zh >= 1
+    assert en >= 1
+    assert zh == en
+
+
 if __name__ == "__main__":
     test_normalize_focus_treats_all_as_none()
     test_limitation_temporal_uses_disease_focus_not_limitation_name()
@@ -126,4 +165,7 @@ if __name__ == "__main__":
     test_corpus_focus_coverage_counts_subset()
     test_recent_highcite_includes_title_only_focus_paper()
     test_debate_or_corpus_papers_falls_back_when_debate_has_no_titles()
+    test_focus_sql_zh_polyp_expands_english()
+    test_corpus_coverage_zh_polyp_nonzero_on_fixture()
+    test_corpus_coverage_zh_polyp_matches_english_baseline()
     print("all ok")

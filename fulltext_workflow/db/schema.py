@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS ops_proposals (
     proposal_path       TEXT,
     proposal_md         TEXT,
     feasibility_score   REAL,
+    critic_score        REAL,
     status              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
@@ -395,10 +396,17 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             proposal_path       TEXT,
             proposal_md         TEXT,
             feasibility_score   REAL,
+            critic_score        REAL,
             status              TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
     """)
+
+    prop_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(ops_proposals)").fetchall()
+    }
+    if "critic_score" not in prop_cols:
+        conn.execute("ALTER TABLE ops_proposals ADD COLUMN critic_score REAL")
 
 
 def upsert_paper(data: dict[str, Any]) -> int:
@@ -1184,20 +1192,22 @@ def insert_ops_proposal(
     proposal_path: str = "",
     proposal_md: str = "",
     feasibility_score: float | None = None,
+    critic_score: float | None = None,
     status: str = "",
 ) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO ops_proposals
                (run_id, gap_item_id, proposal_path, proposal_md,
-                feasibility_score, status)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+                feasibility_score, critic_score, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_id,
                 gap_item_id,
                 proposal_path or None,
                 proposal_md or None,
                 feasibility_score,
+                critic_score,
                 status or None,
             ),
         )

@@ -158,14 +158,16 @@ def test_persist_proposal_fills_fields_and_links_gap():
         rid,
         gap_title="NPC radiomics prognosis modeling",
         proposal_md="# Proposal\n\n" + ("body " * 100),
+        feasibility_score=0.81,
+        critic_score=8.2,
         status="generated",
     )
     assert prop_id is not None
     with get_conn() as conn:
         row = dict(
             conn.execute(
-                "SELECT gap_item_id, proposal_path, proposal_md, status "
-                "FROM ops_proposals WHERE id=?",
+                "SELECT gap_item_id, proposal_path, proposal_md, status, "
+                "feasibility_score, critic_score FROM ops_proposals WHERE id=?",
                 (prop_id,),
             ).fetchone()
         )
@@ -177,6 +179,8 @@ def test_persist_proposal_fills_fields_and_links_gap():
         )
     assert row["gap_item_id"] is not None
     assert row["status"] == "generated"
+    assert row["feasibility_score"] == 0.81
+    assert row["critic_score"] == 8.2
     assert row["proposal_path"]
     assert os.path.isfile(row["proposal_path"])
     assert run["proposal_report_path"] == row["proposal_path"]

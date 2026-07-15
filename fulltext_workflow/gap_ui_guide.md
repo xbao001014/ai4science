@@ -1,361 +1,345 @@
 # Gap Debate UI 用户操作指南
 
-本文档说明如何使用 `gap_ui.py`（Streamlit 图形界面），完成**文献知识图谱研究空白辩论 → 数据可行性核验 → 研究方案生成**的完整流程。
+本文档说明如何使用 `gap_ui.py`（Streamlit），完成：
+
+**周热点浏览 → 文献 KG 空白辩论 → 可视化核验 → 方信数据可行性 → 研究方案生成**。
+
+对应源码：`fulltext_workflow/gap_ui.py`。命令速查见 [SCRIPTS.md](SCRIPTS.md)，流水线见 [PIPELINE.md](PIPELINE.md)。
 
 ---
 
 ## 1. 工具简介
 
-**Gap Debate UI** 是 Pathomics/Radiomics 全文知识图谱（KG）的交互式分析界面，核心能力包括：
-
 | 能力 | 说明 |
 |------|------|
-| 三角色辩论 | Opportunity Scout（机会发掘）→ Evidence Reviewer（证据审查）→ Final Synthesizer（综合定稿） |
-| 证据追溯 | 从工具调用结果中提取全文引用、PMID、文献列表 |
-| 空白报告 | 生成可下载的 Markdown 格式 Gap Report |
-| 数据可行性 | 对接方信病理 LIS API（D-01 / D-02 / V-01 / V-02） |
-| 研究方案 | 基于选定空白，由 Generator × Critic 迭代生成 Research Proposal |
+| 三角色辩论 | Opportunity Scout → Evidence Reviewer → Final Synthesizer |
+| 周热点 | 入库窗口热点榜、Week-over-Week、交叉机会、LLM 简报 |
+| 可视化 | Plotly：辩论漏斗、工具 treemap、method×disease、lit×data |
+| 证据追溯 | PMID、证据章节、引用片段、语料 focus 匹配文献 |
+| 空白报告 | Markdown Gap Report，可下载；默认写入 ops memory |
+| 数据可行性 | 方信 LIS（D-01/D-02、V1.1 分布、V-01/V-02、交叉矩阵） |
+| 研究方案 | Generator × Critic，可行性门控 |
+| Ops memory | 同 focus 软避让近重复空白；成功后持久化 |
 
-界面分为 **侧边栏（参数与启动）** 和 **五个主标签页**。
+界面 = **侧边栏** + **七个主标签页**。
 
 ---
 
 ## 2. 启动前准备
 
-### 2.1 环境依赖
-
-1. 在仓库根目录创建并安装虚拟环境：
+### 2.1 环境
 
 ```powershell
 cd D:\agent\prototype\build_kg_paper
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
+# 可视化页需要 plotly（若缺）：
+.\.venv\Scripts\pip install plotly
 ```
 
-2. 在仓库根目录 `.env` 中配置 API 密钥（辩论与方案生成必需）：
+根目录 `.env` 最少：
 
-```
+```ini
 DASHSCOPE_API_KEY=sk-xxx          # 或 OPENAI_API_KEY
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=deepseek-v4-flash
+LLM_MODEL_AGENT=qwen3.7-plus      # 辩论 / 方案 / hotspot-brief
+
+# 可行性（可选）
+PATHOLOGY_API_BASE_URL=http://ai.gzfxyl.cn/api/v1/pathology
+PATHOLOGY_API_KEY=your-key
 ```
 
-3. （推荐）先跑通数据流水线，确保知识图谱有内容：
+### 2.2 建议先有 KG 数据
 
 ```powershell
 cd fulltext_workflow
-..\.venv\Scripts\python.exe main.py run-all --limit 30
+..\.venv\Scripts\python.exe main.py run-db --limit 30 --core-only
+..\.venv\Scripts\python.exe main.py enrich-s2
+..\.venv\Scripts\python.exe main.py import-if          # 默认 data/jcr.csv
+..\.venv\Scripts\python.exe main.py build
+..\.venv\Scripts\python.exe main.py bootstrap-landscape   # 可行性；已有缓存会跳过
+# 强制重载（慢）：bootstrap-landscape --force
 ```
 
-可选增强步骤（提升空白排序质量）：
+周热点有内容前，建议至少跑过一次增量入库或 `hotspot-report`：
 
 ```powershell
-..\.venv\Scripts\python.exe main.py enrich-s2      # 引用数 enrichment
-..\.venv\Scripts\python.exe main.py import-if data/journals_if.xlsx   # 期刊 IF
-..\.venv\Scripts\python.exe main.py bootstrap-landscape --force     # 病理数据景观缓存
-```
-
-### 2.2 启动界面
-
-在 `fulltext_workflow` 目录下任选一种方式：
-
-```powershell
-# 推荐
-.\run_gap_ui.ps1
-
+.\run_pipeline.ps1 -Stage weekly
 # 或
-.\run_gap_ui.bat
+..\.venv\Scripts\python.exe main.py hotspot-report
+```
 
-# 或直接调用 venv 中的 streamlit
+### 2.3 启动 UI
+
+```powershell
+cd fulltext_workflow
+.\run_gap_ui.ps1
+# 或
 ..\.venv\Scripts\streamlit.exe run gap_ui.py
 ```
 
-启动后浏览器会自动打开（默认 `http://localhost:8501`）。若提示缺少 `openai` 模块，请确认使用的是项目 `.venv` 而非系统 Anaconda 环境。
+浏览器默认：`http://localhost:8501`。缺 `openai` 时请用项目 `.venv`，不要用系统 Anaconda。
 
 ---
 
 ## 3. 界面总览
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  侧边栏 Sidebar                                              │
-│  · 语料库统计（论文数、已抽取、S2、IF、景观缓存等）           │
-│  · Research focus / Gap 数量 / 辩论轮次 / 方案轮次           │
-│  · Run Gap Debate 按钮                                       │
-├─────────────────────────────────────────────────────────────┤
-│  主区域 — 五个标签页                                          │
-│  [Debate Process] [Evidence & Literature] [Gap Report]       │
-│  [Data Feasibility] [Research Proposal]                      │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Sidebar                                                         │
+│  Corpus 统计 · focus · Top-N · 辩论/方案轮次 · ops memory 开关   │
+│  Run Gap Debate                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│  [Debate Process] [Weekly Hotspot] [Visualization]               │
+│  [Evidence & Literature] [Gap Report]                            │
+│  [Data Feasibility (Fangxin LIS)] [Research Proposal]            │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 4. 侧边栏操作
-
-### 4.1 语料库统计（Corpus）
-
-侧边栏顶部显示当前 SQLite 数据库 `data/kg_fulltext.db` 的概况：
-
-- **Papers**：已入库文献数
-- **Extracted**：已完成 KG 抽取的文献数
-- **S2 enriched**：已 enrichment 引用数的文献数
-- **IF journals**：已导入影响因子期刊数
-- **Full-text rels**：来自全文的关系三元组数
-- **Landscape**：已缓存的病理病种数
-
-若 Papers / Extracted 为 0，需先运行 `main.py` 流水线（见 §2.1）。
-
-### 4.2 参数设置
-
-| 参数 | 说明 | 建议 |
-|------|------|------|
-| **Research focus** | 研究聚焦关键词，如 `radiomics`、`breast cancer`；留空则分析全语料 | 首次可留空；有明确方向时填写以缩小范围 |
-| **Gap recommendations** | 最终报告推荐的空白数量（3–10） | 默认 6 |
-| **Max debate rounds** | 辩论最大轮次（1–3） | 默认 2；证据不足时可增至 3 |
-| **Max Generator × Critic rounds** | 研究方案标签页中生成器与批评者的迭代轮次（1–5） | 默认 2 |
-| **Show LLM reasoning traces** | 是否展开显示各角色的 LLM 推理过程 | 调试时勾选；日常使用可关闭 |
-
-### 4.3 运行辩论
-
-点击 **Run Gap Debate**（主按钮）启动三角色辩论。运行期间页面顶部会出现实时状态面板，显示：
-
-- 当前辩论轮次
-- 各角色阶段（带颜色徽章）
-- 工具调用步骤与返回记录数
-- Evidence Reviewer 置信度（0–10）
-- Final Synthesizer 的修订请求（如需多轮）
-
-辩论结束后，侧边栏会显示本次会话统计：工具调用次数、检索记录数、证据行数。
-
-> **注意**：每次点击 Run Gap Debate 会**清空**上一次辩论的 events 和 report，重新开始。如需保留报告，请先在 Gap Report 标签页下载 Markdown。
+标签页切换会尽量保持在当前页（内部 tab sync），刷新后一般不会跳回第一页。
 
 ---
 
-## 5. 五个标签页详解
+## 4. 侧边栏
 
-### 5.1 Debate Process（辩论过程）
+### 4.1 Corpus
 
-**用途**：查看完整辩论轨迹与工具调用明细。
+来自 `data/kg_fulltext.db`：
 
-**未运行辩论时**：显示三角色说明卡片和辩论流程帮助。
+- Papers / Extracted / S2 enriched / IF journals  
+- Full-text rels / Landscape（病理病种缓存数）
 
-**运行后**：
+Extracted 为 0 时先跑抽取流水线。
 
-1. **角色卡片摘要** — Opportunity Scout / Evidence Reviewer / Final Synthesizer 的职责说明
-2. **辩论卡片**（可展开）：
-   - Opportunity Scout 候选空白列表
-   - Evidence Reviewer 审查结论与置信度
-   - Final Synthesizer 修订意见
-3. **工具调用步骤**（Step 1, Step 2, …）— 每步可展开查看：
-   - 调用角色
-   - 工具名称（如 Author-Stated Gaps、Lit Impact Matrix 等）
-   - 返回数据表格或可行性评分
+### 4.2 参数
 
-工具按类别着色，主要包括：
+| 参数 | 说明 | 默认建议 |
+|------|------|----------|
+| **Research focus** | 如 `breast cancer`、`radiomics`；空=全库 | 有明确方向时填写 |
+| **Gap recommendations** | 最终推荐空白数（3–10） | 6 |
+| **Max debate rounds** | 辩论轮次（1–3） | 2 |
+| **Max Generator × Critic rounds** | 方案页迭代（1–5） | 2 |
+| **Show LLM reasoning traces** | 展开推理过程 | 日常关 |
+| **Use ops memory** | 注入同 focus 最近约 4 次空白，软避让重复 | 开 |
+| **Persist this run** | 辩论/方案成功后写入 `ops_*` 表 | 开 |
+
+**Ops memory for this focus**（展开）：预览当前 focus 已记住的空白标题。清空记忆：
+
+```powershell
+..\.venv\Scripts\python.exe scripts/clear_ops_memory.py --focus "breast cancer" --yes
+```
+
+### 4.3 Run Gap Debate
+
+点击后清空上一次 events/report 并重新辩论。需保留结果时，先在 **Gap Report** 下载 Markdown。
+
+运行中顶部 status：轮次、角色、工具步骤、Evidence Reviewer 置信度、修订请求。结束后侧边栏显示 Session stats。
+
+---
+
+## 5. 七个主标签页
+
+### 5.1 Debate Process
+
+- 未运行：角色说明 + 辩论流程帮助  
+- 运行后：Scout / Reviewer / Synthesizer 卡片 + Step 工具调用明细  
+
+工具类别（按 expander 着色）：
 
 | 类别 | 代表工具 |
 |------|----------|
+| Corpus Diagnostics | Focus Corpus Coverage |
 | Full-Text Evidence | Author-Stated Gaps、Metric Evidence Quality |
+| Temporal Gap | Limitation Temporal / Gap Status、Combo Gap Temporal |
 | Impact Weighting | Limitation × Impact、Hotspot Entities、Lit Impact Matrix |
-| Coverage / Combination Gap | Disease-Task Coverage、Method × Disease Combo Gap |
-| Graph Analysis | Entity PageRank、Community Gaps、Disease-Method Reach |
-| Data Feasibility | D-01 Disease Catalog、V-01/V-02 可行性评估 |
+| Coverage / Combination | Disease-Task Coverage、Method × Disease Combo |
+| Graph Analysis | PageRank、Community Gaps、Disease-Method Reach |
+| Data Feasibility | D-01/D-02、V-01/V-02、Lit × Data Matrix、V1.1 系列 |
+| Weekly Hotspot | Weekly Hot × Gap（emerging_gap_opportunities） |
 
 ---
 
-### 5.2 Evidence & Literature（证据与文献）
+### 5.2 Weekly Hotspot
 
-**用途**：从辩论过程中自动汇总的可追溯证据。
+**无需先辩论即可使用。** 基于 `papers.created_at` 入库窗口与持久化快照。
 
-**两个表格**：
+| 操作 | 作用 |
+|------|------|
+| 窗口天数滑条 | 热点检测窗口（默认可跟 `HOTSPOT_WINDOW_DAYS`） |
+| **Refresh hotspots** | 重算当前窗口榜单 |
+| **Save snapshot report** | 写入 `output/weekly_hotspot_{week_id}.md` 并持久化快照 |
+| **Generate LLM brief** | 用 `LLM_MODEL_AGENT` 生成中文趋势简报 |
 
-1. **Full-Text Evidence** — 每条证据包含 PMID、标题/实体、证据章节、引用原文片段、来源工具
-2. **Papers** — 辩论中检索到的文献元数据（标题、年份、期刊、PMID、研究类型、全文状态）
+子页大致包括：Methods / Diseases / Combos / Emerging × Gap / Limitations，以及 WoW（New / Cooled / Rank changes）。至少两次 `Save snapshot` 后 WoW 才有意义。
 
-若表格为空，说明当前 focus 下工具未返回带 `evidence_quote` 或 `pmid` 的记录，可尝试扩大 focus 或先完成更多文献抽取。
-
----
-
-### 5.3 Gap Report（空白报告）
-
-**用途**：查看并导出 Final Synthesizer 产出的最终研究报告。
-
-**顶部指标**：
-
-- Focus（本次聚焦主题）
-- Debate rounds（实际辩论轮数）
-- Reviewer confidence（Evidence Reviewer 综合置信度，0–10；≥7.5 时更可能直接定稿）
-- Tool calls（工具调用总次数）
-
-报告正文中，技术角色名已替换为易懂标签（Opportunity Scout / Evidence Reviewer / Final Synthesizer）。
-
-点击 **Download report (Markdown)** 可下载带时间戳的 `.md` 文件，便于存档或分享给合作者。
+也可在 CLI：`main.py hotspot-report` / `hotspot-brief`。
 
 ---
 
-### 5.4 Data Feasibility（方信病理数据 API）
+### 5.3 Visualization
 
-**用途**：独立测试或配合辩论结果，评估研究假设在方信 LIS 数据上的可行性。
+Plotly 图（需安装 `plotly`）：
 
-> 此标签页**无需先运行辩论**即可使用（例如直接测试 API）。
+| 图 | 含义 |
+|----|------|
+| Debate funnel | Scout 候选 → 核验 / 弱证据 / 假空白 → 终稿空白 |
+| Tool treemap | 本场辩论工具调用分布 |
+| Method × disease heatmap | 组合空白热力 |
+| Lit × data scatter | 文献缺口 × 队列数据（左下≈缺口大且数据足） |
 
-#### Phase 0：数据景观缓存
+勾选 **Fill missing charts from live corpus tools**，可在未辩论或未调用对应工具时，直接查 KG / 交叉矩阵补图。
 
-页面顶部显示 SQLite `pathology_landscape` 中已缓存的病种数。
+---
+
+### 5.4 Evidence & Literature
+
+- **Full-Text Evidence**：PMID、证据章节、quote、来源工具（辩论后才有）  
+- **Papers**：辩论工具命中的文献；若无辩论但已填 focus，会按语料 focus 匹配展示论文列表  
+
+---
+
+### 5.5 Gap Report
+
+顶部指标：Focus、Debate rounds、Reviewer confidence（≥7.5 更易直接定稿）、Tool calls。
+
+正文已把 Optimist/Skeptic/Moderator 换成英文易读标签。  
+**Download report (Markdown)** 下载。若开启 Persist，会写入 `ops_runs` / `ops_gap_items`。
+
+---
+
+### 5.6 Data Feasibility (Fangxin LIS)
+
+**可不辩论独立使用。** 对接方信 LIS（schema V1.1）。
+
+#### Phase 0 Landscape
 
 | 按钮 | 作用 |
 |------|------|
-| **Bootstrap Landscape** | 从 LIS API 拉取病种目录与样本统计（若已有缓存则跳过） |
-| **Force Reload** | 强制重新从 API 全量刷新 |
+| **Bootstrap Landscape** | 拉取病种目录；已有缓存则跳过 |
+| **Force Reload** | `--force` 全量刷新（很慢，约 20–30 分钟；会打很多 API） |
 
-首次使用或下拉框无病种时，请先点击 Bootstrap Landscape。
+Cached landscape snapshot 可展开查看各病种 cases / subtypes / molecular 等。
 
-#### 子标签说明
+#### 子标签
 
-**D-01 / D-02 Catalog**
-
-- **D-01**：按器官系统、最小病例数筛选病种目录
-- **D-02**：选择某一 `disease_id`，查看该病种支持的任务类型及样本量
-
-**V-01 Feasibility**
-
-填写研究假设参数后运行可行性评估：
-
-| 字段 | 说明 |
+| 子页 | 内容 |
 |------|------|
-| disease_id | 病种编码（如 GC-ADC） |
-| task_type | 任务类型：生存预测、分级分类、分子亚型、区域分割等 |
-| min_followup_months | 最短随访月数（生存类任务） |
-| required_labels | 必需标签，逗号分隔（如 `overall_survival_months, death_event`） |
-| required_molecular_markers | 必需分子标志物（如 `MSI_status, HER2`） |
-| required_annotations | 必需标注字段（如 `tnm_stage, who_grade`） |
+| D-01 / D-02 Catalog | 病种目录、任务类型与样本量 |
+| Subtype (§7.4) | 亚型分布 |
+| Attributes (§7.3) | 属性分布 |
+| Molecular (§7.8) | 分子阳性率等 |
+| Text Matches (§7.5–7.7) | 文本病种匹配摘要 |
+| V-01 Feasibility | 假设可行性评分（队列 / labels / markers） |
+| V-02 Gap Analysis | 数据瓶颈与替代方向；可从 V-01 复制参数 |
+| Lit × Data Matrix | 文献空白 × 数据 × impact |
+| Quick check from Gap | 从辩论空白或手写描述映射病种并评估 |
 
-结果展示：Feasibility Score（0–1）、队列规模、Recommendation、样本分项 breakdown。
+V-01 常用字段：`disease_id`、`task_type`、`min_followup_months`、`required_labels` / `required_molecular_markers` / `required_annotations`。
 
-**V-02 Gap Analysis**
-
-与 V-01 使用相同假设，但额外输出**数据瓶颈**和**替代研究方向建议**。可点击 **Copy from V-01 form & run V-02** 一键复用 V-01 表单参数。
-
-**Lit × Data Matrix**
-
-输入文献聚焦关键词（默认继承 sidebar 的 focus），生成「文献空白 × 数据队列 × 引用/IF 影响」交叉矩阵。`cross_priority_score` 越高，表示该方向文献缺口大且数据与影响力条件较好。
-
-> 若矩阵为空，请先运行 `enrich-s2` 和 `import-if`，并确保 KG 已抽取。
-
-**Quick check from Gap**
-
-将辩论报告中的空白标题映射到病种并自动评估可行性：
-
-1. 若已运行辩论且报告中有空白列表 → 下拉选择空白 → **Assess selected gap**
-2. 否则在文本框手动输入空白描述 → **Assess manual gap**
-
-结果包含映射的 `disease_id`、映射置信度、V-01/V-02 评估详情及 evolution log。
+矩阵为空时：先 `extract` + `bootstrap-landscape`，并建议 `enrich-s2` + `import-if`。
 
 ---
 
-### 5.5 Research Proposal（研究方案）
+### 5.7 Research Proposal
 
-**用途**：针对某一研究空白，由 Generator（生成器）与 Critic（批评者）多轮迭代，输出完整研究方案。
+1. 先完成 Gap Debate，或 **Enter manually** 手写空白  
+2. **Select from report** / **Enter manually**  
+3. 侧边栏设好 Generator × Critic 轮次  
+4. **Generate Research Proposal**  
 
-#### 操作步骤
-
-1. **先完成 Gap Debate**（或在「Enter manually」模式下手动输入空白）
-2. 选择空白来源：
-   - **Select from report** — 从辩论报告解析出的空白标题列表中选择
-   - **Enter manually** — 自行输入空白描述
-3. 在侧边栏设置 **Max Generator × Critic rounds**（方案迭代轮次）
-4. 点击 **Generate Research Proposal**
-
-运行过程中可看到每轮的工具调用、草稿长度、Critic 评分（0–10）及是否接受。
-
-#### 结果
-
-- **Final score**：Critic 对最终方案的评分
-- **Rounds**：实际迭代轮数
-- 正文为 Markdown 格式研究方案（含背景、方法、数据、预期成果等，具体结构由 agent 生成）
-- 点击 **Download proposal (Markdown)** 下载
+结果含 Final score、迭代轮次、Markdown 方案与 **Download**。开启 Persist 时会写入 `ops_proposals`。
 
 ---
 
 ## 6. 推荐工作流
 
-### 流程 A：完整闭环（首次使用）
+### A. 周常闭环
 
 ```
-1. main.py run-all --limit 30          # 建库 + 抽取
-2. main.py bootstrap-landscape         # 缓存病理数据景观
-3. 启动 gap_ui.py
-4. 侧边栏设置 focus → Run Gap Debate
-5. Gap Report 标签页审阅并下载报告
-6. Data Feasibility → Quick check from Gap 核验 Top 空白
-7. Research Proposal → 选择最优空白 → Generate
-8. 下载 proposal .md
+1. run_pipeline.ps1 -Stage weekly          # 增量 + 热点
+2. （可选）main.py compute-gap-lifecycle --temporal-only
+3. .\run_gap_ui.ps1
+4. Weekly Hotspot 浏览 → 侧边栏 focus → Run Gap Debate
+5. Visualization / Evidence / Gap Report 审阅
+6. Data Feasibility → Quick check from Gap
+7. Research Proposal → Generate → 下载
 ```
 
-### 流程 B：已有 Gap Report，仅生成方案
+### B. 首次小规模试跑
 
 ```
-1. 启动 gap_ui.py
-2. Research Proposal → Enter manually → 粘贴空白描述
-3. Generate Research Proposal
+1. main.py run-db --limit 30 --core-only
+2. main.py build && main.py bootstrap-landscape
+3. 启动 UI → Run Gap Debate → 各标签页走通
 ```
 
-### 流程 C：仅测试病理 API（无需 LLM 辩论）
+### C. 仅测 LIS API
 
 ```
-1. 启动 gap_ui.py
-2. 直接进入 Data Feasibility 标签页
-3. Bootstrap Landscape → V-01 / V-02 手动填参测试
+1. 启动 UI → Data Feasibility
+2. Bootstrap Landscape → V-01 / V-02 / Subtype 等
+```
+
+### D. 已有空白，仅写方案
+
+```
+Research Proposal → Enter manually → Generate
 ```
 
 ---
 
-## 7. 三角色辩论机制说明
+## 7. 三角色辩论
 
-| 角色 | 英文名 | 职责 |
-|------|--------|------|
-| 机会发掘 | Opportunity Scout | 查询 KG，提出 Top-N 候选研究空白 |
-| 证据审查 | Evidence Reviewer | 独立复核查证，区分真空白 / 假阳性 / 弱证据，给出 0–10 置信度 |
-| 综合定稿 | Final Synthesizer | 合并双方观点，结合方信数据支持，输出最终报告；或要求修订进入下一轮 |
+| 角色 | 职责 |
+|------|------|
+| Opportunity Scout | 查 KG，提出 Top-N 候选空白 |
+| Evidence Reviewer | 独立核验真空白 / 假阳性 / 弱证据，置信度 0–10 |
+| Final Synthesizer | 综合定稿，或要求进入下一轮修订 |
 
-**单轮流程**：Opportunity Scout 提案 → Evidence Reviewer 审查 → Final Synthesizer 定稿或发回修订。
-
-**置信度参考**：Evidence Reviewer 评分 ≥7.5 时，Final Synthesizer 更倾向于直接发布终稿；低于此值可能触发额外辩论轮次（取决于 Max debate rounds 设置）。
+单轮：Scout → Reviewer → Synthesizer。置信度 ≥7.5 更易直接发布终稿。
 
 ---
 
 ## 8. 常见问题
 
-### Q1：点击 Run Gap Debate 后报错「Missing dependency: openai」
+### Q1：Missing dependency: openai
 
-使用项目虚拟环境启动：`.\run_gap_ui.ps1`，或手动执行 `..\.venv\Scripts\pip install -r ..\requirements.txt`。
+用 `.\run_gap_ui.ps1`，或 `..\.venv\Scripts\pip install -r ..\requirements.txt`。
 
-### Q2：辩论很快结束但报告为空 / 工具返回 0 条记录
+### Q2：报告空 / 工具 0 条
 
-- 检查 `data/kg_fulltext.db` 是否有已抽取文献（侧边栏 Extracted > 0）
-- 若 focus 过窄，尝试留空或换关键词
-- 检查 `.env` 中 LLM API Key 是否有效、余额是否充足
+Extracted > 0？focus 是否过窄？API Key / 余额是否正常？
 
-### Q3：Data Feasibility 下拉框无病种
+### Q3：Data Feasibility 无病种
 
-点击 **Bootstrap Landscape**；若仍失败，检查网络与 `PATHOLOGY_API_BASE_URL` / `PATHOLOGY_API_KEY`（见仓库根 `.env` 与 `api_document.md`）。
+点 **Bootstrap Landscape**；检查 VPN/网络与 `PATHOLOGY_API_*`。Force Reload 很慢属正常。
 
-### Q4：Lit × Data Matrix 为空
+### Q4：Visualization 报缺 plotly
 
-知识图谱可能未构建或无匹配文献；先运行 `main.py extract` 和 `main.py build`，可选 `enrich-s2` + `import-if`。
+```powershell
+..\.venv\Scripts\pip install plotly
+```
 
-### Q5：Research Proposal 按钮灰色不可点
+### Q5：Weekly Hotspot 几乎为空
 
-需先选择或输入非空白的 gap 文本；若选「Select from report」但列表为空，请先完成 Gap Debate。
+先增量 `fetch` 或跑 `hotspot-report`；WoW 需要至少两周持久化快照。
 
-### Q6：辩论或方案生成很慢
+### Q6：每次辩论空白都很像
 
-属正常现象：每轮涉及多次 LLM 调用与数据库/ API 查询。可减少 debate rounds、关闭 reasoning traces，或缩小 Gap recommendations 数量。
+确认 **Use ops memory** 已开且同 focus 有历史；或 CLI 查 `scripts/clear_ops_memory.py` 预览后按需清理。
 
-### Q7：如何离线测试数据可行性
+### Q7：Research Proposal 按钮灰
 
-在 `.env` 设置 `PATHOLOGY_DATA_PROVIDER=mock`，使用 `feasibility/mock_data/` 中的 fixtures（无需连接方信 API）。
+需选定/输入非空 gap；Select from report 为空时先跑辩论。
+
+### Q8：离线测可行性
+
+`.env` 设 `PATHOLOGY_DATA_PROVIDER=mock`。
+
+### Q9：辩论/方案很慢
+
+属正常（多轮 LLM + 工具）。可减 rounds、关 reasoning traces、缩小 Gap recommendations。
 
 ---
 
@@ -363,10 +347,14 @@ cd fulltext_workflow
 
 | 文件 | 内容 |
 |------|------|
-| `fulltext_workflow/README.md` | 命令行流水线总览 |
-| `api_document.md` | 方信病理 LIS API 接口说明 |
-| `pathology_data_api_spec.md` | D-01 / V-01 / V-02 数据规范 |
-| `debate_labels.py` | 角色标签与报告人性化替换规则 |
+| [README.md](README.md) | 管线概述 |
+| [PIPELINE.md](PIPELINE.md) | 分阶段流水线 |
+| [SCRIPTS.md](SCRIPTS.md) | 常用命令 / clear_ops_memory 等 |
+| [../README.md](../README.md) | 仓库最外层入口 |
+| [../api_document.md](../api_document.md) | 方信 LIS API |
+| [../pathology_data_api_spec.md](../pathology_data_api_spec.md) | 可行性规格 |
+| `debate_labels.py` | 角色显示名映射 |
+| `docs/.../2026-07-15-ops-memory-design.md` | Ops memory 设计 |
 
 ---
 
@@ -374,13 +362,16 @@ cd fulltext_workflow
 
 | 我想… | 操作 |
 |--------|------|
-| 发现研究空白 | Sidebar → Run Gap Debate → Gap Report |
-| 查看证据出处 | Evidence & Literature 标签页 |
-| 评估数据能否支撑某空白 | Data Feasibility → Quick check from Gap |
-| 手动测试某病种样本量 | Data Feasibility → V-01 Feasibility |
-| 生成可立项的研究方案 | Research Proposal → 选空白 → Generate |
-| 导出结果 | Gap Report / Research Proposal 页的 Download 按钮 |
+| 看本周新兴方向 | Weekly Hotspot → Save / LLM brief |
+| 发现研究空白 | Sidebar focus → Run Gap Debate → Gap Report |
+| 看辩论漏斗/热力图 | Visualization |
+| 查证据与 PMID | Evidence & Literature |
+| 评估数据能否支撑空白 | Data Feasibility → Quick check from Gap |
+| 手动测病种样本量 | Data Feasibility → V-01 |
+| 生成可立项方案 | Research Proposal → Generate |
+| 避免每周重复空白 | 保持 Use ops memory + Persist this run |
+| 导出结果 | Gap Report / Proposal 的 Download |
 
 ---
 
-*文档对应 `fulltext_workflow/gap_ui.py` 当前版本。界面更新后请以源码为准。*
+*文档对应当前 `gap_ui.py`（七标签页 + ops memory + Weekly Hotspot + Visualization）。界面变更后以源码为准。*

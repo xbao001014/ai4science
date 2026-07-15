@@ -4,7 +4,12 @@ from __future__ import annotations
 from db.schema import get_conn
 
 _TOKEN_SYNONYMS: dict[str, list[str]] = {
-    "cancer": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm"],
+    "cancer": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
+    "carcinoma": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
+    "neoplasm": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
+    "neoplasms": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
+    "tumor": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
+    "tumour": ["cancer", "carcinoma", "tumor", "tumour", "neoplasm", "neoplasms"],
     "breast": ["breast", "mammary"],
     "lung": ["lung", "pulmonary"],
     "liver": ["liver", "hepatic", "hepatocellular"],
@@ -35,10 +40,16 @@ def normalize_focus(focus: str | None) -> str | None:
 
 
 def focus_sql_clause(column: str, focus: str | None) -> str:
-    """SQL AND-clause: full phrase OR token synonyms (e.g. breast + cancer|carcinoma)."""
+    """SQL AND-clause: disease concept expansion, else phrase + token synonyms."""
     focus = normalize_focus(focus)
     if not focus:
         return ""
+
+    from analysis.disease_synonyms import concept_match_sql_clause, resolve_disease_concept
+
+    concept = resolve_disease_concept(focus)
+    if concept:
+        return " AND (" + concept_match_sql_clause(column, concept) + ")"
 
     safe = _escape_sql_like(focus)
     clauses = [f"LOWER({column}) LIKE LOWER('%{safe}%')"]
@@ -188,13 +199,24 @@ def _pmids_phrase_or(phrases: list[str]) -> list[str]:
 
 def resolve_topic_pmids(keyword: str) -> tuple[list[str], str]:
     """
-    Multi-level topic match: full phrase → token score → key bigrams.
+    Multi-level topic match: concept phrases → full phrase → token score → key bigrams.
 
     Returns (pmid list, strategy label).
     """
     kw = (keyword or "").strip()
     if not kw:
         return [], "empty"
+
+    from analysis.disease_synonyms import expand_focus_terms, resolve_disease_concept
+
+    concept = resolve_disease_concept(kw)
+    if concept:
+        exp = expand_focus_terms(kw)
+        phrases = exp.get("phrases") or []
+        if phrases:
+            pmids = _pmids_phrase_or(phrases)
+            if pmids:
+                return pmids, f"concept({exp['concept_id']})"
 
     pmids = _pmids_full_phrase(kw)
     if pmids:

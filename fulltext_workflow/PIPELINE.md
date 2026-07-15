@@ -54,7 +54,7 @@ cd fulltext_workflow
 $py = "..\.venv\Scripts\python.exe"
 ```
 
-检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、14 组查询）。可用环境变量覆盖年份：
+检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、15 组查询）。可用环境变量覆盖年份：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
@@ -286,7 +286,15 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 - Gap UI sidebar：`Use ops memory`、`Persist this run`（默认开）
 - 维护：`scripts/clear_ops_memory.py`（清空）、`scripts/backfill_ops_proposals.py`（回填缺失字段）
 
-**模块**：`analysis/gap_tools.py`、`analysis/graph_tools.py`、`analysis/ops_memory.py`、`gap_agent.py`、`debate_labels.py`
+**模块**：`analysis/gap_tools.py`、`analysis/graph_tools.py`、`analysis/ops_memory.py`、`analysis/disease_synonyms.py`、`analysis/focus_filter.py`、`gap_agent.py`、`debate_labels.py`
+
+**Research focus / 中英文同义词**（`analysis/disease_synonyms.py`）：
+
+- Gap UI / CLI 的 focus 支持中文疾病名（如 `肠息肉`），解析为 canonical 概念后在 SQL 中展开英文短语与同义词
+- 已覆盖：胃癌、肺腺癌/肺癌、结直肠癌/肠癌、结直肠息肉/腺瘤、肠炎、淋巴瘤、胃溃疡、胃息肉、肝癌、乳腺癌、鼻咽癌等；未命中时回退字面 `LIKE`
+- 方信 `DiseaseCode` 与概念对齐（如 `C_XR` 肠息肉、`BY_BNAI` 鼻咽癌、`F_FA` 肺癌）；Gap 可行性映射优先走方信编码
+- UI 在 Research focus 下方显示 `Resolved: …`；无映射时中文输入会提示尝试英文名
+- 验收：`tool_corpus_focus_coverage(focus="肠息肉")` 应与 `colorectal polyp` 同量级（生产库约 30+ 篇）
 
 ---
 
@@ -317,7 +325,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 ..\.venv\Scripts\streamlit.exe run gap_ui.py
 ```
 
-浏览器打开 `http://localhost:8501`。操作细节见 `gap_ui_guide.md`（部分章节仍写「五标签页」，以本文件为准）。
+浏览器打开 `http://localhost:8501`。操作细节见 [gap_ui_guide.md](gap_ui_guide.md)。
 
 **七个主标签页**：
 
@@ -550,7 +558,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 |----|------|
 | `ops_runs` | 一次辩论/方案会话（focus_key、week_id、报告路径、hotspot 关联） |
 | `ops_gap_items` | 解析出的空白条目 + fingerprint |
-| `ops_proposals` | 关联研究方案 |
+| `ops_proposals` | 关联研究方案（含 `feasibility_score` 0–1、`critic_score` 0–10） |
 
 后续同 focus 的 `gap-debate` / `idea-pipeline` / `gap_ui` 默认读取最近 4 次条目，prompt 引导规避近重复（可标 `revisited`）。设计说明见 `docs/superpowers/specs/2026-07-15-ops-memory-design.md`。
 

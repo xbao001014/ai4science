@@ -43,6 +43,8 @@ env/
 # ── Local agent / SDD scratch (do not upload) ─────────────────────────────────
 .superpowers/
 docs/
+api_document.md
+pathology_data_api_spec.md
 
 # ── IDE / OS ──────────────────────────────────────────────────────────────────
 .idea/

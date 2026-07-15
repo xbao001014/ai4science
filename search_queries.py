@@ -210,6 +210,25 @@ PUBMED_QUERY_GROUPS: list[dict] = [
             " OR medical imaging[Title/Abstract])"
         ),
     },
+
+    # ── 息肉 / 腺瘤 / 肠炎病理 AI（对齐方信高体量病种）──────────────────────
+    {
+        "name": "polyp_adenoma_colitis_pathology_ai",
+        "enabled": True,
+        "query": (
+            "(colorectal polyp[Title/Abstract] OR colonic polyp[Title/Abstract]"
+            " OR gastric polyp[Title/Abstract] OR intestinal polyp[Title/Abstract]"
+            " OR colorectal adenoma[Title/Abstract] OR colonic adenoma[Title/Abstract]"
+            " OR tubular adenoma[Title/Abstract] OR villous adenoma[Title/Abstract]"
+            " OR colitis[Title/Abstract] OR ulcerative colitis[Title/Abstract]"
+            " OR inflammatory bowel disease[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR histology[Title/Abstract] OR whole slide image[Title/Abstract]"
+            " OR digital pathology[Title/Abstract])"
+            " AND (deep learning[Title/Abstract] OR artificial intelligence[Title/Abstract]"
+            " OR machine learning[Title/Abstract] OR neural network[Title/Abstract])"
+        ),
+    },
 ]
 
 

@@ -191,7 +191,7 @@ def run_idea_pipeline(
             gap_full = f"{fr.gap_title}\n\n{fr.gap_text}"
             if fr.evolution_log:
                 gap_full += f"\n\nEvolution log:\n{fr.evolution_log}"
-            fr.proposal = run_idea_agent(
+            fr.proposal, idea_meta = run_idea_agent(
                 gap_text=gap_full,
                 gap_data=feas_ctx,
                 max_rounds=idea_rounds,
@@ -200,11 +200,21 @@ def run_idea_pipeline(
             if not fr.proposal:
                 print(f"  [warn] No proposal generated for '{fr.gap_title[:40]}' (LLM error or empty draft)")
             elif should_persist and ops_run_id:
+                feas = fr.assessment.get("feasibility_score")
+                if feas is None:
+                    feas = idea_meta.get("feasibility_score")
                 persist_proposal(
                     ops_run_id,
                     gap_title=fr.gap_title,
                     proposal_md=fr.proposal,
-                    feasibility_score=float(fr.assessment.get("feasibility_score") or 0),
+                    feasibility_score=(
+                        float(feas) if feas is not None else None
+                    ),
+                    critic_score=(
+                        float(idea_meta["final_score"])
+                        if idea_meta.get("final_score") is not None
+                        else None
+                    ),
                     status=fr.status or "generated",
                 )
 

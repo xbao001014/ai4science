@@ -41,7 +41,7 @@ $py = "..\.venv\Scripts\python.exe"
 
 ## 检索范围
 
-查询组与默认年份来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前默认 **2015–2025**、14 组）。可用环境变量覆盖：
+查询组与默认年份来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前默认 **2015–2025**、15 组）。可用环境变量覆盖：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015

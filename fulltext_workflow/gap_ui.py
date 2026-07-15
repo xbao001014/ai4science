@@ -1382,9 +1382,24 @@ with st.sidebar:
 
     focus_input = st.text_input(
         "Research focus",
-        placeholder="e.g. breast cancer, radiomics",
-        help="All debate gaps and tools will be scoped to this topic. Use disease names like 'breast cancer'.",
+        placeholder="e.g. breast cancer, radiomics, 肠息肉",
+        help="Disease/topic focus. Chinese aliases supported (e.g. 肠息肉 → colorectal polyp).",
     )
+    _foc_norm = normalize_focus(focus_input)
+    if _foc_norm:
+        from analysis.disease_synonyms import resolve_disease_concept  # noqa: E402
+
+        _resolved = resolve_disease_concept(_foc_norm)
+        if _resolved:
+            _fx = (
+                f" · Fangxin {_resolved.fangxin_disease_code}"
+                if _resolved.fangxin_disease_code
+                else ""
+            )
+            _cui = f" · CUI {_resolved.umls_cui}" if _resolved.umls_cui else ""
+            st.caption(f"Resolved: {_resolved.canonical}{_fx}{_cui}")
+        elif any("\u4e00" <= ch <= "\u9fff" for ch in _foc_norm):
+            st.caption("No synonym mapping — try an English disease name")
     top_n_input = st.slider("Gap recommendations", 3, 10, 6)
     debate_rounds_input = st.slider("Max debate rounds", 1, 3, 2)
     proposal_rounds_input = st.slider(
@@ -1795,6 +1810,8 @@ elif st.session_state["events"]:
                         st.session_state["proposal"] = event.get("content", "")
                         st.session_state["final_rounds"] = event.get("rounds", 1)
                         st.session_state["final_score"] = event.get("final_score", 0.0)
+                        feas_score = event.get("feasibility_score")
+                        st.session_state["proposal_feasibility_score"] = feas_score
                         if persist_ops_memory_input and event.get("content"):
                             from analysis.ops_memory import (  # noqa: E402
                                 create_ops_run,
@@ -1815,6 +1832,16 @@ elif st.session_state["events"]:
                                 rid,
                                 gap_title=gap_title,
                                 proposal_md=event.get("content", ""),
+                                feasibility_score=(
+                                    float(feas_score)
+                                    if feas_score is not None
+                                    else None
+                                ),
+                                critic_score=(
+                                    float(event.get("final_score"))
+                                    if event.get("final_score") is not None
+                                    else None
+                                ),
                                 status="generated",
                             )
                         psw.update(
@@ -1826,9 +1853,14 @@ elif st.session_state["events"]:
         proposal = st.session_state.get("proposal", "")
         if proposal:
             st.divider()
-            p1, p2 = st.columns(2)
+            p1, p2, p3 = st.columns(3)
             p1.metric("Final score", f"{st.session_state.get('final_score', 0):.1f}/10")
             p2.metric("Rounds", st.session_state.get("final_rounds", 1))
+            _pfs = st.session_state.get("proposal_feasibility_score")
+            p3.metric(
+                "Feasibility",
+                f"{float(_pfs):.2f}" if _pfs is not None else "n/a",
+            )
             if len(proposal.strip()) < 400 or not any(
                 m in proposal
                 for m in (

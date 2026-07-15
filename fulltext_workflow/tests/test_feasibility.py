@@ -94,6 +94,40 @@ def test_disease_mapper_nsclc():
     assert disease_id == "NSCLC-ADC"
 
 
+def test_disease_mapper_zh_polyp_not_brca():
+    """肠息肉 gaps must not map to breast carcinoma mock ID."""
+    disease_id, _, reason = map_gap_to_disease("肠息肉 AI 检测研究空白")
+    assert disease_id != "BRCA-IDC"
+    assert "BRCA" not in (reason or "")
+
+
+def test_disease_mapper_fangxin_zh_polyp_live_provider():
+    """Live provider maps 肠息肉 directly to Fangxin C_XR."""
+    import config
+
+    old = config.PATHOLOGY_DATA_PROVIDER
+    config.PATHOLOGY_DATA_PROVIDER = "api"
+    try:
+        disease_id, conf, reason = map_gap_to_disease("肠息肉 AI 检测研究空白")
+        assert disease_id == "C_XR"
+        assert conf >= 0.9
+        assert "Fangxin" in reason
+    finally:
+        config.PATHOLOGY_DATA_PROVIDER = old
+
+
+def test_disease_mapper_fangxin_npc():
+    import config
+
+    old = config.PATHOLOGY_DATA_PROVIDER
+    config.PATHOLOGY_DATA_PROVIDER = "api"
+    try:
+        disease_id, _, _ = map_gap_to_disease("鼻咽癌 radiomics prognosis gap")
+        assert disease_id == "BY_BNAI"
+    finally:
+        config.PATHOLOGY_DATA_PROVIDER = old
+
+
 def test_gap_disease_hint_npc_does_not_default_to_brca():
     """NPC gaps must not inherit the old BRCA-IDC hard-default."""
     from idea_agent import _gap_anchor_block, _gap_disease_hint
@@ -203,6 +237,9 @@ if __name__ == "__main__":
         test_gap_analysis_suggestions,
         test_disease_mapper_gastric,
         test_disease_mapper_nsclc,
+        test_disease_mapper_zh_polyp_not_brca,
+        test_disease_mapper_fangxin_zh_polyp_live_provider,
+        test_disease_mapper_fangxin_npc,
         test_gap_disease_hint_npc_does_not_default_to_brca,
         test_gap_disease_hint_breast_still_maps_brca,
         test_evolve_removes_msi,

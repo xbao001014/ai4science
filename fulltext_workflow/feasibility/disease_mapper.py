@@ -5,80 +5,32 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Protocol
 
+from analysis.disease_synonyms import (
+    build_fangxin_alias_map,
+    build_mock_alias_map,
+    build_search_keyword_map,
+    build_disease_names_map,
+)
+
 # Keyword fragments -> API search keyword (Chinese preferred)
 DISEASE_SEARCH_KEYWORDS: dict[str, str] = {
-    "gc-adc": "胃腺癌",
-    "gastric": "胃腺癌",
-    "stomach": "胃腺癌",
-    "胃": "胃腺癌",
-    "胃癌": "胃腺癌",
-    "胃腺癌": "胃腺癌",
-    "nsclc": "肺腺癌",
-    "lung adenocarcinoma": "肺腺癌",
-    "lung cancer": "肺",
-    "肺腺癌": "肺腺癌",
-    "非小细胞": "肺腺癌",
-    "crc": "结直肠",
-    "colorectal": "结直肠",
-    "colon": "结直肠",
-    "结直肠": "结直肠腺癌",
-    "结肠癌": "结直肠",
-    "hcc": "肝细胞癌",
-    "hepatocellular": "肝细胞癌",
-    "liver cancer": "肝细胞癌",
-    "肝癌": "肝细胞癌",
-    "肝细胞": "肝细胞癌",
-    "brca": "乳腺",
-    "breast": "乳腺",
-    "乳腺": "乳腺",
-    "乳腺癌": "乳腺",
-    "nasopharyngeal carcinoma": "鼻咽癌",
-    "nasopharyngeal cancer": "鼻咽癌",
-    "nasopharyngeal": "鼻咽",
-    "nasopharynx": "鼻咽",
-    "npc": "鼻咽癌",
-    "鼻咽癌": "鼻咽癌",
-    "鼻咽": "鼻咽",
+    **build_search_keyword_map(),
+    # Legacy / composite aliases not in concept table
+    "bilateral breast": "乳腺",
+    "multifocal breast": "乳腺",
 }
+
+# Fangxin DiseaseCode aliases (live API / landscape cache)
+DISEASE_FANGXIN_ALIASES: dict[str, str] = build_fangxin_alias_map()
 
 # Legacy mock IDs kept for unit tests (PATHOLOGY_DATA_PROVIDER=mock)
 DISEASE_ALIASES: dict[str, str] = {
-    "gc-adc": "GC-ADC",
-    "gastric": "GC-ADC",
-    "stomach": "GC-ADC",
-    "胃": "GC-ADC",
-    "胃癌": "GC-ADC",
-    "胃腺癌": "GC-ADC",
-    "nsclc": "NSCLC-ADC",
-    "lung adenocarcinoma": "NSCLC-ADC",
-    "lung cancer": "NSCLC-ADC",
-    "肺腺癌": "NSCLC-ADC",
-    "非小细胞": "NSCLC-ADC",
-    "crc": "CRC-ADC",
-    "colorectal": "CRC-ADC",
-    "colon": "CRC-ADC",
-    "结直肠": "CRC-ADC",
-    "结肠癌": "CRC-ADC",
-    "hcc": "HCC",
-    "hepatocellular": "HCC",
-    "liver cancer": "HCC",
-    "肝癌": "HCC",
-    "肝细胞": "HCC",
-    "brca": "BRCA-IDC",
-    "breast": "BRCA-IDC",
-    "乳腺": "BRCA-IDC",
-    "乳腺癌": "BRCA-IDC",
+    **build_mock_alias_map(),
     "bilateral breast": "BRCA-IDC",
     "multifocal breast": "BRCA-IDC",
 }
 
-DISEASE_NAMES: dict[str, tuple[str, str]] = {
-    "GC-ADC": ("胃腺癌", "Gastric Adenocarcinoma"),
-    "NSCLC-ADC": ("肺腺癌", "Lung Adenocarcinoma"),
-    "CRC-ADC": ("结直肠腺癌", "Colorectal Adenocarcinoma"),
-    "HCC": ("肝细胞癌", "Hepatocellular Carcinoma"),
-    "BRCA-IDC": ("乳腺浸润性导管癌", "Breast Invasive Ductal Carcinoma"),
-}
+DISEASE_NAMES: dict[str, tuple[str, str]] = build_disease_names_map()
 
 
 class DiseaseSearchClient(Protocol):
@@ -185,6 +137,16 @@ def map_gap_to_disease(
     text = gap_text.lower().strip()
     if not text:
         return None, 0.0, "empty input"
+
+    import config
+
+    provider = (config.PATHOLOGY_DATA_PROVIDER or "api").lower()
+    if provider != "mock":
+        for alias, code in sorted(
+            DISEASE_FANGXIN_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if alias in gap_text or alias in text:
+                return code, 0.96, f"Fangxin concept: {alias} -> {code}"
 
     if client is not None:
         api_result = _map_via_api_search(gap_text, client)
