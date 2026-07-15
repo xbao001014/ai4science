@@ -107,12 +107,20 @@ class ApiPathologyDataClient:
             diseases = [d for d in diseases if d.get("total_cases", 0) >= min_cases]
         return {"total_disease_types": len(diseases), "diseases": diseases}
 
-    def _load_catalog_from_api(self, min_cases: int = 50) -> list[dict[str, Any]]:
+    def _load_catalog_from_api(
+        self,
+        min_cases: int = 50,
+        *,
+        progress: bool = False,
+    ) -> list[dict[str, Any]]:
         from feasibility.landscape_builder import build_lightweight_catalog_entry
 
         rows = self._api.list_diseases(limit=1000)
+        total = len(rows)
+        if progress:
+            print(f"[Bootstrap] Catalog: listed {total} disease rows from API")
         diseases: list[dict[str, Any]] = []
-        for row in rows:
+        for i, row in enumerate(rows, start=1):
             code = row.get("DiseaseCode")
             if not code or code in self._catalog_by_code:
                 if code and code in self._catalog_by_code:
@@ -120,12 +128,29 @@ class ApiPathologyDataClient:
                     if catalog.get("total_cases", 0) >= min_cases:
                         diseases.append(catalog)
                 continue
+            if progress:
+                name = row.get("DiseaseNameZh") or code
+                print(f"[Bootstrap] Catalog {i}/{total}: {code} ({name}) …", flush=True)
             catalog = build_lightweight_catalog_entry(self._api, row)
             if not catalog:
+                if progress:
+                    print(f"[Bootstrap] Catalog {i}/{total}: skip {code} (no cases)")
                 continue
             self._catalog_by_code[code] = catalog
             if catalog.get("total_cases", 0) >= min_cases:
                 diseases.append(catalog)
+                if progress:
+                    print(
+                        f"[Bootstrap] Catalog {i}/{total}: ok "
+                        f"cases={catalog.get('total_cases', 0)}"
+                    )
+            elif progress:
+                print(
+                    f"[Bootstrap] Catalog {i}/{total}: below min_cases "
+                    f"({catalog.get('total_cases', 0)} < {min_cases})"
+                )
+        if progress:
+            print(f"[Bootstrap] Catalog done: {len(diseases)} diseases pass min_cases={min_cases}")
         return diseases
 
     def get_tasks(self, disease_id: str | None = None) -> dict[str, Any]:
@@ -261,11 +286,22 @@ class ApiPathologyDataClient:
         self._catalog_by_code[disease_code] = catalog
         self._disease_data[disease_code] = disease_data
 
-        v11 = build_v11_landscape_extras(
-            self._api,
-            disease_code=disease_code,
-            disease_name_zh=catalog.get("name_zh"),
-        )
+        try:
+            v11 = build_v11_landscape_extras(
+                self._api,
+                disease_code=disease_code,
+                disease_name_zh=catalog.get("name_zh"),
+            )
+        except PathologyHttpError as exc:
+            # Keep core landscape even if V1.1 extras time out / fail
+            v11 = {
+                "schema_version": "v1.1",
+                "error": str(exc),
+                "subtype_distribution": [],
+                "attribute_distribution": [],
+                "text_match_summary": {"total_matches": 0},
+                "molecular_positivity": [],
+            }
 
         return {
             "disease_id": disease_code,

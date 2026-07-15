@@ -112,7 +112,11 @@ def run_idea_pipeline(
     skip_debate: bool = False,
     skip_ideas: bool = False,
     verbose: bool = False,
+    use_ops_memory: bool | None = None,
+    persist_ops_memory: bool | None = None,
 ) -> tuple[str, list[GapFeasibilityResult]]:
+    from analysis.ops_memory import persist_debate_report, persist_proposal
+
     init_db()
     prereq = ensure_prerequisites()
     for w in prereq["warnings"]:
@@ -121,6 +125,13 @@ def run_idea_pipeline(
     landscape = bootstrap_landscape()
     if not landscape.get("skipped"):
         print(f"[Pipeline] Bootstrapped landscape: {landscape['disease_count']} diseases")
+
+    should_persist = (
+        config.OPS_MEMORY_ENABLED
+        if persist_ops_memory is None
+        else persist_ops_memory
+    )
+    ops_run_id: int | None = None
 
     if skip_debate and gap_report_path:
         with open(gap_report_path, encoding="utf-8") as f:
@@ -133,10 +144,19 @@ def run_idea_pipeline(
             top_n=top_n,
             max_debate_rounds=debate_rounds,
             verbose=verbose,
+            use_ops_memory=use_ops_memory,
         )
         debate_path = os.path.join(config.OUTPUT_DIR, "gap_debate_report.md")
         save_report(gap_report, debate_path, focus=focus)
         print(f"[Pipeline] Gap report saved: {debate_path}")
+        if should_persist:
+            ops_run_id = persist_debate_report(
+                gap_report,
+                focus=focus,
+                source="idea-pipeline",
+                gap_report_path=debate_path,
+                enabled=True,
+            )
 
     sections = parse_gap_sections(gap_report)
     if not sections:
@@ -179,6 +199,14 @@ def run_idea_pipeline(
             )
             if not fr.proposal:
                 print(f"  [warn] No proposal generated for '{fr.gap_title[:40]}' (LLM error or empty draft)")
+            elif should_persist and ops_run_id:
+                persist_proposal(
+                    ops_run_id,
+                    gap_title=fr.gap_title,
+                    proposal_md=fr.proposal,
+                    feasibility_score=float(fr.assessment.get("feasibility_score") or 0),
+                    status=fr.status or "generated",
+                )
 
     markdown = render_pipeline_report(
         gap_report=gap_report,

@@ -41,23 +41,24 @@ GAP_FEASIBILITY_TOOLS, GAP_FEASIBILITY_SCHEMAS = build_gap_feasibility_tools()
 ACCEPT_DEBATE_SCORE = 7.5
 
 _FOCUS_MANDATE = """\
-【研究聚焦约束 — 必须遵守】
-用户指定了研究主题：{focus}
-- 所有候选空白、验证结论与最终报告必须**直接服务于该主题**（疾病/任务/方法须与之相关）。
-- 每条空白的标题或研究问题中必须明确写出与「{focus}」的关联。
-- **禁止**输出明显无关的空白（其他癌种、心脏毒性、与主题无关的影像模态等）。
-- 若语料中该主题数据稀少，应在摘要中说明覆盖不足，**不得**用无关主题凑数。
-- 调用 KG 工具时 focus 参数必须设为 "{focus}"（系统会自动注入，但仍请显式传入）。
+[Research focus constraint — mandatory]
+The user specified research focus: {focus}
+- All candidate gaps, verification conclusions, and the final report must **directly serve this focus** \
+(disease/task/method must be related).
+- Each gap title or research question must explicitly state its link to "{focus}".
+- **Do not** output clearly off-topic gaps (other cancers, cardiotoxicity, unrelated imaging modalities, etc.).
+- If corpus coverage for this focus is sparse, say so in the summary; **do not** pad with unrelated topics.
+- When calling KG tools, set focus="{focus}" (the system also injects it, but pass it explicitly).
 """
 
 _SKEPTIC_FOCUS_EXTRA = """\
-- 将偏离用户指定主题「{focus}」的候选空白列入 false_gaps，reason 注明 off-topic / 与聚焦主题无关。
-- 不得为无关空白浪费篇幅；verified_gaps 仅保留与「{focus}」直接相关的条目。
+- Put candidates that drift from "{focus}" into false_gaps, with reason noting off-topic / not related to the focus.
+- Do not spend space on unrelated gaps; verified_gaps must only keep items directly related to "{focus}".
 """
 
 _MODERATOR_FOCUS_EXTRA = """\
-- 最终报告中的每条 Research gap 必须与「{focus}」直接相关；剔除 Skeptic 标记的 off-topic 项。
-- Data summary 中说明本报告在「{focus}」子语料上的覆盖范围。
+- Every Research gap in the final report must be directly related to "{focus}"; drop Skeptic-marked off-topic items.
+- In Data summary, state coverage of this report on the "{focus}" subset corpus.
 """
 
 
@@ -76,154 +77,168 @@ def _system_with_focus(base: str, focus: str | None, *, role: str) -> str:
 def _focus_hint(focus: str | None) -> str:
     foc = normalize_focus(focus)
     if not foc:
-        return "未指定聚焦方向，进行 pathomics/radiomics 全语料分析。"
+        return "No research focus specified — analyze the full pathomics/radiomics corpus."
     return (
-        f"【强制聚焦】{foc}\n"
-        f"- 仅分析与此主题直接相关的研究空白。\n"
-        f"- 必须先调用 corpus_focus_coverage，再调用其他工具。\n"
-        f"- 工具调用必须带 focus=\"{foc}\"。\n"
-        f"- 禁止用全库论文总数替代 focus 子集规模。\n"
-        f"- 禁止输出与「{foc}」无关的候选（如其他疾病领域的空白）。"
+        f"[Mandatory focus] {foc}\n"
+        f"- Analyze only research gaps directly related to this topic.\n"
+        f"- Call corpus_focus_coverage first, then other tools.\n"
+        f"- Tool calls must include focus=\"{foc}\".\n"
+        f"- Do not substitute full-corpus paper totals for the focus subset size.\n"
+        f"- Do not output candidates unrelated to \"{foc}\" (e.g. gaps in other disease areas)."
     )
 
 OPTIMIST_SYSTEM_PROMPT = """\
-你是一位病理AI/pathomics/radiomics 研究机会分析专家（Optimist Agent）。
-你的职责是从知识图谱数据中识别具有学术与临床价值的研究空白，强调可行性与创新机会。
+You are a pathology AI / pathomics / radiomics research-opportunity analyst (Opportunity Scout / Optimist Agent).
+Your job is to identify academically and clinically valuable research gaps from the knowledge graph, \
+emphasizing feasibility and innovation opportunities.
 
-语料范围：pathomics/radiomics 2024-2025 全文提取知识图谱（作者自述 limitation、
-results 章节 metric 证据、方法-疾病组合空白、图结构分析）。
+Corpus: pathomics/radiomics full-text extraction KG (author-stated limitations, results-section metric \
+evidence, method–disease combination gaps, graph structure analysis). Prefer recent literature when tools provide year fields.
 
-工具使用规则：
-- 若指定了 focus，**第一个工具调用必须是 corpus_focus_coverage**；摘要中必须写明 focus_subset.papers 与 global.papers 的区别。
-- 调用至少 5 个工具，其中至少 1 个 graph_* 图遍历工具。
-- 优先使用 limitation_temporal_profile / limitation_gap_status（局限时间画像 + 跟进信号）。
-- 配合 author_stated_gaps / limitation_impact_rank（作者自述局限 + 引用影响力）。
-- 使用 combo_gap_temporal 识别后期出现跟进的方法×疾病组合。
-- 使用 hotspot_entities、recent_highcite_papers 识别高影响力前沿方向。
-- 使用 emerging_gap_opportunities 识别「近期升温 × 文献空白」交叉机会（weekly 热点）。
-- 所有定量陈述必须引用工具返回的确切数值（含 first_year、recent_ratio、resolution_signal、avg_cite、impact_score）。
-- focus 子集 papers < 30 时，禁止声称 persistent 时间趋势或引用全库规模；须标注「语料覆盖不足」。
+Language: write all candidate gap Markdown in **English**.
 
-输出格式（Markdown，禁止 emoji）：
+Tool-use rules:
+- If a focus is set, the **first tool call must be corpus_focus_coverage**; the summary must distinguish \
+focus_subset.papers from global.papers.
+- Call at least 5 tools, including at least 1 graph_* traversal tool.
+- Prefer limitation_temporal_profile / limitation_gap_status (limitation timeline + follow-up signals).
+- Pair with author_stated_gaps / limitation_impact_rank (author limitations + citation impact).
+- Use combo_gap_temporal to find method×disease combos with later follow-up.
+- Use hotspot_entities and recent_highcite_papers for high-impact frontier directions.
+- Use emerging_gap_opportunities for “recent heating × literature gap” crossings (weekly hotspots).
+- Every quantitative claim must cite exact tool values (including first_year, recent_ratio, \
+resolution_signal, avg_cite, impact_score).
+- If focus_subset.papers < 30, do not claim persistent temporal trends or cite full-corpus scale; \
+mark “insufficient corpus coverage”.
 
-## 候选研究空白摘要
-[简述调用了哪些工具、数据覆盖范围、语料规模局限]
+Output format (Markdown, no emoji):
 
-## 候选研究空白列表
+## Candidate research gap summary
+[Briefly list tools used, data coverage, and corpus-size limits]
 
-### 候选空白 1：[方向名称]
-**研究问题**：[可验证的科学问题]
-**数据依据**：[精确引用工具数值，含 temporal_status / resolution_signal]
-**时间画像**：[first_year–last_year, temporal_status, recent_ratio]
-**机会论证**：[为何值得投入]
-**可行性**：[数据/技术/临床可得性]
-**预期影响**：[期刊方向、科学意义]
+## Candidate research gap list
+
+### Candidate gap 1: [direction name]
+**Research question**: [testable scientific question]
+**Evidence basis**: [exact tool values, including temporal_status / resolution_signal]
+**Temporal profile**: [first_year–last_year, temporal_status, recent_ratio]
+**Opportunity rationale**: [why it is worth pursuing]
+**Feasibility**: [data / technical / clinical availability]
+**Expected impact**: [journal direction, scientific significance]
 
 ---
-[重复至要求的 top_n 条]
+[Repeat until top_n items]
 
-## Optimist 总结
-[100字内核心推荐]
+## Opportunity Scout summary
+[Core recommendation in ≤100 words]
 """
 
 SKEPTIC_SYSTEM_PROMPT = """\
-你是一位严格的病理AI研究空白审查专家（Skeptic Agent）。
-你的职责是交叉验证 Optimist 提出的候选空白，识别假空白、证据不足和过度推断。
+You are a strict pathology-AI research-gap auditor (Evidence Reviewer / Skeptic Agent).
+Your job is to cross-check Opportunity Scout candidates, catch false gaps, weak evidence, and over-claims.
 
-审查原则：
-- 若指定 focus，**必须先调用 corpus_focus_coverage**，并在 corpus_limitations 中引用 focus_subset 规模。
-- 独立调用知识图谱工具（至少 3 个）核实 Optimist 的关键数据声明。
-- 必须调用 limitation_temporal_profile 与 limitation_gap_status 核查时间维度。
-- 对 temporal_status=declining 且 resolution_signal=moderate 的 limitation，不得标为 persistent gap。
-- 对 temporal_status=persistent 且 resolution_signal=none 的 limitation，可提升置信度。
-- 对每条空白检查支撑论文数、avg_cite、impact_tier；单篇低引论文不得过度 extrapolate。
-- 注意语料局限：global.papers 是全库规模；focus 子集可能仅数十篇，不得混用。
-- 若 citation/IF 数据缺失（impact_tier=Unknown），在 corpus_limitations 中注明需运行 enrich-s2 / import-if。
-- 区分「真空白」「语料未覆盖」「证据不足」三者，分类规则见下。
+Language: JSON string field values must be in **English**.
 
-分类规则（严格执行）：
-- **false_gaps**：Optimist 引用的数字与工具结果矛盾；或把全库规模当成 focus 证据；或与 graph_disease_method_reach 等工具直接反驳。
-- **weak_evidence_gaps**：临床方向合理，但 focus 子集过小、工具数据稀疏、或仅能基于「未找到」推断；不得标为 false。
-- **verified_gaps**：Optimist 每条定量声明均能在本轮工具输出中找到对应字段。
+Review principles:
+- If focus is set, **call corpus_focus_coverage first** and cite focus_subset size in corpus_limitations.
+- Independently call KG tools (at least 3) to verify Opportunity Scout’s key quantitative claims.
+- Must call limitation_temporal_profile and limitation_gap_status for the temporal dimension.
+- Do not label a limitation as a persistent gap if temporal_status=declining and resolution_signal=moderate.
+- May raise confidence if temporal_status=persistent and resolution_signal=none.
+- For each gap, check supporting paper counts, avg_cite, impact_tier; do not over-extrapolate from a single low-cite paper.
+- Corpus caveat: global.papers is full-corpus scale; the focus subset may be only tens of papers — do not mix them.
+- If citation/IF data are missing (impact_tier=Unknown), note in corpus_limitations that enrich-s2 / import-if is needed.
+- Distinguish true gaps, corpus non-coverage, and weak evidence (rules below).
 
-- 质疑小样本 extrapolation 和未探索组合在语料外是否已有大量工作。
+Classification (strict):
+- **false_gaps**: Scout numbers contradict tool results; or full-corpus scale used as focus evidence; \
+or directly refuted by tools such as graph_disease_method_reach.
+- **weak_evidence_gaps**: Clinically plausible, but focus subset too small, tools sparse, or inference \
+only from “not found”; do not mark as false.
+- **verified_gaps**: Every quantitative Scout claim has a matching field in this round’s tool outputs.
 
-输出格式（严格 JSON，包裹在 ```json ... ``` 代码块内）：
+- Challenge small-sample extrapolation and whether unexplored combos may already be common outside this corpus.
+
+Output format (strict JSON inside a ```json ... ``` fence):
 
 ```json
 {
-  "overall_confidence": <float, 0-10, 对 Optimist 提案的整体可信度>,
+  "overall_confidence": <float, 0-10, overall trust in the Scout proposal>,
   "verified_gaps": [
-    {"title": "...", "evidence": "工具核实的依据", "confidence": <0-10>}
+    {"title": "...", "evidence": "tool-backed rationale", "confidence": <0-10>}
   ],
   "false_gaps": [
-    {"title": "...", "reason": "为何是假空白", "counter_evidence": "..."}
+    {"title": "...", "reason": "why this is a false gap", "counter_evidence": "..."}
   ],
   "weak_evidence_gaps": [
-    {"title": "...", "issue": "证据不足点", "suggestion": "如何补强"}
+    {"title": "...", "issue": "where evidence is weak", "suggestion": "how to strengthen"}
   ],
-  "corpus_limitations": "<语料规模、提取覆盖率等系统性局限>",
-  "data_concerns": ["<具体数据问题1>", "..."],
-  "revision_priority": "<给 Moderator/Optimist 的最重要修改方向>"
+  "corpus_limitations": "<corpus size, extraction coverage, and other systemic limits>",
+  "data_concerns": ["<specific data issue 1>", "..."],
+  "revision_priority": "<most important revision direction for Synthesizer/Scout>"
 }
 ```
 
-全文禁止使用 emoji。
+No emoji.
 """
 
 MODERATOR_SYSTEM_PROMPT = """\
-你是一位病理AI研究战略综合专家（Final Synthesizer Agent）。
-你的职责是综合 Opportunity Scout 的候选空白与 Evidence Reviewer 的交叉验证，产出最终研究空白报告。
+You are a pathology-AI research strategy synthesizer (Final Synthesizer / Moderator Agent).
+Your job is to combine Opportunity Scout candidates with Evidence Reviewer cross-checks into the final research-gap report.
 
-（角色通俗称谓：Opportunity Scout=Optimist，Evidence Reviewer=Skeptic，Final Synthesizer=Moderator。
-**面向用户的最终 Markdown 报告必须使用英文通俗称谓，禁止出现 Optimist/Skeptic/Moderator 英文旧角色名。**）
+Role mapping for the user-facing report: Opportunity Scout = Optimist, Evidence Reviewer = Skeptic, \
+Final Synthesizer = Moderator.
+**The final Markdown report must use the user-facing English role names; do not use Optimist/Skeptic/Moderator \
+as labels in the delivered report.**
 
-综合原则：
-- 保留 Evidence Reviewer 验证通过的高置信空白；剔除或降级 false_gaps。
-- 对 weak_evidence_gaps 要么要求降级表述，要么在报告中标注证据局限。
-- 必须在「Data summary」中声明 corpus 规模与 extracted 论文数局限。
-- **必须**调用 literature_data_cross_matrix（或 literature_impact_priority_matrix）与 pathology_disease_catalog，在每条研究空白中追加「Fangxin data support」与「Literature impact」（avg_cite、impact_tier、cross_priority_score）。
-- 优先推荐「文献空白 + 方信 Mock 数据充足 + impact_tier 为 High/Medium」的交叉项。
-- 报告章节标题与角色标签用英文；研究内容可用中文或英文，与语料一致即可。
-- 所有定量陈述引用工具数据；禁止 emoji。
+Language: write the entire final report in **English**.
 
-若 overall_confidence >= 7.5 或已达最后一轮辩论，输出完整最终报告（Markdown）：
+Synthesis principles:
+- Keep high-confidence gaps verified by the Evidence Reviewer; drop or downgrade false_gaps.
+- For weak_evidence_gaps, either require softer wording or explicitly mark evidence limits.
+- In Data summary, state corpus size and extracted-paper limits.
+- **Must** call literature_data_cross_matrix (or literature_impact_priority_matrix) and pathology_disease_catalog; \
+append “Fangxin data support” and “Literature impact” (avg_cite, impact_tier, cross_priority_score) to each gap.
+- Prefer crossings of “literature gap + adequate Fangxin data + impact_tier High/Medium”.
+- All quantitative claims must cite tool data; no emoji.
+
+If overall_confidence >= 7.5 or this is the last debate round, output the full final report (Markdown):
 
 ## Data summary
-[工具调用、记录数、语料规模、Review consensus score]
+[Tools called, record counts, corpus scale, Review consensus score]
 
 ## Research gap analysis
 
-### Research gap 1：[方向名称]
-**Research question**：
-**Evidence basis**：
-**Temporal profile**：（first_year–last_year, temporal_status, recent_ratio）
-**Follow-up signal**：（resolution_signal, followup_paper_cnt, first_followup_year）
-**Feasibility analysis**：
-**Fangxin data support**：（mock_cohort_size、data_support、可用 task_type）
-**Literature impact**：（avg_cite、avg_if、impact_tier、cross_priority_score）
-**Expected academic impact**：
-**Main challenges**：
-**Distinction from prior work**：
-**Review consensus**：Opportunity Scout proposal / Evidence Reviewer conclusion
-**Difficulty**：Low / Medium / High / Very high
-**Novelty**：Moderate / High / Very high
+### Research gap 1: [direction name]
+**Research question**:
+**Evidence basis**:
+**Temporal profile**: (first_year–last_year, temporal_status, recent_ratio)
+**Follow-up signal**: (resolution_signal, followup_paper_cnt, first_followup_year)
+**Feasibility analysis**:
+**Fangxin data support**: (mock_cohort_size / cohort_size, data_support, available task_type)
+**Literature impact**: (avg_cite, avg_if, impact_tier, cross_priority_score)
+**Expected academic impact**:
+**Main challenges**:
+**Distinction from prior work**:
+**Review consensus**: Opportunity Scout proposal / Evidence Reviewer conclusion
+**Difficulty**: Low / Medium / High / Very high
+**Novelty**: Moderate / High / Very high
 
 ---
-[第 2 至 top_n 条，相同格式]
+[Gaps 2…top_n, same format]
 
 ## Priority ranking
 | Rank | Direction | Difficulty | Novelty | Impact tier | cross_priority_score | Clinical value |
 |------|-----------|------------|---------|-------------|----------------------|----------------|
 
 ## Overall recommendation
-[150-200 words strategic advice]
+[150–200 words of strategic advice]
 
 ## Review process summary
-[Opportunity Scout vs Evidence Reviewer key disagreements and Final Synthesizer ruling]
+[Key Scout vs Reviewer disagreements and Final Synthesizer rulings]
 
 ---
-若置信度不足且非最后一轮，输出 JSON（```json ... ```）：
+If confidence is insufficient and this is not the last round, output JSON (```json ... ```):
 ```json
 {
   "accept": false,
@@ -242,30 +257,49 @@ def _corpus_context(focus: str | None = None) -> str:
     stats = db_stats()
     coverage = tool_corpus_focus_coverage(focus=focus)
     lines = [
-        "\n\n语料统计（必须在分析中引用）：",
-        f"- 全库 PubMed 论文总数: {stats['papers']}",
-        f"- 全库全文可用: {stats['fulltext_available']}",
-        f"- 全库已 LLM 提取: {stats['extracted']}",
-        f"- S2 引用已 enrichment: {stats.get('s2_enriched', 0)}",
-        f"- 全文关系数: {stats['relations_fulltext']}",
+        "\n\nCorpus statistics (must be cited in the analysis):",
+        f"- Full-corpus PubMed papers: {stats['papers']}",
+        f"- Full-corpus full text available: {stats['fulltext_available']}",
+        f"- Full-corpus LLM-extracted: {stats['extracted']}",
+        f"- S2 citation enriched: {stats.get('s2_enriched', 0)}",
+        f"- Full-text relations: {stats['relations_fulltext']}",
     ]
 
     foc = normalize_focus(focus)
     sub = coverage.get("focus_subset")
     if foc and sub:
         lines.extend([
-            f"\n**Focus「{foc}」子语料（topic-specific 声明只能用下列数字）**：",
-            f"- Focus 论文数: {sub['papers']}（全库 {stats['papers']}，"
-            f"占比 {coverage.get('coverage_ratio', 0):.2%}）",
-            f"- Focus 已提取: {sub.get('extracted', 0)}",
-            f"- Focus limitation 关系数: {sub.get('limitation_relations', 0)}",
-            f"- Focus method 实体数: {sub.get('method_entities', 0)}",
+            f"\n**Focus \"{foc}\" subset (topic-specific claims may use only these numbers)**:",
+            f"- Focus papers: {sub['papers']} (full corpus {stats['papers']}, "
+            f"share {coverage.get('coverage_ratio', 0):.2%})",
+            f"- Focus extracted: {sub.get('extracted', 0)}",
+            f"- Focus limitation relations: {sub.get('limitation_relations', 0)}",
+            f"- Focus method entities: {sub.get('method_entities', 0)}",
             f"- analysis_ready (>=30 papers): {coverage.get('analysis_ready', False)}",
         ])
         for w in coverage.get("warnings") or []:
-            lines.append(f"- 警告: {w}")
+            lines.append(f"- Warning: {w}")
 
     return "\n".join(lines)
+
+
+def resolve_ops_memory_block(
+    focus: str | None,
+    use_ops_memory: bool | None,
+) -> str:
+    """Load formatted ops-memory prompt block when enabled."""
+    from analysis.ops_memory import format_memory_prompt_block, load_recent_gaps
+
+    enabled = config.OPS_MEMORY_ENABLED if use_ops_memory is None else use_ops_memory
+    if not enabled:
+        return ""
+    return format_memory_prompt_block(load_recent_gaps(focus))
+
+
+def _append_memory_block(text: str, memory_block: str) -> str:
+    if not memory_block:
+        return text
+    return f"{text.rstrip()}\n\n{memory_block}"
 
 
 def stream_gap_debate_agent(
@@ -273,6 +307,7 @@ def stream_gap_debate_agent(
     top_n: int = 6,
     max_debate_rounds: int = 2,
     accept_score: float = ACCEPT_DEBATE_SCORE,
+    use_ops_memory: bool | None = None,
 ) -> Generator[dict, None, None]:
     """Debate multi-agent gap identification loop."""
     focus = normalize_focus(focus)
@@ -285,6 +320,7 @@ def stream_gap_debate_agent(
 
     corpus_ctx = _corpus_context(focus)
     focus_hint = _focus_hint(focus)
+    memory_block = resolve_ops_memory_block(focus, use_ops_memory)
     debate_tools = bind_tools_with_focus(GAP_TOOLS, focus)
     moderator_tools = bind_tools_with_focus(GAP_FEASIBILITY_TOOLS, focus)
 
@@ -307,25 +343,30 @@ def stream_gap_debate_agent(
 
         if round_num == 1:
             coverage_first = (
-                "第一步必须调用 corpus_focus_coverage（若已指定 focus）。\n"
+                "First step: call corpus_focus_coverage (when focus is set).\n"
                 if focus
                 else ""
             )
-            opt_user = (
-                f"请识别 {top_n} 条 pathomics/radiomics 研究空白候选。\n"
+            opt_user = _append_memory_block(
+                f"Identify {top_n} pathomics/radiomics research-gap candidates in English.\n"
                 f"{coverage_first}"
                 f"{focus_hint}\n{corpus_ctx}\n"
-                "再调用至少 5 个工具（含 1 个 graph_*），最后输出候选空白 Markdown。"
+                "Then call at least 5 tools (including 1 graph_*), "
+                "and finally output the candidate-gap Markdown.",
+                memory_block,
             )
         else:
-            opt_user = (
-                f"上一轮 Moderator 反馈：\n"
-                f"**修改方向**：{debate_feedback.get('revision_priority', '')}\n"
-                f"**需修订**：{debate_feedback.get('gaps_to_revise', [])}\n"
-                f"**需删除**：{debate_feedback.get('gaps_to_drop', [])}\n\n"
-                f"Skeptic 语料局限提醒：{skeptic_review.get('corpus_limitations', '')}\n\n"
+            opt_user = _append_memory_block(
+                f"Previous Final Synthesizer feedback:\n"
+                f"**Revision priority**: {debate_feedback.get('revision_priority', '')}\n"
+                f"**Revise**: {debate_feedback.get('gaps_to_revise', [])}\n"
+                f"**Drop**: {debate_feedback.get('gaps_to_drop', [])}\n\n"
+                f"Evidence Reviewer corpus-limitation note: "
+                f"{skeptic_review.get('corpus_limitations', '')}\n\n"
                 f"{focus_hint}\n\n"
-                f"请修订候选空白（仍输出 {top_n} 条），先补充工具证据再输出 Markdown。"
+                f"Revise the candidate gaps (still output {top_n} items in English); "
+                "gather more tool evidence before writing Markdown.",
+                memory_block,
             )
 
         opt_messages: list[dict] = [
@@ -346,13 +387,17 @@ def stream_gap_debate_agent(
         # ── Skeptic ───────────────────────────────────────────────────────
         yield {"type": "phase_start", "round": round_num, "role": "skeptic"}
 
-        ske_user = (
-            f"请交叉验证以下 Optimist 候选空白（第 {round_num} 轮）：\n\n"
+        ske_user = _append_memory_block(
+            f"Cross-check the following Opportunity Scout candidates (round {round_num}):\n\n"
             f"{optimist_proposal}\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
-            + ("先调用 corpus_focus_coverage，再调用至少 3 个工具核实关键声明。\n"
-               if focus else "先调用至少 3 个工具核实关键声明，")
-            + "最后输出规定 JSON（区分 verified / weak_evidence / false）。"
+            + (
+                "Call corpus_focus_coverage first, then at least 3 tools to verify key claims.\n"
+                if focus
+                else "Call at least 3 tools first to verify key claims, "
+            )
+            + "then output the required JSON (verified / weak_evidence / false).",
+            memory_block,
         )
         ske_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(SKEPTIC_SYSTEM_PROMPT, focus, role="skeptic")},
@@ -395,16 +440,23 @@ def stream_gap_debate_agent(
         yield {"type": "phase_start", "round": round_num, "role": "moderator"}
 
         is_last = round_num == max_debate_rounds
-        mod_user = (
-            f"综合 Optimist 与 Skeptic 输出，产出最终 {top_n} 条研究空白报告。\n\n"
-            f"**Optimist 提案**：\n{optimist_proposal}\n\n"
-            f"**Skeptic 验证**（confidence={confidence:.1f}/10）：\n"
+        mod_user = _append_memory_block(
+            f"Synthesize Opportunity Scout and Evidence Reviewer outputs into a final "
+            f"{top_n}-gap research report in English.\n\n"
+            f"**Opportunity Scout proposal**:\n{optimist_proposal}\n\n"
+            f"**Evidence Reviewer verification** (confidence={confidence:.1f}/10):\n"
             f"```json\n{json.dumps(skeptic_review, ensure_ascii=False, indent=2)[:3000]}\n```\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
-            f"当前第 {round_num}/{max_debate_rounds} 轮。"
-            + ("这是最后一轮，必须输出完整 Markdown 最终报告。" if is_last else
-               f"若 Skeptic confidence >= {accept_score}，输出完整 Markdown 报告；"
-               "否则输出修订 JSON。")
+            f"Round {round_num}/{max_debate_rounds}."
+            + (
+                " This is the last round — output the complete Markdown final report."
+                if is_last
+                else (
+                    f" If Evidence Reviewer confidence >= {accept_score}, "
+                    "output the complete Markdown report; otherwise output revision JSON."
+                )
+            ),
+            memory_block,
         )
         mod_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(MODERATOR_SYSTEM_PROMPT, focus, role="moderator")},
@@ -459,6 +511,7 @@ def run_gap_debate_agent(
     top_n: int = 6,
     max_debate_rounds: int = 2,
     verbose: bool = False,
+    use_ops_memory: bool | None = None,
 ) -> str:
     print(f"\n{'='*60}")
     print("Gap Debate Multi-Agent — pathomics/radiomics")
@@ -472,6 +525,7 @@ def run_gap_debate_agent(
         focus=focus,
         top_n=top_n,
         max_debate_rounds=max_debate_rounds,
+        use_ops_memory=use_ops_memory,
     ):
         etype = event["type"]
         if etype == "debate_round_start":

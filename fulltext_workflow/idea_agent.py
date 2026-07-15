@@ -212,37 +212,56 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
 IDEA_TOOL_SCHEMAS: list[dict] = _IDEA_TOOL_SCHEMAS + GRAPH_TOOL_SCHEMAS + FEASIBILITY_TOOL_SCHEMAS
 
 _GAP_ANCHOR_RULES = """\
-【锚定研究空白 — 全程不可更换主题】
-用户选定的研究空白如下（方案必须始终围绕此主题，禁止改题）：
+[Anchored research gap — do not change the topic]
+The user-selected research gap below must remain the sole focus of the proposal:
 {gap_text}
 
-硬性规则：
-- 所有工具查询的 keyword/focus 必须与本空白中的疾病/任务相关（不得改查鼻咽癌、肺癌等其他病种）。
-- 方信可行性请用 disease_id={disease_id}（{disease_reason}）；乳腺/乳腺癌课题 organ_system 用 breast/mammary，禁止 gynecological。
-- 方信数据不足时：在方案中标注「数据对接局限」，**不得**更换为 API 返回的其他病种（如 BYA、鼻咽癌 survival）凑可行性。
-- 修订轮次仅改进同一空白下的方案深度，不得替换为全新课题。
+Hard rules:
+- Every tool keyword/focus must stay related to this gap's disease/task (do not switch diseases).
+- Fangxin disease_id: {disease_id_rule}
+- If Fangxin data are insufficient: state a "Data Integration Limitations" section; \
+**do not** use an unrelated disease_id (e.g. BRCA-IDC for a non-breast topic) to inflate feasibility.
+- Revision rounds may only deepen the same gap; never replace it with a new topic.
+- Write the full proposal in **English** (section titles and body).
 """
 
 _CRITIC_ANCHOR_EXTRA = """\
-- 评审不得建议更换为其他病种或全新课题；feasibility 失败应要求补充乳腺/原病种数据路径，而非改做鼻咽癌等。
-- feasibility_assess 的 disease_id 应与空白病种一致（推荐 {disease_id}），勿随意使用无关 API 返回 ID。
+- Do not recommend switching to another disease or a new topic; if feasibility fails, \
+require a data path for the original disease or document limitations.
+- feasibility_assess disease_id must match the gap disease{disease_id_hint}; \
+do not use unrelated API/mock IDs.
 """
+
+_UNMAPPED_DISEASE_REASON = (
+    "no confident mapping — call pathology_disease_catalog / text_disease_matches "
+    "to resolve a disease_id matching THIS gap's disease; "
+    "never invent or default to BRCA-IDC / GC-ADC / other unrelated codes"
+)
 
 
 def _short_tool_focus(gap_text: str) -> str:
     """Shorter focus string for graph tools (disease phrase)."""
     text = gap_text.strip()
     lower = text.lower()
-    for phrase in (
-        "bilateral breast cancer",
-        "multifocal breast cancer",
-        "breast cancer",
-        "breast",
-        "乳腺癌",
-        "乳腺",
+    for phrase, label in (
+        ("nasopharyngeal carcinoma", "Nasopharyngeal carcinoma"),
+        ("nasopharyngeal cancer", "Nasopharyngeal carcinoma"),
+        ("nasopharyngeal", "Nasopharyngeal carcinoma"),
+        ("鼻咽癌", "Nasopharyngeal carcinoma"),
+        ("bilateral breast cancer", "Breast Cancer"),
+        ("multifocal breast cancer", "Breast Cancer"),
+        ("breast cancer", "Breast Cancer"),
+        ("breast", "Breast Cancer"),
+        ("乳腺癌", "Breast Cancer"),
+        ("乳腺", "Breast Cancer"),
+        ("gastric", "Gastric cancer"),
+        ("胃腺癌", "Gastric adenocarcinoma"),
+        ("lung", "Lung cancer"),
+        ("colorectal", "Colorectal cancer"),
+        ("hepatocellular", "Hepatocellular carcinoma"),
     ):
         if phrase in lower or phrase in text:
-            return "Breast Cancer" if "breast" in phrase else phrase
+            return label
     return text[:80]
 
 
@@ -277,19 +296,41 @@ def bind_idea_tools(tools: dict[str, Any], gap_text: str | None) -> dict[str, An
     return bound
 
 
-def _gap_disease_hint(gap_text: str) -> tuple[str, str]:
-    disease_id, conf, reason = map_gap_to_disease(gap_text)
+def _gap_disease_hint(gap_text: str) -> tuple[str | None, str]:
+    """Resolve Fangxin disease_id for prompts; never invent an unrelated default."""
+    client = None
+    try:
+        from feasibility.client import get_pathology_client
+
+        client = get_pathology_client()
+    except Exception:
+        client = None
+
+    disease_id, conf, reason = map_gap_to_disease(gap_text, client=client)
     if disease_id:
         return disease_id, f"{reason} (confidence {conf:.2f})"
-    return "BRCA-IDC", "default for breast-related gaps; verify via D-01 if different"
+    return None, _UNMAPPED_DISEASE_REASON
+
+
+def _disease_id_rule_text(disease_id: str | None, disease_reason: str) -> str:
+    if disease_id:
+        return (
+            f"Prefer disease_id={disease_id} ({disease_reason}). "
+            "It must match the gap disease; organ_system and related fields must fit that disease "
+            "(breast topics: breast/mammary; do not misuse gynecological)."
+        )
+    return (
+        f"No automatic mapping yet ({disease_reason}). "
+        "First resolve a matching code via pathology_disease_catalog / text_disease_matches, "
+        "then call feasibility_assess; never default to BRCA-IDC or other unrelated diseases."
+    )
 
 
 def _gap_anchor_block(gap_text: str) -> str:
     disease_id, disease_reason = _gap_disease_hint(gap_text)
     return _GAP_ANCHOR_RULES.format(
         gap_text=gap_text.strip(),
-        disease_id=disease_id,
-        disease_reason=disease_reason,
+        disease_id_rule=_disease_id_rule_text(disease_id, disease_reason),
     )
 
 
@@ -299,68 +340,81 @@ def _system_with_gap_anchor(base: str, gap_text: str, *, role: str) -> str:
     extra = _gap_anchor_block(gap_text)
     if role == "critic":
         disease_id, _ = _gap_disease_hint(gap_text)
-        extra += _CRITIC_ANCHOR_EXTRA.format(disease_id=disease_id)
+        hint = (
+            f" (recommended: {disease_id})"
+            if disease_id
+            else " (must match the gap disease; ban unrelated default IDs)"
+        )
+        extra += _CRITIC_ANCHOR_EXTRA.format(disease_id_hint=hint)
     return base + "\n\n" + extra
 
 
 GENERATOR_SYSTEM_PROMPT = """\
-你是一位 pathomics/radiomics 科研方案设计专家，擅长将影像组学/病理组学与深度学习结合，
-设计具有临床价值、技术创新性和可执行性的研究方案。
+You are an expert pathomics/radiomics research-proposal designer. You combine imaging/pathology \
+omics with deep learning to produce clinically valuable, technically novel, and executable plans.
 
-你参与 Generator x Critic 迭代优化流程：
-- 第一轮：根据研究空白生成完整初始方案（v1）。
-- 后续轮次：根据 Critic 反馈修订方案。
+You operate in a Generator × Critic loop:
+- Round 1: produce a complete initial proposal (v1) for the research gap.
+- Later rounds: revise the proposal using Critic feedback.
 
-工具使用规则：
-- 调用 SQL 工具 + graph_* 图工具 + 方信可行性工具（至少 5 个工具，含 1 个 graph_*）。
-- 优先使用 metrics_for_topic（含 evidence_quote）和 author_limitations_for_topic。
-- 使用 pathology_disease_catalog / pathology_tasks_for_disease 确认方信 Mock 数据支撑。
-- 最后一轮回复必须是**完整方案正文**（含全部章节），禁止只写「让我调用某工具」而不输出方案。
-- 工具查询完成后，必须再发一条**不含 tool_calls** 的最终消息输出完整 Markdown。
+Language:
+- Write the **entire proposal in English** (titles and body).
+- Tool arguments may use English disease/topic keywords matching the gap.
 
-输出完整 Markdown 方案，末尾添加：
-REVISION_NOTE: <50字内说明本版本核心改动，第一版写"初始版本">
+Tool-use rules:
+- Call SQL tools + graph_* tools + Fangxin feasibility tools (at least 5 tools, including 1 graph_*).
+- Prefer metrics_for_topic (with evidence_quote) and author_limitations_for_topic.
+- Use pathology_disease_catalog / pathology_tasks_for_disease / text_disease_matches to confirm \
+Fangxin data support (disease must match the gap).
+- The final reply must be the **full proposal Markdown** (all sections). Do not stop after \
+"let me call a tool" without writing the proposal.
+- After tool calls finish, send one final message **without tool_calls** containing the full Markdown.
 
-必须在方案末尾增加结构化数据对接段落：
+End the proposal with:
+REVISION_NOTE: <≤50 words summarizing this version's changes; use "Initial version" for v1>
 
-## 九、方信数据对接参数
-- **disease_id**: <如 GC-ADC>
-- **task_type**: <如 survival_prediction>
-- **required_labels**: [<标注字段列表>]
-- **required_molecular_markers**: [<分子标记列表，无则写 none>]
-- **required_annotations**: [<病理标注列表>]
-- **min_followup_months**: <整数或 N/A>
+Also append a structured Fangxin integration section:
 
-方案结构：
-## 一、研究背景与立项依据
-## 二、研究目标（总体 + 3-4条具体目标）
-## 三、研究内容（3个模块，各200字以上）
-## 四、技术路线（含具体 AI 架构，非泛泛"深度学习"）
-## 五、临床研究方案（设计、纳入排除、样本量、伦理）
-## 六、创新点（临床选题 + AI 架构 + 转化应用）
-## 七、预期成果与影响
-## 八、研究计划（2-3年季度时间线）
+## 9. Fangxin Data Integration Parameters
+- **disease_id**: <e.g. GC-ADC>
+- **task_type**: <e.g. survival_prediction>
+- **required_labels**: [<label fields>]
+- **required_molecular_markers**: [<markers, or none>]
+- **required_annotations**: [<pathology annotations>]
+- **min_followup_months**: <integer or N/A>
 
-禁止 emoji。
+Required structure:
+## 1. Background and Rationale
+## 2. Research Objectives (overall + 3–4 specific aims)
+## 3. Research Content (3 modules, each substantive)
+## 4. Technical Approach (specific AI architecture, not vague "deep learning")
+## 5. Clinical Study Design (design, eligibility, sample size, ethics)
+## 6. Innovations (clinical topic + AI architecture + translation)
+## 7. Expected Outcomes and Impact
+## 8. Timeline (2–3 year quarterly plan)
+
+No emoji.
 """
 
 CRITIC_SYSTEM_PROMPT = """\
-你是一位严格的 pathomics/radiomics 同行评审专家（Critic Agent）。
+You are a strict pathomics/radiomics peer reviewer (Critic Agent).
 
-评审原则：
-- 调用 KG 工具核实方案中的数据声明（至少 2 个工具）。
-- **必须**调用 feasibility_assess (V-01) 核验方案中的 disease_id / task_type / 标签需求。
-- 若 feasibility_score < 0.5，technical_feasibility 不得高于 5 分，且 accept 必须为 false。
-- 若 feasibility_score >= 0.8 且 available_cohort_size >= 500，可在评审中注明「方信数据可行」。
-- 核查 evidence_quote 是否与声明一致；指出 extracted corpus 规模局限。
-- 五维评分（各20分，总分100，换算10分制）：科学严谨性、技术可行性、临床价值、创新性、完整性。
-- 7分以下需实质修改；8分以上可 accept。
+Review rules:
+- Call KG tools to verify data claims (at least 2 tools).
+- **Must** call feasibility_assess (V-01) to check disease_id / task_type / label requirements.
+- If feasibility_score < 0.5, technical_feasibility must be ≤ 5 and accept must be false.
+- If feasibility_score >= 0.8 and available_cohort_size >= 500, you may note "Fangxin data feasible".
+- Check evidence_quote consistency; note extracted-corpus size limits.
+- Score five dimensions (each /20, total /100, report overall /10): scientific rigor, technical \
+feasibility, clinical value, innovation, completeness.
+- Below 7 requires substantive revision; 8+ may accept.
 
-输出严格 JSON（```json ... ```）：
+Output strict JSON (```json ... ```). Field values (issues, suggestions, verification text) \
+must be in **English**:
 {
   "overall_score": <float, 0-10>,
   "accept": <bool>,
-  "feasibility_score": <float, 0-1, 来自 feasibility_assess>,
+  "feasibility_score": <float, 0-1, from feasibility_assess>,
   "available_cohort_size": <int>,
   "dimension_scores": {
     "scientific_rigor": <float>, "technical_feasibility": <float>,
@@ -373,16 +427,17 @@ CRITIC_SYSTEM_PROMPT = """\
   "revision_priority": "..."
 }
 
-禁止 emoji。
+No emoji.
 """
 
 ACCEPT_SCORE = 8.0
 
 _FINALIZE_PROPOSAL_INSTRUCTION = """\
-你已完成（或应当已完成）知识图谱工具查询。请**立即**输出完整 Markdown 研究方案：
-- 必须包含九个章节（一至八 + 方信数据对接参数）及末尾 REVISION_NOTE 行
-- 不要调用任何工具；不要只写计划或「让我检查…」
-- 基于上文工具返回的数据撰写，缺数据处注明语料局限
+You have finished (or should have finished) KG tool queries. **Immediately** output the complete \
+Markdown research proposal in **English**:
+- Include all nine sections (1–8 + Fangxin Data Integration Parameters) and a final REVISION_NOTE line
+- Do not call tools; do not write only a plan or "let me check…"
+- Ground claims in prior tool results; note corpus limitations where data are missing
 """
 
 
@@ -400,7 +455,7 @@ def _ensure_proposal_draft(
     instruction = (
         f"{_FINALIZE_PROPOSAL_INSTRUCTION}\n\n"
         f"{_gap_anchor_block(gap_text)}\n\n"
-        f"请输出方案 v{round_num}。"
+        f"Output proposal v{round_num} in English."
     )
     finalized = finalize_assistant_content(gen_messages, instruction=instruction).strip()
     return (finalized or text), bool(finalized)
@@ -416,9 +471,15 @@ def stream_idea_agent(
 
     gap_context = ""
     disease_id, disease_reason = _gap_disease_hint(gap_text)
-    gap_context = (
-        f"\n\n方信病种映射建议：disease_id={disease_id} ({disease_reason})"
-    )
+    if disease_id:
+        gap_context = (
+            f"\n\nFangxin disease mapping hint: disease_id={disease_id} ({disease_reason})"
+        )
+    else:
+        gap_context = (
+            "\n\nFangxin disease_id is not auto-mapped yet. "
+            f"({disease_reason}) Resolve a disease_id matching this gap before feasibility assessment."
+        )
     if gap_data:
         gap_context += (
             "\n\nKG analysis supporting data:\n"
@@ -438,27 +499,28 @@ def stream_idea_agent(
 
         if round_num == 1:
             gen_user = (
-                f"请针对以下 pathomics/radiomics 研究空白，生成完整研究方案（v1）：\n\n"
+                "Draft a complete English pathomics/radiomics research proposal (v1) "
+                "for the following gap:\n\n"
                 f"{anchor_block}\n\n"
-                f"**研究空白**：\n{gap_text}\n{gap_context}\n\n"
-                "先调用至少 5 个工具（含 1 个 graph_*），再输出完整方案。"
+                f"**Research gap**:\n{gap_text}\n{gap_context}\n\n"
+                "Call at least 5 tools (including 1 graph_*), then output the full English proposal."
             )
         else:
             issues_text = "\n".join(
                 f"  [{item.get('section', '')}] {item.get('issue', '')}  "
-                f"→ 建议：{item.get('suggestion', '')}"
+                f"→ suggestion: {item.get('suggestion', '')}"
                 for item in last_feedback.get("critical_issues", [])
             )
             gen_user = (
                 f"{anchor_block}\n\n"
-                f"**锚定研究空白（不可改题）**：\n{gap_text}\n\n"
-                f"评审反馈（v{round_num - 1}）：\n"
-                f"**评分**：{last_feedback.get('overall_score', 0):.1f}/10\n"
-                f"**修改方向**：{last_feedback.get('revision_priority', '')}\n"
-                f"**问题列表**：\n{issues_text}\n"
-                f"**KG核实**：{last_feedback.get('kg_verification', '')}\n\n"
-                f"请在同一研究空白下生成修订方案（v{round_num}），不得更换疾病或课题；"
-                "必要时先补充工具证据。"
+                f"**Anchored research gap (do not change topic)**:\n{gap_text}\n\n"
+                f"Critic feedback (v{round_num - 1}):\n"
+                f"**Score**: {last_feedback.get('overall_score', 0):.1f}/10\n"
+                f"**Revision priority**: {last_feedback.get('revision_priority', '')}\n"
+                f"**Issues**:\n{issues_text}\n"
+                f"**KG verification**: {last_feedback.get('kg_verification', '')}\n\n"
+                f"Produce revised proposal v{round_num} in English for the same gap; "
+                "do not change disease or topic; gather more tool evidence if needed."
             )
 
         gen_messages: list[dict] = [
@@ -508,14 +570,22 @@ def stream_idea_agent(
         if agent_failed:
             break
 
+        feas_hint = (
+            f"For Fangxin feasibility, prefer disease_id={disease_id} (must match the gap disease).\n"
+            if disease_id
+            else (
+                "For Fangxin feasibility, use a disease_id that matches the gap disease "
+                "(resolve via catalog/text_disease_matches first; never default to BRCA-IDC).\n"
+            )
+        )
         critic_user = (
             f"{anchor_block}\n\n"
-            f"请评审以下研究方案（v{round_num}）：\n\n"
-            f"**原始空白（评审不得偏离）**：\n{gap_text}\n\n"
-            f"**方案**：\n{current_draft}\n\n"
-            f"方信 feasibility 请优先使用 disease_id={disease_id}。\n"
-            "先调用 feasibility_assess 核验方信数据可行性，再调用至少 1 个 KG 工具核实关键声明，"
-            "最后输出 JSON 评审。"
+            f"Review the following research proposal (v{round_num}) in English:\n\n"
+            f"**Original gap (must not drift)**:\n{gap_text}\n\n"
+            f"**Proposal**:\n{current_draft}\n\n"
+            f"{feas_hint}"
+            "First call feasibility_assess, then at least one KG tool to verify key claims, "
+            "then output the JSON review (English field values)."
         )
         critic_messages: list[dict] = [
             {

@@ -216,6 +216,47 @@ CREATE TABLE IF NOT EXISTS weekly_hotspot_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_whs_week_board ON weekly_hotspot_snapshots(week_id, board);
 CREATE INDEX IF NOT EXISTS idx_whs_board_score ON weekly_hotspot_snapshots(board, emerging_score);
+
+CREATE TABLE IF NOT EXISTS ops_runs (
+    run_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_id             TEXT,
+    focus_raw           TEXT,
+    focus_key           TEXT NOT NULL,
+    source              TEXT,
+    started_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at         TIMESTAMP,
+    hotspot_week_id     TEXT,
+    gap_report_path     TEXT,
+    proposal_report_path TEXT,
+    notes               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ops_runs_focus_finished
+    ON ops_runs(focus_key, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ops_runs_week ON ops_runs(week_id);
+
+CREATE TABLE IF NOT EXISTS ops_gap_items (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              INTEGER NOT NULL REFERENCES ops_runs(run_id),
+    rank_pos            INTEGER,
+    title               TEXT NOT NULL,
+    research_question   TEXT,
+    fingerprint         TEXT,
+    section_md          TEXT,
+    status              TEXT DEFAULT 'reported'
+);
+CREATE INDEX IF NOT EXISTS idx_ops_gap_run ON ops_gap_items(run_id);
+CREATE INDEX IF NOT EXISTS idx_ops_gap_fp ON ops_gap_items(fingerprint);
+
+CREATE TABLE IF NOT EXISTS ops_proposals (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              INTEGER NOT NULL REFERENCES ops_runs(run_id),
+    gap_item_id         INTEGER REFERENCES ops_gap_items(id),
+    proposal_path       TEXT,
+    proposal_md         TEXT,
+    feasibility_score   REAL,
+    status              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
 """
 
 
@@ -316,6 +357,47 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
         );
         CREATE INDEX IF NOT EXISTS idx_whs_week_board ON weekly_hotspot_snapshots(week_id, board);
         CREATE INDEX IF NOT EXISTS idx_whs_board_score ON weekly_hotspot_snapshots(board, emerging_score);
+
+        CREATE TABLE IF NOT EXISTS ops_runs (
+            run_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_id             TEXT,
+            focus_raw           TEXT,
+            focus_key           TEXT NOT NULL,
+            source              TEXT,
+            started_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at         TIMESTAMP,
+            hotspot_week_id     TEXT,
+            gap_report_path     TEXT,
+            proposal_report_path TEXT,
+            notes               TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_runs_focus_finished
+            ON ops_runs(focus_key, finished_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ops_runs_week ON ops_runs(week_id);
+
+        CREATE TABLE IF NOT EXISTS ops_gap_items (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id              INTEGER NOT NULL REFERENCES ops_runs(run_id),
+            rank_pos            INTEGER,
+            title               TEXT NOT NULL,
+            research_question   TEXT,
+            fingerprint         TEXT,
+            section_md          TEXT,
+            status              TEXT DEFAULT 'reported'
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_gap_run ON ops_gap_items(run_id);
+        CREATE INDEX IF NOT EXISTS idx_ops_gap_fp ON ops_gap_items(fingerprint);
+
+        CREATE TABLE IF NOT EXISTS ops_proposals (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id              INTEGER NOT NULL REFERENCES ops_runs(run_id),
+            gap_item_id         INTEGER REFERENCES ops_gap_items(id),
+            proposal_path       TEXT,
+            proposal_md         TEXT,
+            feasibility_score   REAL,
+            status              TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
     """)
 
 
@@ -1036,3 +1118,161 @@ def weekly_hotspot_stats() -> dict[str, int]:
                 "SELECT COUNT(*) FROM weekly_hotspot_snapshots"
             ).fetchone()[0],
         }
+
+
+def insert_ops_run(
+    *,
+    week_id: str,
+    focus_raw: str | None,
+    focus_key: str,
+    source: str,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO ops_runs
+               (week_id, focus_raw, focus_key, source, started_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (week_id, focus_raw, focus_key, source),
+        )
+        return int(cur.lastrowid)
+
+
+def update_ops_run_finalize(
+    run_id: int,
+    *,
+    gap_report_path: str = "",
+    hotspot_week_id: str = "",
+    proposal_report_path: str = "",
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE ops_runs SET
+               finished_at=CURRENT_TIMESTAMP,
+               gap_report_path=COALESCE(NULLIF(?, ''), gap_report_path),
+               hotspot_week_id=COALESCE(NULLIF(?, ''), hotspot_week_id),
+               proposal_report_path=COALESCE(NULLIF(?, ''), proposal_report_path)
+               WHERE run_id=?""",
+            (gap_report_path, hotspot_week_id, proposal_report_path, run_id),
+        )
+
+
+def insert_ops_gap_items(run_id: int, items: list[dict[str, Any]]) -> int:
+    with get_conn() as conn:
+        for it in items:
+            conn.execute(
+                """INSERT INTO ops_gap_items
+                   (run_id, rank_pos, title, research_question, fingerprint,
+                    section_md, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    it.get("rank_pos"),
+                    it["title"],
+                    it.get("research_question"),
+                    it.get("fingerprint"),
+                    it.get("section_md"),
+                    it.get("status") or "reported",
+                ),
+            )
+        return len(items)
+
+
+def insert_ops_proposal(
+    run_id: int,
+    *,
+    gap_item_id: int | None = None,
+    proposal_path: str = "",
+    proposal_md: str = "",
+    feasibility_score: float | None = None,
+    status: str = "",
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO ops_proposals
+               (run_id, gap_item_id, proposal_path, proposal_md,
+                feasibility_score, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                gap_item_id,
+                proposal_path or None,
+                proposal_md or None,
+                feasibility_score,
+                status or None,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def fetch_recent_ops_runs(focus_key: str, limit: int) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT run_id, week_id, focus_raw, focus_key, source,
+                      started_at, finished_at, hotspot_week_id,
+                      gap_report_path, proposal_report_path
+               FROM ops_runs
+               WHERE focus_key=? AND finished_at IS NOT NULL
+               ORDER BY finished_at DESC, run_id DESC
+               LIMIT ?""",
+            (focus_key, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_ops_gap_items_for_runs(run_ids: list[int]) -> list[dict[str, Any]]:
+    if not run_ids:
+        return []
+    placeholders = ",".join("?" * len(run_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT id, run_id, rank_pos, title, research_question,
+                       fingerprint, section_md, status
+                FROM ops_gap_items
+                WHERE run_id IN ({placeholders})
+                ORDER BY run_id DESC, rank_pos ASC""",
+            tuple(run_ids),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_ops_run_hotspot(run_id: int, hotspot_week_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE ops_runs SET hotspot_week_id=? WHERE run_id=?",
+            (hotspot_week_id, run_id),
+        )
+
+
+def find_ops_run_by_week_focus(week_id: str, focus_key: str) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT run_id FROM ops_runs
+               WHERE week_id=? AND focus_key=?
+               ORDER BY COALESCE(finished_at, started_at) DESC, run_id DESC
+               LIMIT 1""",
+            (week_id, focus_key),
+        ).fetchone()
+    return int(row["run_id"]) if row else None
+
+
+def find_ops_gap_items_by_run(run_id: int) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, run_id, rank_pos, title, research_question,
+                      fingerprint, status
+               FROM ops_gap_items
+               WHERE run_id=?
+               ORDER BY rank_pos ASC""",
+            (run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_ops_run_proposal_path(run_id: int, proposal_report_path: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE ops_runs SET
+               proposal_report_path=COALESCE(NULLIF(?, ''), proposal_report_path)
+               WHERE run_id=?""",
+            (proposal_report_path, run_id),
+        )

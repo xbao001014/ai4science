@@ -62,14 +62,16 @@ class HttpPathologyApi:
                     f"HTTP {exc.code} for {path}: {body[:300]}",
                     status=exc.code,
                 ) from exc
-            except urllib.error.URLError as exc:
+            except (TimeoutError, OSError, urllib.error.URLError) as exc:
+                # TimeoutError is not always wrapped in URLError on all Python builds
                 last_err = exc
                 if attempt + 1 < retries:
                     time.sleep(1.5 * (attempt + 1))
                     continue
                 host = urllib.parse.urlparse(self.base_url).hostname or self.base_url
+                reason = getattr(exc, "reason", None) or exc
                 raise PathologyHttpError(
-                    f"Cannot reach pathology API at {host} ({exc.reason}). "
+                    f"Cannot reach pathology API at {host} ({reason}). "
                     f"Check VPN/network/DNS, then retry. URL: {url}"
                 ) from exc
         else:

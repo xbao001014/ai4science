@@ -13,12 +13,16 @@ import config
 
 config.DB_PATH = str(_ROOT / "data" / "test_focus_filter.db")
 
-from analysis.focus_filter import normalize_focus  # noqa: E402
+from analysis.focus_filter import (  # noqa: E402
+    debate_or_corpus_papers,
+    normalize_focus,
+)
 from analysis.gap_lifecycle import compute_limitation_temporal_profiles  # noqa: E402
 from analysis.gap_tools import (  # noqa: E402
     tool_combo_gap_temporal,
     tool_corpus_focus_coverage,
     tool_method_disease_combo_gap,
+    tool_recent_highcite_papers,
 )
 from db.schema import init_db, insert_relation, upsert_entity, upsert_paper  # noqa: E402
 
@@ -88,10 +92,38 @@ def test_corpus_focus_coverage_counts_subset():
     cov = tool_corpus_focus_coverage(focus="nasopharyngeal carcinoma")
     assert cov["focus_subset"]["papers"] >= 1
     assert cov["focus_subset"]["limitation_relations"] >= 1
+
+
+def test_recent_highcite_includes_title_only_focus_paper():
+    """Title match must count even when Disease entity is missing."""
+    _setup()
+    upsert_paper({
+        "pmid": "91000099",
+        "title": "MRI radiomics in nasopharyngeal carcinoma diagnosis",
+        "year": 2024,
+        "citation_count": 12,
+        "extraction_done": 0,
+    })
+    rows = tool_recent_highcite_papers(focus="nasopharyngeal carcinoma")["data"]
+    assert any(r.get("pmid") == "91000099" for r in rows)
+
+
+def test_debate_or_corpus_papers_falls_back_when_debate_has_no_titles():
+    """Evidence tab must not show 0 when focus corpus has papers."""
+    _setup()
+    _seed_npc_fixture()
+    rows, strategy = debate_or_corpus_papers([], "nasopharyngeal carcinoma", limit=10)
+    assert rows, strategy
+    assert strategy.startswith("corpus_")
+    assert any("nasopharyngeal" in (r.get("title") or "").lower() for r in rows)
+
+
 if __name__ == "__main__":
     test_normalize_focus_treats_all_as_none()
     test_limitation_temporal_uses_disease_focus_not_limitation_name()
     test_combo_gap_temporal_finds_methods_on_focus_papers()
     test_method_disease_combo_not_empty_for_disease_focus()
     test_corpus_focus_coverage_counts_subset()
+    test_recent_highcite_includes_title_only_focus_paper()
+    test_debate_or_corpus_papers_falls_back_when_debate_has_no_titles()
     print("all ok")

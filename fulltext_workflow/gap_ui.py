@@ -112,6 +112,7 @@ from utils.tool_result_summary import (  # noqa: E402
     is_summary_result,
     record_count,
 )
+from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
 from viz.gap_viz import (  # noqa: E402
     build_gap_viz_bundle,
@@ -1031,6 +1032,45 @@ def extract_papers(events: list[dict]) -> list[dict]:
     return sorted(seen.values(), key=lambda x: str(x.get("Year", "")), reverse=True)
 
 
+def _format_corpus_paper_rows(rows: list[dict], *, found_via: str) -> list[dict]:
+    out: list[dict] = []
+    for item in rows:
+        title = item.get("title") or ""
+        if not title:
+            continue
+        out.append({
+            "Title": title,
+            "Year": item.get("year", ""),
+            "Journal": item.get("journal_name") or item.get("journal", ""),
+            "PMID": item.get("pmid", ""),
+            "Study Type": item.get("study_type", ""),
+            "Full Text": item.get("full_text_status", ""),
+            "Found via": found_via,
+        })
+    return sorted(out, key=lambda x: str(x.get("Year", "")), reverse=True)
+
+
+def resolve_evidence_literature_papers(
+    events: list[dict],
+    focus: str | None,
+    *,
+    limit: int = 50,
+) -> tuple[list[dict], str]:
+    """Debate tool titles first; otherwise corpus search for focus (avoids Papers=0)."""
+    debate_rows = extract_papers(events)
+    if debate_rows:
+        return debate_rows[:limit], "debate_tools"
+    raw, strategy = debate_or_corpus_papers([], focus, limit=limit)
+    if strategy == "debate_tools":
+        return debate_rows[:limit], strategy
+    label = (
+        "Corpus focus match"
+        if strategy.startswith("corpus_") and raw
+        else strategy
+    )
+    return _format_corpus_paper_rows(raw, found_via=label), strategy
+
+
 def compute_stats(events: list[dict]) -> dict:
     calls = sum(1 for e in events if e.get("type") == "tool_call")
     records = 0
@@ -1352,6 +1392,25 @@ with st.sidebar:
         1, 5, 2,
     )
     verbose_input = st.checkbox("Show LLM reasoning traces")
+    use_ops_memory_input = st.checkbox(
+        "Use ops memory",
+        value=True,
+        help="Inject the last 4 reported gaps for this focus to soft-avoid similar directions",
+    )
+    persist_ops_memory_input = st.checkbox(
+        "Persist this run",
+        value=True,
+        help="Write ops_runs and gap items after a successful debate or proposal",
+    )
+    with st.expander("Ops memory for this focus", expanded=False):
+        from analysis.ops_memory import load_recent_gaps  # noqa: E402
+
+        mem = load_recent_gaps(focus_input or None)
+        if not mem.items:
+            st.caption("No memory yet")
+        else:
+            for it in mem.items[:40]:
+                st.markdown(f"- `{it.week_id}` {it.title}")
     st.divider()
     run_button = st.button("Run Gap Debate", type="primary", use_container_width=True)
 
@@ -1367,7 +1426,7 @@ with st.sidebar:
         ]:
             st.metric(label, val)
 
-st.title("Pathomics/Radiomics — Gap Debate")
+st.title("Pathology AI - Research Gap Analysis")
 focus_label = f"Focus: *{focus_input}*" if focus_input else "Full corpus"
 st.caption(
     f"Opportunity Scout × Evidence Reviewer × Final Synthesizer  |  "
@@ -1393,6 +1452,7 @@ if run_button:
             focus=focus_input or None,
             top_n=top_n_input,
             max_debate_rounds=debate_rounds_input,
+            use_ops_memory=use_ops_memory_input,
         ):
             live_events.append(event)
             st.session_state["events"] = list(live_events)
@@ -1455,6 +1515,17 @@ if run_button:
                 st.session_state["report"] = event.get("content", "")
                 st.session_state["debate_rounds"] = event.get("rounds", 1)
                 st.session_state["debate_confidence"] = event.get("confidence", 0.0)
+                if persist_ops_memory_input and event.get("content"):
+                    from analysis.ops_memory import persist_debate_report  # noqa: E402
+
+                    rid = persist_debate_report(
+                        event["content"],
+                        focus=focus_input or None,
+                        source="gap_ui",
+                        enabled=True,
+                    )
+                    if rid:
+                        st.session_state["ops_run_id"] = rid
                 sw.update(
                     label=(
                         f"Debate complete — {tool_step} tool calls, "
@@ -1488,7 +1559,20 @@ if not st.session_state["events"]:
     with tab_viz:
         render_gap_visualization_tab([], focus_hint=focus_input)
     with tab_evidence:
-        st.info("Run Gap Debate to populate evidence and literature.")
+        foc = normalize_focus(focus_input)
+        if foc:
+            papers, strategy = resolve_evidence_literature_papers([], foc, limit=50)
+            st.subheader(f"Papers ({len(papers)})")
+            if papers:
+                st.caption(
+                    f"Matched via {strategy} for focus «{foc}» "
+                    "(run Gap Debate to also collect evidence quotes)."
+                )
+                safe_table(pd.DataFrame(papers))
+            else:
+                st.info(f"No corpus papers matched focus «{foc}».")
+        else:
+            st.info("Run Gap Debate to populate evidence and literature, or set a Research focus.")
     with tab_report:
         st.info("Run Gap Debate to generate the gap report.")
         s = db_stats()
@@ -1569,7 +1653,15 @@ elif st.session_state["events"]:
 
     with tab_evidence:
         evidence = extract_evidence(st.session_state["events"])
-        papers = extract_papers(st.session_state["events"])
+        focus_lit = (
+            normalize_focus(st.session_state.get("run_focus"))
+            or normalize_focus(focus_input)
+        )
+        papers, lit_strategy = resolve_evidence_literature_papers(
+            st.session_state["events"],
+            focus_lit,
+            limit=50,
+        )
         st.subheader(f"Full-Text Evidence ({len(evidence)} rows)")
         if evidence:
             safe_table(pd.DataFrame(evidence))
@@ -1578,9 +1670,14 @@ elif st.session_state["events"]:
         st.divider()
         st.subheader(f"Papers ({len(papers)})")
         if papers:
+            if lit_strategy.startswith("corpus_"):
+                st.caption(
+                    f"Debate tools returned no paper titles; showing corpus matches "
+                    f"for focus «{focus_lit}» ({lit_strategy})."
+                )
             safe_table(pd.DataFrame(papers))
         else:
-            st.info("No paper metadata in tool results.")
+            st.info("No paper metadata in tool results or corpus focus match.")
 
     with tab_report:
         report_text = st.session_state.get("report", "")
@@ -1698,6 +1795,28 @@ elif st.session_state["events"]:
                         st.session_state["proposal"] = event.get("content", "")
                         st.session_state["final_rounds"] = event.get("rounds", 1)
                         st.session_state["final_score"] = event.get("final_score", 0.0)
+                        if persist_ops_memory_input and event.get("content"):
+                            from analysis.ops_memory import (  # noqa: E402
+                                create_ops_run,
+                                finalize_ops_run,
+                                persist_proposal,
+                            )
+
+                            rid = st.session_state.get("ops_run_id")
+                            if not rid:
+                                rid = create_ops_run(focus_input or None, "gap_ui")
+                                finalize_ops_run(rid)
+                                st.session_state["ops_run_id"] = rid
+                            gap_title = (
+                                st.session_state.get("proposal_gap_text")
+                                or str(gap_input).strip()
+                            )
+                            persist_proposal(
+                                rid,
+                                gap_title=gap_title,
+                                proposal_md=event.get("content", ""),
+                                status="generated",
+                            )
                         psw.update(
                             label=f"Done — {event.get('rounds', 1)} rounds, score {event.get('final_score', 0):.1f}/10",
                             state="complete",
@@ -1711,7 +1830,16 @@ elif st.session_state["events"]:
             p1.metric("Final score", f"{st.session_state.get('final_score', 0):.1f}/10")
             p2.metric("Rounds", st.session_state.get("final_rounds", 1))
             if len(proposal.strip()) < 400 or not any(
-                m in proposal for m in ("## 一", "研究背景", "REVISION_NOTE")
+                m in proposal
+                for m in (
+                    "## 1.",
+                    "## 1 ",
+                    "## Background",
+                    "REVISION_NOTE",
+                    "Fangxin Data Integration",
+                    "## 一",
+                    "研究背景",
+                )
             ):
                 st.warning(
                     "Proposal looks incomplete. Re-run generation or check API / tool errors in the status log."

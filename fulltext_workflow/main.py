@@ -133,6 +133,7 @@ def cmd_compute_gap_lifecycle(args: argparse.Namespace) -> None:
 
 def cmd_gap_debate(args: argparse.Namespace) -> None:
     from gap_agent import run_gap_debate_agent, save_report
+    from analysis.ops_memory import persist_debate_report
 
     from db.schema import init_db
 
@@ -142,10 +143,21 @@ def cmd_gap_debate(args: argparse.Namespace) -> None:
         top_n=args.top,
         max_debate_rounds=args.rounds,
         verbose=args.verbose,
+        use_ops_memory=not args.no_ops_memory,
     )
     if args.output and report:
         save_report(report, args.output, focus=args.focus)
         print(f"[Gap-Debate] Saved to {args.output}")
+    if report and not args.no_ops_persist:
+        rid = persist_debate_report(
+            report,
+            focus=args.focus or None,
+            source="gap-debate",
+            gap_report_path=args.output or "",
+            enabled=True,
+        )
+        if rid:
+            print(f"[Gap-Debate] Ops memory run_id={rid}")
 
 
 def cmd_watch_fetch(args: argparse.Namespace) -> None:
@@ -170,22 +182,15 @@ def cmd_stats(_args: argparse.Namespace) -> None:
 
 def cmd_bootstrap_landscape(args: argparse.Namespace) -> None:
     from db.schema import init_db, landscape_count
-    from feasibility.landscape import bootstrap_landscape, check_api_connectivity
+    from feasibility.landscape import bootstrap_landscape
 
     init_db()
-    if args.force:
-        pre = check_api_connectivity()
-        if not pre["ok"]:
-            print(f"[Bootstrap] API unreachable ({pre['host']}): {pre['error']}")
-            print(
-                "[Bootstrap] Tip: verify network/VPN/DNS can resolve "
-                f"{pre['host']}, then retry."
-            )
     result = bootstrap_landscape(force=args.force)
     if result.get("skipped"):
         print(f"[Bootstrap] Skipped: {result['reason']} ({result['disease_count']} diseases)")
     elif result.get("api_error") and result.get("loaded", 0) == 0:
         kept = result.get("kept_existing")
+        host = result.get("host") or "pathology API"
         print(f"[Bootstrap] Loaded 0 diseases (API error).")
         if kept:
             print(
@@ -194,6 +199,9 @@ def cmd_bootstrap_landscape(args: argparse.Namespace) -> None:
             )
         else:
             print(f"[Bootstrap] {result['api_error']}")
+            print(
+                f"[Bootstrap] Tip: verify network/VPN/DNS can resolve {host}, then retry."
+            )
     else:
         print(
             f"[Bootstrap] Loaded {result.get('loaded', result['disease_count'])} diseases: "
@@ -216,6 +224,8 @@ def cmd_idea_pipeline(args: argparse.Namespace) -> None:
         skip_debate=args.skip_debate,
         skip_ideas=args.skip_ideas,
         verbose=args.verbose,
+        use_ops_memory=not args.no_ops_memory,
+        persist_ops_memory=not args.no_ops_persist,
     )
     out = args.output or f"{config.OUTPUT_DIR}/idea_pipeline_report.md"
     save_pipeline_report(report, out)
@@ -478,6 +488,16 @@ def main() -> None:
     p_debate.add_argument("--rounds", "-r", type=int, default=2)
     p_debate.add_argument("--output", "-o", default=None)
     p_debate.add_argument("--verbose", "-v", action="store_true")
+    p_debate.add_argument(
+        "--no-ops-memory",
+        action="store_true",
+        help="Do not inject ops memory into debate prompts",
+    )
+    p_debate.add_argument(
+        "--no-ops-persist",
+        action="store_true",
+        help="Do not write ops_* rows after debate",
+    )
 
     p_landscape = sub.add_parser(
         "bootstrap-landscape",
@@ -498,6 +518,16 @@ def main() -> None:
     p_pipeline.add_argument("--skip-ideas", action="store_true", help="Feasibility only, no LLM proposals")
     p_pipeline.add_argument("--output", "-o", default=None)
     p_pipeline.add_argument("--verbose", "-v", action="store_true")
+    p_pipeline.add_argument(
+        "--no-ops-memory",
+        action="store_true",
+        help="Do not inject ops memory into debate prompts",
+    )
+    p_pipeline.add_argument(
+        "--no-ops-persist",
+        action="store_true",
+        help="Do not write ops_* rows after debate/proposals",
+    )
 
     sub.add_parser("stats", help="Print database statistics")
 

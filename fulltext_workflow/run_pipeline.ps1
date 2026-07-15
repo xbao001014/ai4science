@@ -1,10 +1,10 @@
 # fulltext_workflow/run_pipeline.ps1
-# 用法:
-#   .\run_pipeline.ps1                  # 交互菜单
-#   .\run_pipeline.ps1 -Stage all       # 跑完整推荐流水线（不含 gap-debate）
-#   .\run_pipeline.ps1 -Stage fetch     # 只跑某一阶段
-#   .\run_pipeline.ps1 -Stage weekly          # 每周增量（fetch 最近 14 天 EDAT）
-#   .\run_pipeline.ps1 -Stage db            # 仅建库：fetch → enrich → fulltext → extract
+# Usage:
+#   .\run_pipeline.ps1                  # interactive menu
+#   .\run_pipeline.ps1 -Stage all       # full pipeline (no gap-debate)
+#   .\run_pipeline.ps1 -Stage fetch     # single stage
+#   .\run_pipeline.ps1 -Stage weekly    # weekly incremental (EDAT last 14 days)
+#   .\run_pipeline.ps1 -Stage db        # DB only: fetch → enrich → fulltext → extract
 
 param(
     [ValidateSet("init", "fetch", "enrich", "fulltext", "extract", "build", "analyze", "debate", "landscape", "stats", "all", "quick", "weekly", "db")]
@@ -18,8 +18,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Repo = Split-Path -Parent $Root
 Set-Location $Root
-$py = Join-Path $Root ".." ".venv" "Scripts" "python.exe"
+# Windows PowerShell 5.1 Join-Path only accepts 2 args; keep child as one relative path
+$py = Join-Path $Repo ".venv\Scripts\python.exe"
 
 if (-not (Test-Path $py)) {
     $py = "python"
@@ -28,12 +30,13 @@ if (-not (Test-Path $py)) {
 function Invoke-Step {
     param(
         [string]$Name,
-        [string[]]$Args
+        # Do not name this $Args — conflicts with PowerShell automatic $args
+        [string[]]$CmdArgs
     )
     Write-Host "`n========== $Name ==========" -ForegroundColor Cyan
-    & $py main.py @Args
+    & $py main.py @CmdArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed: main.py $($Args -join ' ')"
+        throw "Failed: main.py $($CmdArgs -join ' ')"
     }
 }
 
@@ -43,8 +46,8 @@ function Show-Menu {
 Full-Text Workflow Pipeline
 ---------------------------
   1  init
-  2  fetch (+ watch-fetch 请另开终端)
-  3  enrich-s2 + import-if (可选)
+  2  fetch (+ watch-fetch in another terminal)
+  3  enrich-s2 + import-if (optional)
   4  fetch-fulltext
   5  extract
   6  build
@@ -52,7 +55,7 @@ Full-Text Workflow Pipeline
   8  bootstrap-landscape
   9  gap-debate
   0  run-all (quick, limit=30)
-  d  run-db (fetch → enrich → fulltext → extract)
+  d  run-db (fetch -> enrich -> fulltext -> extract)
   s  stats
   q  quit
 "@

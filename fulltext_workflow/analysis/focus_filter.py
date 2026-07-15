@@ -270,3 +270,27 @@ def search_papers_for_topic(
     with get_conn() as conn:
         rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows], strategy
+
+
+def debate_or_corpus_papers(
+    debate_rows: list[dict],
+    focus: str | None,
+    *,
+    limit: int = 50,
+) -> tuple[list[dict], str]:
+    """
+    Prefer paper rows already harvested from debate tool results.
+
+    When those are empty (common: gap tools return aggregates without titles),
+    fall back to corpus search for the sidebar/research focus so Literature
+    is not stuck at 0 while focus_subset.papers > 0.
+    """
+    if debate_rows:
+        return debate_rows[:limit], "debate_tools"
+    foc = normalize_focus(focus)
+    if not foc:
+        return [], "empty"
+    rows, strategy = search_papers_for_topic(foc, limit=limit)
+    if not rows:
+        return [], f"corpus_{strategy}"
+    return rows, f"corpus_{strategy}"

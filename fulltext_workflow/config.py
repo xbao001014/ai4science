@@ -103,6 +103,18 @@ HOTSPOT_PRIOR_WINDOW_DAYS: int = int(os.getenv("HOTSPOT_PRIOR_WINDOW_DAYS", "14"
 HOTSPOT_MIN_RECENT_PAPERS: int = int(os.getenv("HOTSPOT_MIN_RECENT_PAPERS", "2"))
 HOTSPOT_TOP_N: int = int(os.getenv("HOTSPOT_TOP_N", "20"))
 
+# Weekly ops memory (gap soft-dedup + persist)
+OPS_MEMORY_ENABLED: bool = os.getenv("OPS_MEMORY_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+OPS_MEMORY_LOOKBACK_RUNS: int = int(os.getenv("OPS_MEMORY_LOOKBACK_RUNS", "4"))
+OPS_MEMORY_JACCARD_THRESHOLD: float = float(
+    os.getenv("OPS_MEMORY_JACCARD_THRESHOLD", "0.55")
+)
+OPS_MEMORY_SECTION_MAX_CHARS: int = int(
+    os.getenv("OPS_MEMORY_SECTION_MAX_CHARS", "8192")
+)
+
 
 def search_scope_label() -> str:
     n = len(get_enabled_groups())

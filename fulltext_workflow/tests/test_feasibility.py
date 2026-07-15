@@ -94,6 +94,35 @@ def test_disease_mapper_nsclc():
     assert disease_id == "NSCLC-ADC"
 
 
+def test_gap_disease_hint_npc_does_not_default_to_brca():
+    """NPC gaps must not inherit the old BRCA-IDC hard-default."""
+    from idea_agent import _gap_anchor_block, _gap_disease_hint
+
+    disease_id, reason = _gap_disease_hint(
+        "Nasopharyngeal carcinoma radiomics prognosis deep learning gap"
+    )
+    assert disease_id != "BRCA-IDC"
+    assert "BRCA-IDC" not in reason or "never" in reason.lower()
+    block = _gap_anchor_block(
+        "Nasopharyngeal carcinoma radiomics prognosis deep learning gap"
+    )
+    assert "disease_id=BRCA-IDC" not in block or "never" in block.lower()
+    assert "Prefer disease_id=BRCA-IDC" not in block
+    assert "default for breast-related" not in block
+    # Soft rule when unmapped under mock: instruct catalog lookup, do not force BRCA
+    if disease_id is None:
+        assert "pathology_disease_catalog" in block or "text_disease_matches" in block
+        assert "Write the full proposal in **English**" in block or "English" in block
+
+
+def test_gap_disease_hint_breast_still_maps_brca():
+    from idea_agent import _gap_disease_hint
+
+    disease_id, reason = _gap_disease_hint("Breast cancer multifocal pathomics gap")
+    assert disease_id == "BRCA-IDC"
+    assert disease_id in reason or "breast" in reason.lower() or "乳腺" in reason or "alias" in reason.lower()
+
+
 def test_evolve_removes_msi():
     client = PathologyDataClient()
     req = HypothesisRequest(
@@ -174,6 +203,8 @@ if __name__ == "__main__":
         test_gap_analysis_suggestions,
         test_disease_mapper_gastric,
         test_disease_mapper_nsclc,
+        test_gap_disease_hint_npc_does_not_default_to_brca,
+        test_gap_disease_hint_breast_still_maps_brca,
         test_evolve_removes_msi,
         test_tool_feasibility_assess_without_hypothesis_id,
         test_tool_feasibility_assess_missing_disease_id,

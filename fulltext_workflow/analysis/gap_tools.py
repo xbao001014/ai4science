@@ -394,27 +394,24 @@ def tool_hotspot_entities(focus: str | None = None) -> dict:
 
 
 def tool_recent_highcite_papers(focus: str | None = None) -> dict:
-    focus_sql = ""
-    if focus:
-        focus_sql = f"""
-        AND p.pmid IN (
-            SELECT DISTINCT r.source_pmid FROM relations r
-            JOIN entities e ON r.object_id = e.id
-            WHERE LOWER(e.name) LIKE LOWER('%{focus}%')
-        )"""
+    # Disease entity OR title match (same semantics as other focus tools)
+    pmid_fc = focus_pmid_in_clause("p.pmid", focus)
     rows = _q(f"""
         SELECT p.title, p.year, p.study_type, p.citation_count,
-               p.journal_name, j.impact_factor, j.quartile,
+               p.journal_name, j.impact_factor, j.quartile, p.pmid,
                ROUND(1.0 * COALESCE(p.citation_count, 0)
                      / MAX(2026 - COALESCE(p.year, {config.SEARCH_YEAR_END}), 1), 1) AS cite_per_year
         FROM papers p
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE p.year >= {config.SEARCH_YEAR_START}
-          AND COALESCE(p.citation_count, 0) >= 0 {focus_sql}
+          AND COALESCE(p.citation_count, 0) >= 0 {pmid_fc}
         ORDER BY cite_per_year DESC, p.citation_count DESC
         LIMIT {config.TOOL_TOP_N}
     """)
-    return {"description": "Recent papers ranked by cite_per_year (frontier anchors)", "data": rows}
+    desc = "Recent papers ranked by cite_per_year (frontier anchors)"
+    if normalize_focus(focus):
+        desc += f" (focus: {normalize_focus(focus)})"
+    return {"description": desc, "data": rows}
 
 
 def _combo_support_papers(method: str, disease: str) -> list[dict]:

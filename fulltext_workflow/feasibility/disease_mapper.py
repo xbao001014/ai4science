@@ -32,6 +32,13 @@ DISEASE_SEARCH_KEYWORDS: dict[str, str] = {
     "breast": "乳腺",
     "乳腺": "乳腺",
     "乳腺癌": "乳腺",
+    "nasopharyngeal carcinoma": "鼻咽癌",
+    "nasopharyngeal cancer": "鼻咽癌",
+    "nasopharyngeal": "鼻咽",
+    "nasopharynx": "鼻咽",
+    "npc": "鼻咽癌",
+    "鼻咽癌": "鼻咽癌",
+    "鼻咽": "鼻咽",
 }
 
 # Legacy mock IDs kept for unit tests (PATHOLOGY_DATA_PROVIDER=mock)
@@ -107,7 +114,10 @@ def _map_via_api_search(
     client: DiseaseSearchClient,
 ) -> tuple[str | None, float, str]:
     text = gap_text.lower().strip()
-    for alias, keyword in DISEASE_SEARCH_KEYWORDS.items():
+    # Longest alias first so "nasopharyngeal carcinoma" beats "nasopharyngeal"
+    for alias, keyword in sorted(
+        DISEASE_SEARCH_KEYWORDS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         if alias in text:
             matches = client.search_diseases(keyword, limit=10)
             best = _pick_best_disease(matches, keyword)
@@ -184,7 +194,9 @@ def map_gap_to_disease(
         if text_result[0]:
             return text_result
 
-    for alias, disease_id in DISEASE_ALIASES.items():
+    for alias, disease_id in sorted(
+        DISEASE_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         if alias in text:
             return disease_id, 0.95, f"alias match: {alias}"
 

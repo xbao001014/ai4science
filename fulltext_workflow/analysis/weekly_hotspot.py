@@ -754,4 +754,10 @@ def save_hotspot_report(
     if persist:
         n = persist_hotspot_snapshot(payload, report_path=out)
         payload["snapshot_rows"] = n
+        try:
+            from analysis.ops_memory import link_hotspot_week
+
+            link_hotspot_week(payload["week_id"], focus_key="__all__", source="hotspot")
+        except Exception as exc:
+            print(f"[Hotspot] ops memory link skipped: {exc}", flush=True)
     return out, payload

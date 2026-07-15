@@ -235,13 +235,16 @@ def looks_like_proposal(text: str) -> bool:
     if len(text.strip()) < 400:
         return False
     markers = (
+        "## 1.",
+        "## 1 ",
+        "## Background",
+        "## Research",
+        "REVISION_NOTE",
+        "Fangxin Data Integration",
         "## 一",
         "## 二",
         "研究背景",
-        "REVISION_NOTE",
-        "## 1.",
         "# 研究",
-        "## Research",
     )
     return any(m in text for m in markers)
 
