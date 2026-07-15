@@ -40,6 +40,10 @@ ENV/
 env/
 .conda/
 
+# ── Local agent / SDD scratch (do not upload) ─────────────────────────────────
+.superpowers/
+docs/
+
 # ── IDE / OS ──────────────────────────────────────────────────────────────────
 .idea/
 .vscode/

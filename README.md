@@ -1,82 +1,97 @@
 # Pathology AI Knowledge Graph
 
-从 PubMed 抓取病理 AI 文献全文，抽取知识图谱三元组，并通过 LLM Agent 识别研究空白、生成研究提案。
+从 PubMed 抓取病理 / 数字病理 AI 文献，构建**全文知识图谱**，并用 LLM Agent 做研究空白分析、周热点追踪与研究方案生成。
 
-本仓库仅使用 **全文管线**（`fulltext_workflow/`）：PMC / PDF 全文获取、MinerU 解析、分章节抽取、Gap 生命周期分析与 Streamlit UI。
+本仓库的主代码在 **`fulltext_workflow/`**。根目录保留共享配置与文档入口。
 
-详细流程见 [fulltext_workflow/PIPELINE.md](fulltext_workflow/PIPELINE.md)。
+---
 
 ## 快速开始
 
 ### 1. 环境
 
-```bash
+```powershell
+cd D:\agent\prototype\build_kg_paper
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux / macOS
-source .venv/bin/activate
-
+.\.venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-全文抓取额外依赖（PDF / MinerU 回退）：
-
-```bash
+# 全文 PDF / MinerU 回退（可选）
 pip install scansci-pdf "mineru[core]"
 ```
 
 ### 2. 配置
 
-```bash
+```powershell
 cp .env.example .env
-# 编辑 .env，填入 API Key（勿提交到 Git）
+# 编辑 .env：PUBMED_EMAIL、DASHSCOPE_API_KEY（或 OPENAI_API_KEY）等
 ```
 
-必填项通常包括：`PUBMED_EMAIL`、`OPENAI_API_KEY`（或 `DASHSCOPE_API_KEY`）。可选：`S2_API_KEY`、`PATHOLOGY_API_KEY`（可行性评估）。
+检索词组：[`search_queries.py`](search_queries.py)。  
+LLM 辅助：[`llm_utils.py`](llm_utils.py)（部分工具复用）。
 
-检索词组与年份范围由根目录 [`search_queries.py`](search_queries.py) 提供；LLM 辅助函数见 [`llm_utils.py`](llm_utils.py)。
+### 3. 跑流水线
 
-### 3. 本地数据文件（不纳入版本库）
-
-| 文件 | 用途 |
-|------|------|
-| `fulltext_workflow/data/jcr.csv` | 期刊影响因子，用于引用权重 |
-| `fulltext_workflow/data/kg_fulltext.db` | 全文管线数据库（运行后自动生成） |
-
-### 4. 运行示例
-
-```bash
+```powershell
 cd fulltext_workflow
 
-# 或使用交互菜单
-.\run_pipeline.ps1
-
-python main.py fetch --limit 10
-python main.py extract --limit 10
-
-# Gap 分析 UI
-.\run_gap_ui.ps1
-# 或: streamlit run gap_ui.py
+.\run_pipeline.ps1                 # 交互菜单
+.\run_pipeline.ps1 -Stage weekly   # 每周增量
+.\run_gap_ui.ps1                   # Gap 分析 UI → http://localhost:8501
 ```
 
-## 项目结构
+---
+
+## 仓库结构
 
 ```
 build_kg_paper/
-├── search_queries.py       # PubMed 检索词组（workflow 复用）
-├── llm_utils.py            # LLM 调用辅助
+├── README.md                 ← 本文件（最外层入口）
+├── .env.example
 ├── requirements.txt
-├── api_document.md         # 方信病理 LIS API
+├── search_queries.py         # PubMed 检索组与年份
+├── llm_utils.py
+├── api_document.md           # 方信 LIS API
 ├── pathology_data_api_spec.md
-└── fulltext_workflow/      # 全文抽取与 Gap 生命周期
+├── docs/                     # 设计稿 / specs
+└── fulltext_workflow/        # ★ 主工作区
+    ├── README.md             # 管线说明
+    ├── PIPELINE.md           # 分步流水线
+    ├── SCRIPTS.md            # 常用命令速查
+    ├── main.py               # CLI
+    ├── run_pipeline.ps1
+    ├── run_gap_ui.ps1
+    ├── gap_ui.py
+    └── data/kg_fulltext.db   # 运行后生成（不入库）
 ```
+
+---
+
+## 文档导航
+
+| 文档 | 说明 |
+|------|------|
+| [fulltext_workflow/README.md](fulltext_workflow/README.md) | 管线概述与模块 |
+| [fulltext_workflow/PIPELINE.md](fulltext_workflow/PIPELINE.md) | 完整阶段说明与生产跑法 |
+| [fulltext_workflow/SCRIPTS.md](fulltext_workflow/SCRIPTS.md) | 脚本与命令速查 |
+| [fulltext_workflow/gap_ui_guide.md](fulltext_workflow/gap_ui_guide.md) | Streamlit UI |
+
+---
+
+## 能力概览
+
+1. **建库**：PubMed → 引用/IF → 全文 → LLM 抽取 → KG  
+2. **周更**：EDAT 增量 + 周热点报告 / LLM 简报  
+3. **Gap**：静态 SQL 报告 · 三角色辩论 · ops memory 软去重  
+4. **可行性**：方信病理 LIS landscape + idea-pipeline  
+
+---
 
 ## 安全说明
 
-- `.env` 已在 `.gitignore` 中排除，仅提交 `.env.example` 模板
-- 数据库、PDF、解析结果、Excel 分区表等大文件不会上传
-- 若曾误提交密钥，请立即轮换对应 API Key
+- `.env` 已在 `.gitignore` 中排除；仅提交 `.env.example`
+- 数据库、PDF、MinerU 缓存、大 CSV 等不入库
+- 若曾误提交密钥，请立即轮换
 
 ## License
 
