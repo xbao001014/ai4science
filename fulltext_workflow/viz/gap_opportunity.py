@@ -29,3 +29,53 @@ def summarize_opportunities(rows: list[dict[str, Any]]) -> dict[str, float]:
         "mapped_count": mapped_count,
         "high_share": high_share,
     }
+
+
+LIT_GAP_RANK = {"unexplored": 0, "minimal": 1}
+DATA_RANK = {"high": 0, "medium": 1, "low": 2, "none": 3}
+
+
+def sort_opportunity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def key(r: dict[str, Any]) -> tuple:
+        return (
+            0 if r.get("source") == "Debate" else 1,
+            LIT_GAP_RANK.get(str(r.get("gap") or ""), 2),
+            DATA_RANK.get(str(r.get("data") or "none"), 3),
+            int(r.get("paper_cnt") or 0),
+            str(r.get("method") or "").lower(),
+            str(r.get("disease") or "").lower(),
+        )
+
+    return sorted(rows, key=key)
+
+
+def build_opportunity_rows(
+    gaps: list[dict[str, Any]],
+    disease_cases: dict[str, int],
+    disease_id_by_name: dict[str, str | None],
+    *,
+    source_default: str = "Corpus",
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for g in gaps:
+        method = str(g.get("method") or "")
+        disease = str(g.get("disease") or "")
+        did = disease_id_by_name.get(disease)
+        if did and did in disease_cases:
+            tier = data_support_tier(disease_cases[did], mapped=True)
+        elif did:
+            tier = data_support_tier(None, mapped=False)  # no cache
+        else:
+            did = None
+            tier = data_support_tier(None, mapped=False)
+        out.append({
+            "source": source_default,
+            "method": method,
+            "disease": disease,
+            "gap": g.get("gap") or "",
+            "paper_cnt": int(g.get("paper_cnt") or 0),
+            "disease_id": did,
+            "data": tier,
+            "row_key": f"{method}||{disease}",
+        })
+    return out
