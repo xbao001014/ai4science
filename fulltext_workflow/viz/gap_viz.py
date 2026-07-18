@@ -323,6 +323,40 @@ def build_tool_treemap(
     return fig
 
 
+def build_subtype_bar(distribution: list[dict], *, top_n: int = 8) -> Any:
+    if not HAS_PLOTLY or not distribution:
+        return None
+    rows = []
+    for item in distribution:
+        name = item.get("subtype_name_zh") or item.get("name") or "?"
+        count = item.get("patient_count", item.get("count", 0)) or 0
+        rows.append({"label": str(name), "count": int(count)})
+    rows = sorted(rows, key=lambda r: -r["count"])[:top_n]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    fig = px.bar(df, x="count", y="label", orientation="h", title="Subtype distribution (top)")
+    fig.update_layout(height=max(280, 28 * len(rows) + 80), yaxis=dict(autorange="reversed"), margin=dict(l=120, r=20, t=50, b=40))
+    return fig
+
+
+def build_molecular_bar(positivity: list[dict], *, top_n: int = 8) -> Any:
+    if not HAS_PLOTLY or not positivity:
+        return None
+    rows = []
+    for item in positivity:
+        name = item.get("marker") or item.get("name") or "?"
+        val = item.get("positivity_rate", item.get("rate", item.get("patient_count", 0))) or 0
+        rows.append({"label": str(name), "value": float(val)})
+    rows = sorted(rows, key=lambda r: -r["value"])[:top_n]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    fig = px.bar(df, x="value", y="label", orientation="h", title="Molecular positivity (top)")
+    fig.update_layout(height=max(280, 28 * len(rows) + 80), yaxis=dict(autorange="reversed"), margin=dict(l=120, r=20, t=50, b=40))
+    return fig
+
+
 def build_gap_viz_bundle(
     events: list[dict],
     *,

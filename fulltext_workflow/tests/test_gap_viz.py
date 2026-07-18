@@ -9,6 +9,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from viz.gap_viz import (  # noqa: E402
+    build_molecular_bar,
+    build_subtype_bar,
     count_scout_candidates,
     debate_funnel_stats,
     extract_skeptic_breakdown,
@@ -64,3 +66,11 @@ def test_tool_category_stats():
     rows = tool_category_stats(events, meta)
     assert rows[0]["records"] == 2
     assert rows[0]["category"] == "Impact"
+
+
+def test_subtype_bar_empty_returns_none():
+    assert build_subtype_bar([]) is None
+
+
+def test_molecular_bar_empty_returns_none():
+    assert build_molecular_bar([]) is None
