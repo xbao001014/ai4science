@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 
 from viz.gap_opportunity import (  # noqa: E402
     apply_debate_overlay,
+    assemble_opportunity_view,
     build_opportunity_rows,
     data_support_tier,
     sort_opportunity_rows,
@@ -83,3 +84,24 @@ def test_apply_debate_overlay_marks_and_unmatched():
     assert unmatched == ["Radiomics habitat imaging leftover"]
     # originals untouched
     assert rows[0]["source"] == "Corpus"
+
+
+def test_assemble_opportunity_view_filters_and_debate():
+    gaps = [
+        {"method": "CLAM", "disease": "NPC", "paper_cnt": 0, "gap": "unexplored"},
+        {"method": "MIL", "disease": "NPC", "paper_cnt": 5, "gap": "active"},
+        {"method": "TransMIL", "disease": "CRC", "paper_cnt": 1, "gap": "minimal"},
+    ]
+    bundle = assemble_opportunity_view(
+        gaps=gaps,
+        disease_cases={"NPC-1": 500},
+        disease_id_by_name={"NPC": "NPC-1", "CRC": None},
+        debate_titles=["CLAM NPC survival"],
+        scarce_only=True,
+        limit=30,
+    )
+    assert len(bundle["rows"]) == 2  # active filtered out
+    assert bundle["rows"][0]["source"] == "Debate"
+    assert bundle["debate_matched_count"] == 1
+    assert bundle["summary"]["combo_count"] == 2
+    assert bundle["unmatched_debate"] == []

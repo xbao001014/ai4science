@@ -116,3 +116,38 @@ def apply_debate_overlay(
             seen.add(t)
             uniq.append(t)
     return updated, uniq
+
+
+def filter_opportunity_rows(
+    rows: list[dict[str, Any]],
+    *,
+    scarce_only: bool,
+    limit: int,
+) -> list[dict[str, Any]]:
+    out = rows
+    if scarce_only:
+        out = [r for r in out if r.get("gap") in ("unexplored", "minimal")]
+    return out[: max(0, int(limit))]
+
+
+def assemble_opportunity_view(
+    *,
+    gaps: list[dict[str, Any]],
+    disease_cases: dict[str, int],
+    disease_id_by_name: dict[str, str | None],
+    debate_titles: list[str] | None = None,
+    scarce_only: bool = True,
+    limit: int = 30,
+) -> dict[str, Any]:
+    rows = build_opportunity_rows(gaps, disease_cases, disease_id_by_name)
+    unmatched: list[str] = []
+    if debate_titles:
+        rows, unmatched = apply_debate_overlay(rows, debate_titles)
+    rows = sort_opportunity_rows(rows)
+    rows = filter_opportunity_rows(rows, scarce_only=scarce_only, limit=limit)
+    return {
+        "rows": rows,
+        "summary": summarize_opportunities(rows),
+        "unmatched_debate": unmatched,
+        "debate_matched_count": sum(1 for r in rows if r.get("source") == "Debate"),
+    }
