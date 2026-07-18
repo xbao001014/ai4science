@@ -95,6 +95,7 @@ from analysis.feasibility_tools import (  # noqa: E402
     tool_subtype_distribution,
     tool_text_disease_matches,
 )
+from feasibility.disease_mapper import map_gap_to_disease  # noqa: E402
 from feasibility.landscape import bootstrap_landscape  # noqa: E402
 from pipeline import assess_gap_feasibility  # noqa: E402
 from pipeline_utils import parse_gap_titles  # noqa: E402
@@ -114,8 +115,11 @@ from utils.tool_result_summary import (  # noqa: E402
 )
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
+from viz.gap_opportunity import assemble_opportunity_view  # noqa: E402
 from viz.gap_viz import (  # noqa: E402
     build_gap_viz_bundle,
+    build_molecular_bar,
+    build_subtype_bar,
     plotly_available,
 )
 
@@ -1139,94 +1143,265 @@ def role_badge(role: str) -> str:
     )
 
 
+def _landscape_indexes() -> tuple[dict[str, int], dict[str, dict], list[str]]:
+    """Read-only landscape cache indexes for Visualization (no bootstrap)."""
+    cases: dict[str, int] = {}
+    by_id: dict[str, dict] = {}
+    names: list[str] = []
+    for row in get_all_landscape():
+        did = row["disease_id"]
+        payload = row.get("payload") or {}
+        cat = payload.get("catalog") or {}
+        cases[did] = int(cat.get("total_cases") or 0)
+        by_id[did] = {**payload, "updated_at": row.get("updated_at")}
+        for n in (cat.get("name_en"), cat.get("name_zh"), did):
+            if n:
+                names.append(str(n))
+    return cases, by_id, names
+
+
+def _fangxin_scale_metrics(payload: dict) -> dict[str, int]:
+    """Four scale metrics from landscape payload (sample_size / pools)."""
+    cat = payload.get("catalog") or {}
+    ss = payload.get("sample_size") or {}
+    pools = payload.get("feasibility_pools") or {}
+    total = int(ss.get("total_cases") or cat.get("total_cases") or 0)
+    wsi = int(
+        ss.get("total_wsi_slides")
+        or ss.get("cases_with_wsi")
+        or pools.get("has_wsi")
+        or 0
+    )
+    followup = int(
+        ss.get("cases_with_followup")
+        or pools.get("has_survival_label")
+        or pools.get("meets_followup_12m")
+        or 0
+    )
+    mol_keys = ("has_msi_status", "has_her2", "has_egfr", "has_alk", "has_pd_l1")
+    molecular = max((int(pools.get(k) or 0) for k in mol_keys), default=0)
+    return {
+        "total_cases": total,
+        "wsi": wsi,
+        "followup": followup,
+        "molecular": molecular,
+    }
+
+
 def render_gap_visualization_tab(
     events: list[dict],
     *,
     report_text: str = "",
     focus_hint: str = "",
 ) -> None:
-    """MVP charts: debate funnel, method×disease heatmap, lit×data scatter, tool treemap."""
-    st.subheader("Gap Discovery Visualizations")
+    """Focus gaps × Fangxin dual-pane; session funnel/treemap under diagnostics."""
+    st.subheader("Focus Gaps × Fangxin Support")
     st.caption(
-        "Charts summarize the debate session and tool evidence. "
-        "Lower-left on the scatter plot ≈ large literature gap + ample cohort data."
+        "Left: method×disease opportunities under the sidebar focus (debate titles "
+        "overlay when a report exists). Right: Fangxin landscape cache for the "
+        "selected disease — read-only; bootstrap lives in Data Feasibility."
     )
 
-    if not plotly_available():
-        st.error(
-            "Missing **plotly**. Install with:\n\n"
-            "```powershell\n"
-            "..\\.venv\\Scripts\\pip.exe install plotly\n"
-            "```"
+    focus = normalize_focus(focus_hint)
+    show_all = st.checkbox(
+        "Show all coverage levels",
+        value=False,
+        key="viz_show_all_coverage",
+        help="Default shows only unexplored / minimal literature gaps.",
+    )
+    top_n = st.slider("Top N", 10, 50, 30, key="viz_top_n")
+
+    disease_cases, landscape_by_id, catalog_names = _landscape_indexes()
+
+    gaps: list[dict] = []
+    if focus is None:
+        st.info("Set a Research focus in the sidebar.")
+    else:
+        try:
+            gaps = list(tool_method_disease_combo_gap(focus=focus).get("gaps") or [])
+        except Exception as exc:
+            st.warning(f"Could not load method×disease combos: {exc}")
+            gaps = []
+
+    disease_id_by_name: dict[str, str | None] = {}
+    for disease_name in sorted({str(g.get("disease") or "") for g in gaps if g.get("disease")}):
+        did, _conf, _reason = map_gap_to_disease(
+            disease_name,
+            known_diseases=list(catalog_names),
+            client=None,
         )
-        return
+        disease_id_by_name[disease_name] = did
 
-    focus = (focus_hint or "").strip() or None
-    use_corpus_preview = st.checkbox(
-        "Fill missing charts from live corpus tools",
-        value=not events,
-        help="When debate did not call combo/cross tools, query the KG directly.",
+    debate_titles = parse_gap_titles(report_text) if (report_text or "").strip() else []
+    view = assemble_opportunity_view(
+        gaps=gaps,
+        disease_cases=disease_cases,
+        disease_id_by_name=disease_id_by_name,
+        debate_titles=debate_titles or None,
+        scarce_only=not show_all,
+        limit=int(top_n),
     )
+    rows = list(view.get("rows") or [])
+    summary = view.get("summary") or {}
+    unmatched = list(view.get("unmatched_debate") or [])
+    matched_count = int(view.get("debate_matched_count") or 0)
 
-    def _combo_fetch() -> list[dict]:
-        return tool_method_disease_combo_gap(focus=focus).get("gaps", [])
-
-    def _cross_fetch() -> list[dict]:
-        return tool_literature_data_cross_matrix(focus=focus).get("data", [])
-
-    bundle = build_gap_viz_bundle(
-        events,
-        report_text=report_text,
-        focus=focus,
-        tool_meta=TOOL_META,
-        category_colors=CATEGORY_COLOR,
-        combo_fetcher=_combo_fetch if use_corpus_preview else None,
-        cross_fetcher=_cross_fetch if use_corpus_preview else None,
-    )
-
-    stats = bundle["funnel_stats"]
-    if events or report_text:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Scout candidates", stats.get("scout_candidates", 0))
-        c2.metric("Verified", stats.get("verified", 0))
-        c3.metric("Weak evidence", stats.get("weak_evidence", 0))
-        c4.metric("False gaps", stats.get("false_gaps", 0))
-        c5.metric("Final gaps", stats.get("final_gaps", 0))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Combo count", int(summary.get("combo_count") or 0))
+    m2.metric("Lit scarce", int(summary.get("scarce_count") or 0))
+    m3.metric("Mapped Fangxin", int(summary.get("mapped_count") or 0))
+    m4.metric("High data %", f"{float(summary.get('high_share') or 0):.0f}%")
 
     col_l, col_r = st.columns(2)
     with col_l:
-        if bundle["funnel_fig"] is not None:
-            st.plotly_chart(bundle["funnel_fig"], use_container_width=True)
-        elif not events:
-            st.info("Run Gap Debate to populate the debate funnel.")
+        st.markdown("**Opportunity table**")
+        if focus is None:
+            st.caption("Set a focus to load KG combos.")
+        elif not gaps:
+            st.info("No method×disease combos for this focus — run extract / ingest first.")
+        elif not rows:
+            st.info(
+                "No rows after filters — enable **Show all coverage levels** "
+                "or raise Top N."
+            )
         else:
-            st.info("Not enough debate data for funnel chart.")
+            display_rows = [
+                {
+                    "Source": r.get("source") or "",
+                    "Method": r.get("method") or "",
+                    "Disease": r.get("disease") or "",
+                    "Lit gap": r.get("gap") or "",
+                    "Papers": int(r.get("paper_cnt") or 0),
+                    "Fangxin": r.get("disease_id") or "—",
+                    "Data": r.get("data") or "none",
+                }
+                for r in rows
+            ]
+            st.dataframe(
+                pd.DataFrame(display_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            options = [str(r["row_key"]) for r in rows]
+            label_by_key = {
+                str(r["row_key"]): (
+                    f"{r.get('source') or 'Corpus'} · "
+                    f"{r.get('method') or '?'} · "
+                    f"{r.get('disease') or '?'}"
+                )
+                for r in rows
+            }
+            current = st.session_state.get("viz_selected_combo")
+            if current not in options:
+                st.session_state["viz_selected_combo"] = options[0]
+            st.selectbox(
+                "Selected combo",
+                options,
+                format_func=lambda k: label_by_key.get(k, k),
+                key="viz_selected_combo",
+            )
+            st.caption(f"{matched_count} debate gaps matched onto the table.")
+            if unmatched:
+                listed = "\n".join(f"- {t}" for t in unmatched[:12])
+                extra = f"\n- …and {len(unmatched) - 12} more" if len(unmatched) > 12 else ""
+                st.info(f"Unmatched debate gaps (not shown as fake rows):\n{listed}{extra}")
 
     with col_r:
-        if bundle["treemap_fig"] is not None:
-            st.plotly_chart(bundle["treemap_fig"], use_container_width=True)
+        st.markdown("**Fangxin detail**")
+        selected_key = st.session_state.get("viz_selected_combo")
+        selected = next((r for r in rows if str(r.get("row_key")) == selected_key), None)
+        if not rows or selected is None:
+            st.info("Select a row on the left")
         else:
-            st.info("Tool treemap appears after agents call KG tools.")
+            disease_name = str(selected.get("disease") or "")
+            did = selected.get("disease_id")
+            if not did:
+                st.warning(
+                    f"**{disease_name or 'Disease'}** — Cannot map to Fangxin DiseaseCode"
+                )
+            elif did not in landscape_by_id:
+                st.info(
+                    f"No landscape cache for `{did}` — Bootstrap in Data Feasibility"
+                )
+            else:
+                payload = landscape_by_id[did]
+                cat = payload.get("catalog") or {}
+                zh = cat.get("name_zh") or ""
+                en = cat.get("name_en") or ""
+                names = " / ".join(x for x in (zh, en) if x) or disease_name
+                st.markdown(
+                    f"**`{did}`** — {names} · Data **{selected.get('data') or 'none'}**"
+                )
+                st.caption(f"updated_at: {payload.get('updated_at') or '—'}")
 
-    if bundle["combo_fig"] is not None:
-        st.plotly_chart(bundle["combo_fig"], use_container_width=True)
-    elif use_corpus_preview:
-        st.warning("No method × disease combo data (KG may be empty — run extract first).")
-    else:
-        st.info(
-            "Method × disease heatmap needs `method_disease_combo_gap` in the debate, "
-            "or enable corpus preview above."
-        )
+                scale = _fangxin_scale_metrics(payload)
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Total cases", scale["total_cases"])
+                s2.metric("WSI slides / cases", scale["wsi"])
+                s3.metric("Follow-up cases", scale["followup"])
+                s4.metric("Molecular-labeled", scale["molecular"])
 
-    if bundle["cross_fig"] is not None:
-        st.plotly_chart(bundle["cross_fig"], use_container_width=True)
-    elif use_corpus_preview:
-        st.warning("No literature × data cross rows (bootstrap landscape + extract KG first).")
-    else:
-        st.info(
-            "Lit × data scatter needs `literature_data_cross_matrix` during debate, "
-            "or enable corpus preview."
+                v11 = payload.get("v11") or {}
+                subtypes = list(v11.get("subtype_distribution") or [])
+                molecular = list(v11.get("molecular_positivity") or [])
+
+                fig_sub = build_subtype_bar(subtypes) if plotly_available() else None
+                if fig_sub is not None:
+                    st.plotly_chart(fig_sub, use_container_width=True)
+                elif subtypes:
+                    safe_table(pd.DataFrame(subtypes[:8]), height=280)
+                else:
+                    st.caption("No subtype distribution in landscape cache.")
+
+                fig_mol = build_molecular_bar(molecular) if plotly_available() else None
+                if fig_mol is not None:
+                    st.plotly_chart(fig_mol, use_container_width=True)
+                elif molecular:
+                    safe_table(pd.DataFrame(molecular[:8]), height=280)
+                else:
+                    st.caption("No molecular positivity in landscape cache.")
+
+                st.caption(
+                    "Deeper cohort assessment: **Data Feasibility → V-01**."
+                )
+
+    with st.expander("Session diagnostics", expanded=False):
+        st.caption("Debate funnel and tool treemap from the current session (optional).")
+        if not plotly_available():
+            st.warning(
+                "Missing **plotly** for diagnostic charts. Install with "
+                "`..\\.venv\\Scripts\\pip.exe install plotly`."
+            )
+        bundle = build_gap_viz_bundle(
+            events,
+            report_text=report_text,
+            focus=focus,
+            tool_meta=TOOL_META,
+            category_colors=CATEGORY_COLOR,
         )
+        stats = bundle["funnel_stats"]
+        if events or report_text:
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Scout candidates", stats.get("scout_candidates", 0))
+            c2.metric("Verified", stats.get("verified", 0))
+            c3.metric("Weak evidence", stats.get("weak_evidence", 0))
+            c4.metric("False gaps", stats.get("false_gaps", 0))
+            c5.metric("Final gaps", stats.get("final_gaps", 0))
+
+        d1, d2 = st.columns(2)
+        with d1:
+            if bundle["funnel_fig"] is not None:
+                st.plotly_chart(bundle["funnel_fig"], use_container_width=True)
+            elif not events:
+                st.info("Run Gap Debate to populate the debate funnel.")
+            else:
+                st.info("Not enough debate data for funnel chart.")
+        with d2:
+            if bundle["treemap_fig"] is not None:
+                st.plotly_chart(bundle["treemap_fig"], use_container_width=True)
+            else:
+                st.info("Tool treemap appears after agents call KG tools.")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
