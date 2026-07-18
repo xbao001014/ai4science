@@ -179,16 +179,16 @@ Extracted 为 0 时先跑抽取流水线。
 
 ### 5.3 Visualization
 
-Plotly 图（需安装 `plotly`）：
+Focus 下的 **空白机会 × 方信对照**（不强制先辩论）：
 
-| 图 | 含义 |
-|----|------|
-| Debate funnel | Scout 候选 → 核验 / 弱证据 / 假空白 → 终稿空白 |
-| Tool treemap | 本场辩论工具调用分布 |
-| Method × disease heatmap | 组合空白热力 |
-| Lit × data scatter | 文献缺口 × 队列数据（左下≈缺口大且数据足） |
+| 区域 | 含义 |
+|------|------|
+| Summary | 组合数 / 文献稀缺数 / 已映射方信病种 / 高数据支持占比 |
+| Left · Opportunity table | method×disease 空白行；可点选；辩论命中行标 `Debate` 并置顶 |
+| Right · Fangxin detail | 选中病种的 landscape 缓存：病例规模、亚型、分子（只读，不在此 bootstrap） |
+| Session diagnostics | 折叠区：辩论漏斗 + 工具 treemap |
 
-勾选 **Fill missing charts from live corpus tools**，可在未辩论或未调用对应工具时，直接查 KG / 交叉矩阵补图。
+默认只显示 `unexplored` / `minimal`；勾选 Show all coverage levels 看全部。无 focus 不扫全库。无 landscape 时请回 **Data Feasibility → Bootstrap Landscape**。
 
 ---
 
@@ -364,7 +364,7 @@ Extracted > 0？focus 是否过窄？API Key / 余额是否正常？
 |--------|------|
 | 看本周新兴方向 | Weekly Hotspot → Save / LLM brief |
 | 发现研究空白 | Sidebar focus → Run Gap Debate → Gap Report |
-| 看辩论漏斗/热力图 | Visualization |
+| 看 focus 空白 × 方信对照 | Visualization |
 | 查证据与 PMID | Evidence & Literature |
 | 评估数据能否支撑空白 | Data Feasibility → Quick check from Gap |
 | 手动测病种样本量 | Data Feasibility → V-01 |
