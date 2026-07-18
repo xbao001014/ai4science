@@ -9,6 +9,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from viz.gap_opportunity import (  # noqa: E402
+    apply_debate_overlay,
     build_opportunity_rows,
     data_support_tier,
     sort_opportunity_rows,
@@ -65,3 +66,20 @@ def test_build_opportunity_rows_tiers_and_keys():
     assert rows[0]["source"] == "Corpus"
     assert rows[1]["disease_id"] is None
     assert rows[1]["data"] == "none"
+
+
+def test_apply_debate_overlay_marks_and_unmatched():
+    rows = [
+        {"source": "Corpus", "method": "CLAM", "disease": "nasopharyngeal carcinoma", "row_key": "a"},
+        {"source": "Corpus", "method": "MIL", "disease": "CRC", "row_key": "b"},
+    ]
+    titles = [
+        "CLAM for nasopharyngeal carcinoma survival",
+        "Radiomics habitat imaging leftover",
+    ]
+    updated, unmatched = apply_debate_overlay(rows, titles)
+    assert updated[0]["source"] == "Debate"
+    assert updated[1]["source"] == "Corpus"
+    assert unmatched == ["Radiomics habitat imaging leftover"]
+    # originals untouched
+    assert rows[0]["source"] == "Corpus"

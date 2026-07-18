@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from analysis.focus_filter import meaningful_keyword_tokens
+
 
 def data_support_tier(cohort_size: int | None, *, mapped: bool) -> str:
     """Map cohort size to high/medium/low/none. Unmapped or missing cache → none."""
@@ -79,3 +81,38 @@ def build_opportunity_rows(
             "row_key": f"{method}||{disease}",
         })
     return out
+
+
+def apply_debate_overlay(
+    rows: list[dict[str, Any]],
+    debate_titles: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    matched_title_idxs: set[int] = set()
+    debate_keys: set[str] = set()
+    for i, title in enumerate(debate_titles):
+        tokens = meaningful_keyword_tokens(title)
+        if not tokens:
+            continue
+        for r in rows:
+            hay = f"{r.get('method', '')} {r.get('disease', '')}".lower()
+            if any(t in hay for t in tokens):
+                debate_keys.add(str(r.get("row_key")))
+                matched_title_idxs.add(i)
+    updated = []
+    for r in rows:
+        nr = dict(r)
+        if str(nr.get("row_key")) in debate_keys:
+            nr["source"] = "Debate"
+        updated.append(nr)
+    unmatched = [
+        t for i, t in enumerate(debate_titles)
+        if i not in matched_title_idxs
+    ]
+    # unique preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in unmatched:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return updated, uniq
