@@ -65,6 +65,8 @@ PUBMED_QUERY_GROUPS: list[dict] = [
         "query": (
             "(cancer grading[Title/Abstract] OR tumor grading[Title/Abstract]"
             " OR Gleason[Title/Abstract] OR tumor staging[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR digital pathology[Title/Abstract])"
             " AND (artificial intelligence[Title/Abstract] OR machine learning[Title/Abstract]"
             " OR deep learning[Title/Abstract])"
         ),
@@ -105,6 +107,7 @@ PUBMED_QUERY_GROUPS: list[dict] = [
             " AND (multimodal[Title/Abstract] OR genomics[Title/Abstract]"
             " OR transcriptomics[Title/Abstract])"
             " AND (deep learning[Title/Abstract] OR artificial intelligence[Title/Abstract])"
+            " NOT (radiomics[Title/Abstract] OR CT[Title/Abstract] OR MRI[Title/Abstract])"
         ),
     },
 
@@ -189,10 +192,10 @@ PUBMED_QUERY_GROUPS: list[dict] = [
         ),
     },
 
-    # ── 病理 + 影像组学 ──────────────────────────────────────────────────────
+    # ── 病理 + 影像组学（方信无影像数据，默认关闭；需要时可改 enabled）────
     {
         "name": "pathomics_radiomics",
-        "enabled": True,
+        "enabled": False,
         "query": (
             "(pathomics[Title/Abstract] OR radiomics[Title/Abstract])"
             " AND (deep learning[Title/Abstract] OR machine learning[Title/Abstract])"
@@ -207,7 +210,7 @@ PUBMED_QUERY_GROUPS: list[dict] = [
         "query": (
             "(federated learning[Title/Abstract] OR privacy-preserving[Title/Abstract])"
             " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
-            " OR medical imaging[Title/Abstract])"
+            " OR whole slide image[Title/Abstract] OR digital pathology[Title/Abstract])"
         ),
     },
 

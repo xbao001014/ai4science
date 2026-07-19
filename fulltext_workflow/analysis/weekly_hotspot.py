@@ -103,7 +103,7 @@ def compute_emerging_entities(
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, prior_start, prior_end = _window_params(window, prior)
     # Method heat should reflect techniques applied in papers, not RELATED_TO
-    # co-mentions of umbrella terms (deep learning / radiomics / ...).
+    # co-mentions of umbrella terms (deep learning / pathomics / ...).
     relation_filter = (
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )

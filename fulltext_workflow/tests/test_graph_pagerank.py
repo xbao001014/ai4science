@@ -39,16 +39,16 @@ def _link(pmid: str, paper_id: int, etype: str, name: str, relation: str) -> Non
 
 
 def _seed() -> None:
-    # Focus paper: NPC + radiomics co-occur
+    # Focus paper: NPC + CLAM co-occur
     p1 = upsert_paper({
         "pmid": "92000001",
-        "title": "Radiomics for nasopharyngeal carcinoma",
+        "title": "CLAM for nasopharyngeal carcinoma on WSI",
         "year": 2024,
         "abstract": "NPC study",
         "extraction_done": 1,
     })
     _link("92000001", p1, "Disease", "nasopharyngeal carcinoma", "TARGETS_DISEASE")
-    _link("92000001", p1, "Method", "radiomics", "APPLIES_METHOD")
+    _link("92000001", p1, "Method", "clam", "APPLIES_METHOD")
     _link("92000001", p1, "Method", "deep learning", "APPLIES_METHOD")
 
     # Unrelated paper: breast + SVM — must not dominate focused ranking
@@ -73,7 +73,7 @@ def test_focus_pagerank_returns_methods_from_focus_papers_not_name_substring():
         top_n=10,
     )
     names = {r["entity"] for r in out["data"]}
-    assert "radiomics" in names or "deep learning" in names
+    assert "clam" in names or "deep learning" in names
     assert "support vector machine" not in names
 
 
@@ -99,5 +99,5 @@ def test_no_focus_still_includes_all_methods():
         entity_type="Method", focus=None, top_n=20
     )
     names = {r["entity"] for r in out["data"]}
-    assert "radiomics" in names
+    assert "clam" in names
     assert "support vector machine" in names

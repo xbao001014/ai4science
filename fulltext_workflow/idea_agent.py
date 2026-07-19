@@ -1,7 +1,7 @@
 """
 idea_agent.py — Adversarial Multi-Agent Research Proposal Generation
 
-Adapted for fulltext_workflow (pathomics/radiomics, evidence-aware KG).
+Adapted for fulltext_workflow (pathology AI / digital pathology, evidence-aware KG).
 """
 from __future__ import annotations
 
@@ -166,7 +166,7 @@ IDEA_TOOLS: dict[str, Any] = {**_SQL_IDEA_TOOLS, **GRAPH_TOOLS, **FEASIBILITY_TO
 _KEYWORD_SCHEMA = {
     "type": "string",
     "description": (
-        "2-4 core terms preferred (e.g. 'habitat imaging breast cancer'); "
+        "2-4 core terms preferred (e.g. 'WSI breast cancer grading'); "
         "long gap titles are auto-decomposed when no exact match."
     ),
 }
@@ -199,7 +199,7 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
     }},
     {"type": "function", "function": {
         "name": "modality_coverage_for_topic",
-        "description": "Modality (CT/MRI/WSI etc.) coverage for the topic.",
+        "description": "Pathology modality coverage (WSI / H&E / IHC / cytology etc.) for the topic.",
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
@@ -350,8 +350,10 @@ def _system_with_gap_anchor(base: str, gap_text: str, *, role: str) -> str:
 
 
 GENERATOR_SYSTEM_PROMPT = """\
-You are an expert pathomics/radiomics research-proposal designer. You combine imaging/pathology \
-omics with deep learning to produce clinically valuable, technically novel, and executable plans.
+You are an expert pathology AI / digital pathology research-proposal designer. You combine \
+histopathology/WSI/cytopathology (and optional genomics) with deep learning to produce clinically \
+valuable, technically novel, and executable plans. Do not rely on CT/MRI radiomics — Fangxin \
+feasibility covers pathology slides and labels only.
 
 You operate in a Generator × Critic loop:
 - Round 1: produce a complete initial proposal (v1) for the research gap.
@@ -397,7 +399,8 @@ No emoji.
 """
 
 CRITIC_SYSTEM_PROMPT = """\
-You are a strict pathomics/radiomics peer reviewer (Critic Agent).
+You are a strict pathology AI / digital pathology peer reviewer (Critic Agent).
+Flag proposals that depend on radiology imaging data unavailable in Fangxin.
 
 Review rules:
 - Call KG tools to verify data claims (at least 2 tools).
@@ -525,7 +528,7 @@ def stream_idea_agent(
 
         if round_num == 1:
             gen_user = (
-                "Draft a complete English pathomics/radiomics research proposal (v1) "
+                "Draft a complete English pathology AI / digital pathology research proposal (v1) "
                 "for the following gap:\n\n"
                 f"{anchor_block}\n\n"
                 f"**Research gap**:\n{gap_text}\n{gap_context}\n\n"

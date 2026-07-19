@@ -27,7 +27,8 @@ class StudyTypeResult(BaseModel):
 
 
 _STUDY_TYPE_SYSTEM = """\
-You are an expert biomedical literature analyst specializing in pathology AI and radiomics research.
+You are an expert biomedical literature analyst specializing in pathology AI \
+and computational pathology (digital pathology, WSI, histopathology, cytopathology).
 Classify the given paper into exactly ONE study type:
 - ai_algorithm: Novel AI/deep learning algorithm development
 - clinical_study: Clinical validation or patient outcome study
@@ -35,7 +36,7 @@ Classify the given paper into exactly ONE study type:
 - meta_analysis: Quantitative meta-analysis
 - dataset_benchmark: Dataset construction or benchmarking
 - foundation_model: Large pre-trained or self-supervised model
-- multimodal: Multiple data modalities (image + genomics/text/clinical)
+- multimodal: Multiple data modalities (WSI/histology + genomics/text/clinical)
 - other: Does not fit above
 
 Respond with JSON: {"study_type": "ai_algorithm"}

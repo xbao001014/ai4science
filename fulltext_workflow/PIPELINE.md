@@ -54,7 +54,7 @@ cd fulltext_workflow
 $py = "..\.venv\Scripts\python.exe"
 ```
 
-检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、15 组查询）。可用环境变量覆盖年份：
+检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、**14** 组启用查询；`pathomics_radiomics` 默认关闭，聚焦病理 AI、对齐方信无影像数据）。可用环境变量覆盖年份：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
@@ -104,7 +104,7 @@ flowchart TD
 | 辩论/方案 | `gap-debate` / `idea-pipeline` | 可选 | 默认读写 ops memory；需 LLM |
 | UI | `streamlit run gap_ui.py` | 可选 | 七标签页交互分析 |
 | **建库一键** | `run-db` | 可选 | fetch → enrich → import-if → fulltext → extract |
-| **每周一键** | `run_pipeline.ps1 -Stage weekly` | 周更 | EDAT 增量 + 抽取 + 热点 + build/analyze |
+| **每周一键** | `run_pipeline.ps1 -Stage weekly` | 周更 | EDAT 增量 + 抽取 + lifecycle + 热点 + build/analyze |
 
 **运营节奏（约每 1–2 周）**：增量入库 → 周热点 → Gap 辩论（ops soft-dedup）→ 可选可行性 / 研究方案。
 
@@ -200,8 +200,9 @@ flowchart TD
 & $py main.py extract --limit 0 --section-workers 2 --paper-workers 1
 ```
 
-**模块**：`extractor/section_extractor.py`、`extractor/llm_client.py`  
-**作用**：按章节调用 LLM，抽取实体（Disease/Method/Task 等）和关系，写入 `entities` / `relations`，标记 `extraction_done=1`。
+**模块**：`extractor/section_extractor.py`、`extractor/llm_client.py`、`extractor/entity_normalize.py`  
+**作用**：按章节调用 LLM，抽取实体（Disease/Method/Task 等）和关系，写入 `entities` / `relations`，标记 `extraction_done=1`。  
+**粒度对齐（Method 骨干+贡献 / Disease 亚型+分子分型）与后处理维护说明**：[extractor/GRANULARITY.md](extractor/GRANULARITY.md)
 
 **辅助脚本**（抽取失败/空结果重跑）：
 
@@ -233,7 +234,7 @@ flowchart TD
 - 供 `limitation_temporal_profile`、`limitation_gap_status`、`combo_gap_temporal` 工具与 Gap Debate 使用
 
 **流水线位置**：`extract` 之后、`analyze` / `gap-debate` 之前。  
-**注意**：`run_pipeline.ps1 -Stage weekly` / `-Stage all` **不会**自动跑本步；全量建库或辩论前请单独执行。
+**注意**：`run_pipeline.ps1 -Stage weekly` / `-Stage all` 会在 `extract` 之后自动跑本步（含时间画像 + 分辨率信号）。亦可随时手动重跑。
 
 ---
 
@@ -306,7 +307,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 & $py main.py bootstrap-landscape --force    # 强制重载
 
 # 8.2 端到端：Gap 辩论 → 可行性核验 → 假说生成（同样默认 ops memory）
-& $py main.py idea-pipeline --focus radiomics --top 3 -o output/idea_pipeline_report.md
+& $py main.py idea-pipeline --focus "digital pathology" --top 3 -o output/idea_pipeline_report.md
 
 # 仅可行性（跳过辩论和假说 LLM）
 & $py main.py idea-pipeline --skip-debate --gap-report output/gap_debate_report.md --skip-ideas
@@ -393,6 +394,8 @@ PowerShell 脚本等价：
 | `fetcher/fulltext_fetcher.py` | JATS / PDF / MinerU 全文 |
 | `fetcher/citation_fetcher.py` | OpenAlex/S2 引用数 enrichment |
 | `extractor/section_extractor.py` | 按章节 LLM 抽取 |
+| `extractor/entity_normalize.py` | Method/Disease/Limitation 粒度后处理 |
+| `extractor/GRANULARITY.md` | 粒度政策与后处理维护说明 |
 | `extractor/llm_client.py` | 百炼/DeepSeek API 调用与限流 |
 | `graph/kg_builder.py` | 构建 NetworkX 知识图谱 |
 | `viz/visualize.py` | Pyvis HTML 可视化 |
@@ -491,6 +494,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 #   enrich-s2（可用 -SkipEnrich 跳过）
 #   fetch-fulltext
 #   extract --core-only
+#   compute-gap-lifecycle
 #   hotspot-report
 #   hotspot-brief
 #   build → analyze → stats
@@ -503,12 +507,11 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 & $py main.py enrich-s2
 & $py main.py fetch-fulltext
 & $py main.py extract --limit 0 --core-only
+& $py main.py compute-gap-lifecycle      # 时间画像 + 分辨率信号
 & $py main.py hotspot-report              # 近期研究热点报告 + 快照持久化
 & $py main.py hotspot-brief               # LLM 一页趋势简报（LLM_MODEL_AGENT）
 & $py main.py build
 & $py main.py analyze
-# 辩论前建议（weekly 脚本不含）：
-& $py main.py compute-gap-lifecycle --temporal-only
 & $py main.py gap-debate --focus "your topic" -o output/gap_debate_report.md
 ```
 
@@ -584,7 +587,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 .\run_pipeline.ps1 -Stage enrich            # 仅引用 + IF 导入
 .\run_pipeline.ps1 -Stage all -SkipEnrich   # 跳过引用/IF
 .\run_pipeline.ps1 -Stage extract -ExtractLimit 20 -CoreOnly
-.\run_pipeline.ps1 -Stage weekly            # 每周增量（EDAT 14 天 + hotspot-report/brief + build/analyze）
+.\run_pipeline.ps1 -Stage weekly            # 每周增量（EDAT 14 天 + lifecycle + hotspot + build/analyze）
 .\run_pipeline.ps1 -Stage fetch -SinceDays 14  # 仅增量 fetch
 .\run_pipeline.ps1 -Stage debate            # gap-debate → output/gap_debate_report.md
 .\run_pipeline.ps1 -Stage landscape         # bootstrap-landscape --force

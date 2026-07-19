@@ -3,7 +3,7 @@
 #   .\run_pipeline.ps1                  # interactive menu
 #   .\run_pipeline.ps1 -Stage all       # full pipeline (no gap-debate)
 #   .\run_pipeline.ps1 -Stage fetch     # single stage
-#   .\run_pipeline.ps1 -Stage weekly    # weekly incremental (EDAT last 14 days)
+#   .\run_pipeline.ps1 -Stage weekly    # weekly: EDAT → extract → lifecycle → hotspot → build/analyze
 #   .\run_pipeline.ps1 -Stage db        # DB only: fetch → enrich → fulltext → extract
 
 param(
@@ -130,6 +130,7 @@ switch ($Stage) {
         Invoke-Step "fetch-fulltext" @("fetch-fulltext")
         $weeklyExtract = @("extract", "--limit", "$ExtractLimit", "--core-only")
         Invoke-Step "extract" $weeklyExtract
+        Invoke-Step "compute-gap-lifecycle" @("compute-gap-lifecycle")
         Invoke-Step "hotspot-report" @("hotspot-report")
         Invoke-Step "hotspot-brief" @("hotspot-brief")
         Invoke-Step "build" @("build")
@@ -158,6 +159,7 @@ switch ($Stage) {
         }
         Invoke-Step "fetch-fulltext" @("fetch-fulltext")
         Invoke-Step "extract" $extractArgs
+        Invoke-Step "compute-gap-lifecycle" @("compute-gap-lifecycle")
         Invoke-Step "build" @("build")
         Invoke-Step "analyze" @("analyze")
         Invoke-Step "stats" @("stats")

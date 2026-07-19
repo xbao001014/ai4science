@@ -83,7 +83,7 @@ def test_gap_analysis_suggestions():
 def test_disease_mapper_gastric():
     client = PathologyDataClient()
     disease_id, conf, reason = map_gap_to_disease(
-        "胃腺癌 radiomics 生存预测研究空白", client=client
+        "胃腺癌 WSI 生存预测研究空白", client=client
     )
     assert disease_id == "GC-ADC"
     assert conf >= 0.8
@@ -122,7 +122,7 @@ def test_disease_mapper_fangxin_npc():
     old = config.PATHOLOGY_DATA_PROVIDER
     config.PATHOLOGY_DATA_PROVIDER = "api"
     try:
-        disease_id, _, _ = map_gap_to_disease("鼻咽癌 radiomics prognosis gap")
+        disease_id, _, _ = map_gap_to_disease("鼻咽癌 WSI prognosis gap")
         assert disease_id == "BY_BNAI"
     finally:
         config.PATHOLOGY_DATA_PROVIDER = old
@@ -133,12 +133,12 @@ def test_gap_disease_hint_npc_does_not_default_to_brca():
     from idea_agent import _gap_anchor_block, _gap_disease_hint
 
     disease_id, reason = _gap_disease_hint(
-        "Nasopharyngeal carcinoma radiomics prognosis deep learning gap"
+        "Nasopharyngeal carcinoma WSI prognosis deep learning gap"
     )
     assert disease_id != "BRCA-IDC"
     assert "BRCA-IDC" not in reason or "never" in reason.lower()
     block = _gap_anchor_block(
-        "Nasopharyngeal carcinoma radiomics prognosis deep learning gap"
+        "Nasopharyngeal carcinoma WSI prognosis deep learning gap"
     )
     assert "disease_id=BRCA-IDC" not in block or "never" in block.lower()
     assert "Prefer disease_id=BRCA-IDC" not in block
@@ -152,7 +152,7 @@ def test_gap_disease_hint_npc_does_not_default_to_brca():
 def test_gap_disease_hint_breast_still_maps_brca():
     from idea_agent import _gap_disease_hint
 
-    disease_id, reason = _gap_disease_hint("Breast cancer multifocal pathomics gap")
+    disease_id, reason = _gap_disease_hint("Breast cancer multifocal WSI grading gap")
     assert disease_id == "BRCA-IDC"
     assert disease_id in reason or "breast" in reason.lower() or "乳腺" in reason or "alias" in reason.lower()
 

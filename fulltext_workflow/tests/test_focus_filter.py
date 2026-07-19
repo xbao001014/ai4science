@@ -37,13 +37,13 @@ def _setup() -> None:
 def _seed_npc_fixture() -> None:
     paper = upsert_paper({
         "pmid": "91000001",
-        "title": "Radiomics for nasopharyngeal carcinoma",
+        "title": "CLAM for nasopharyngeal carcinoma on WSI",
         "year": 2024,
-        "abstract": "NPC radiomics study.",
+        "abstract": "NPC computational pathology study.",
         "extraction_done": 1,
     })
     disease_id = upsert_entity("nasopharyngeal carcinoma", "Disease")
-    method_id = upsert_entity("radiomics", "Method")
+    method_id = upsert_entity("clam", "Method")
     lim_id = upsert_entity("small sample size", "Limitation")
     insert_relation(
         "Paper", paper, "TARGETS_DISEASE", "Disease", disease_id,
@@ -77,7 +77,7 @@ def test_combo_gap_temporal_finds_methods_on_focus_papers():
     _seed_npc_fixture()
     rows = tool_combo_gap_temporal(focus="nasopharyngeal carcinoma")["data"]
     assert rows
-    assert any(r["method"] == "radiomics" for r in rows)
+    assert any(r["method"] == "clam" for r in rows)
 
 
 def test_method_disease_combo_not_empty_for_disease_focus():
@@ -100,7 +100,7 @@ def test_recent_highcite_includes_title_only_focus_paper():
     _setup()
     upsert_paper({
         "pmid": "91000099",
-        "title": "MRI radiomics in nasopharyngeal carcinoma diagnosis",
+        "title": "Deep learning WSI diagnosis of nasopharyngeal carcinoma",
         "year": 2024,
         "citation_count": 12,
         "extraction_done": 0,

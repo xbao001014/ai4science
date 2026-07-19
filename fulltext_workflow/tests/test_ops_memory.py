@@ -11,7 +11,8 @@ if str(_ROOT) not in sys.path:
 
 import config
 
-config.DB_PATH = str(_ROOT / "data" / "test_ops_memory.db")
+_TEST_DB = str(_ROOT / "data" / "test_ops_memory.db")
+config.DB_PATH = _TEST_DB
 
 from analysis.ops_memory import (  # noqa: E402
     create_ops_run,
@@ -31,8 +32,8 @@ from db.schema import fetch_ops_gap_items_for_runs, init_db  # noqa: E402
 SAMPLE_REPORT = """
 ## Research gap analysis
 
-### Research gap 1: NPC radiomics prognosis modeling
-**Research question**: Can multimodal radiomics improve NPC OS prediction?
+### Research gap 1: NPC WSI survival modeling
+**Research question**: Can multimodal WSI features improve NPC OS prediction?
 
 ### Research gap 2: Pathomics subtype discovery for NPC
 **Research question**: Unsupervised subtypes on WSI.
@@ -40,6 +41,7 @@ SAMPLE_REPORT = """
 
 
 def _reset_ops_db() -> None:
+    config.DB_PATH = _TEST_DB
     if os.path.exists(config.DB_PATH):
         os.remove(config.DB_PATH)
     init_db()
@@ -56,22 +58,22 @@ def test_normalize_focus_key_lower_strip():
 
 
 def test_fingerprint_stable_and_order_invariant():
-    a = fingerprint_gap_title("Survival prediction with radiomics")
-    b = fingerprint_gap_title("radiomics with Survival prediction")
+    a = fingerprint_gap_title("Survival prediction with WSI")
+    b = fingerprint_gap_title("WSI with Survival prediction")
     assert a == b
     assert len(a) == 16
 
 
 def test_jaccard_identical_high():
     assert jaccard_overlap(
-        "NPC radiomics prognosis deep learning",
-        "NPC radiomics prognosis deep learning",
+        "NPC WSI prognosis deep learning",
+        "NPC WSI prognosis deep learning",
     ) == 1.0
 
 
 def test_jaccard_unrelated_low():
     score = jaccard_overlap(
-        "breast cancer pathomics grading",
+        "breast cancer WSI grading",
         "cardiac CTA stenosis scoring",
     )
     assert score < 0.3
@@ -100,7 +102,7 @@ def test_focus_lanes_do_not_mix():
     persist_gaps_from_report(r1, SAMPLE_REPORT.replace("NPC", "breast"))
     finalize_ops_run(r1)
     r2 = create_ops_run(None, "gap-debate")
-    persist_gaps_from_report(r2, "### Research gap 1: Global radiomics gap\n")
+    persist_gaps_from_report(r2, "### Research gap 1: Global digital pathology gap\n")
     finalize_ops_run(r2)
     breast = load_recent_gaps("breast cancer")
     all_lane = load_recent_gaps(None)
@@ -117,11 +119,11 @@ def test_memory_prompt_and_revisited_tag():
     block = format_memory_prompt_block(bundle)
     assert "Ops memory" in block
     tagged = tag_revisited_against_memory(
-        ["NPC radiomics prognosis modeling", "Completely novel cardiac gap"],
+        ["NPC WSI survival modeling", "Completely novel cardiac gap"],
         bundle,
     )
     status_map = dict(tagged)
-    assert status_map["NPC radiomics prognosis modeling"] == "revisited"
+    assert status_map["NPC WSI survival modeling"] == "revisited"
     assert status_map["Completely novel cardiac gap"] == "reported"
 
 
@@ -156,7 +158,7 @@ def test_persist_proposal_fills_fields_and_links_gap():
     finalize_ops_run(rid)
     prop_id = persist_proposal(
         rid,
-        gap_title="NPC radiomics prognosis modeling",
+        gap_title="NPC WSI survival modeling",
         proposal_md="# Proposal\n\n" + ("body " * 100),
         feasibility_score=0.81,
         critic_score=8.2,

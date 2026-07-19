@@ -41,7 +41,7 @@ $py = "..\.venv\Scripts\python.exe"
 
 ## 检索范围
 
-查询组与默认年份来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前默认 **2015–2025**、15 组）。可用环境变量覆盖：
+查询组与默认年份来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前默认 **2015–2025**、**14** 组启用；`pathomics_radiomics` 默认关闭，因可行性侧无影像数据）。可用环境变量覆盖：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
@@ -59,7 +59,7 @@ FETCH_EDAT_DAYS=14
 & $py main.py hotspot-report | hotspot-brief
 & $py main.py bootstrap-landscape [--force]
 & $py main.py gap-debate --focus "…" -o output/gap_debate_report.md
-& $py main.py idea-pipeline --focus radiomics --top 3
+& $py main.py idea-pipeline --focus "digital pathology" --top 3
 ```
 
 完整参数与周更说明见 [SCRIPTS.md](SCRIPTS.md) / [PIPELINE.md](PIPELINE.md)。
@@ -75,7 +75,7 @@ Debate Process · Weekly Hotspot · Visualization · Evidence & Literature · Ga
 | 模块 | 作用 |
 |------|------|
 | `fetcher/` | PubMed、全文、引用 enrichment |
-| `extractor/` | 分章节 LLM 三元组抽取 |
+| `extractor/` | 分章节 LLM 三元组抽取（粒度政策见 [extractor/GRANULARITY.md](extractor/GRANULARITY.md)） |
 | `graph/` + `viz/` | NetworkX / Pyvis |
 | `analysis/gap_tools.py` | SQL Gap + impact 加权 |
 | `analysis/gap_lifecycle.py` | limitation 时间画像 |

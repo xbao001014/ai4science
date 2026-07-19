@@ -46,7 +46,7 @@ The user specified research focus: {focus}
 - All candidate gaps, verification conclusions, and the final report must **directly serve this focus** \
 (disease/task/method must be related).
 - Each gap title or research question must explicitly state its link to "{focus}".
-- **Do not** output clearly off-topic gaps (other cancers, cardiotoxicity, unrelated imaging modalities, etc.).
+- **Do not** output clearly off-topic gaps (other cancers, cardiotoxicity, radiology-only CT/MRI topics, etc.).
 - If corpus coverage for this focus is sparse, say so in the summary; **do not** pad with unrelated topics.
 - When calling KG tools, set focus="{focus}" (the system also injects it, but pass it explicitly).
 """
@@ -77,7 +77,7 @@ def _system_with_focus(base: str, focus: str | None, *, role: str) -> str:
 def _focus_hint(focus: str | None) -> str:
     foc = normalize_focus(focus)
     if not foc:
-        return "No research focus specified — analyze the full pathomics/radiomics corpus."
+        return "No research focus specified — analyze the full pathology AI / digital pathology corpus."
     return (
         f"[Mandatory focus] {foc}\n"
         f"- Analyze only research gaps directly related to this topic.\n"
@@ -88,12 +88,14 @@ def _focus_hint(focus: str | None) -> str:
     )
 
 OPTIMIST_SYSTEM_PROMPT = """\
-You are a pathology AI / pathomics / radiomics research-opportunity analyst (Opportunity Scout / Optimist Agent).
+You are a pathology AI / digital pathology / computational pathology research-opportunity analyst \
+(Opportunity Scout / Optimist Agent).
 Your job is to identify academically and clinically valuable research gaps from the knowledge graph, \
-emphasizing feasibility and innovation opportunities.
+emphasizing feasibility and innovation opportunities (Fangxin pathology data — no radiology imaging).
 
-Corpus: pathomics/radiomics full-text extraction KG (author-stated limitations, results-section metric \
+Corpus: pathology AI full-text extraction KG (author-stated limitations, results-section metric \
 evidence, method–disease combination gaps, graph structure analysis). Prefer recent literature when tools provide year fields.
+Prefer gaps grounded in WSI / histopathology / cytopathology / IHC rather than CT/MRI radiomics.
 
 Language: write all candidate gap Markdown in **English**.
 
@@ -158,6 +160,8 @@ only from “not found”; do not mark as false.
 - **verified_gaps**: Every quantitative Scout claim has a matching field in this round’s tool outputs.
 
 - Challenge small-sample extrapolation and whether unexplored combos may already be common outside this corpus.
+- Prefer pathology-native gaps (WSI / histopathology / cytopathology / IHC). Put CT/MRI radiomics-only \
+directions in false_gaps or weak_evidence_gaps (Fangxin has pathology slides, not radiology imaging).
 
 Output format (strict JSON inside a ```json ... ``` fence):
 
@@ -200,6 +204,7 @@ Synthesis principles:
 - **Must** call literature_data_cross_matrix (or literature_impact_priority_matrix) and pathology_disease_catalog; \
 append “Fangxin data support” and “Literature impact” (avg_cite, impact_tier, cross_priority_score) to each gap.
 - Prefer crossings of “literature gap + adequate Fangxin data + impact_tier High/Medium”.
+- Prefer pathology-native directions; deprioritize radiology-only (CT/MRI radiomics) gaps.
 - All quantitative claims must cite tool data; no emoji.
 
 If overall_confidence >= 7.5 or this is the last debate round, output the full final report (Markdown):
@@ -348,7 +353,7 @@ def stream_gap_debate_agent(
                 else ""
             )
             opt_user = _append_memory_block(
-                f"Identify {top_n} pathomics/radiomics research-gap candidates in English.\n"
+                f"Identify {top_n} pathology AI / digital pathology research-gap candidates in English.\n"
                 f"{coverage_first}"
                 f"{focus_hint}\n{corpus_ctx}\n"
                 "Then call at least 5 tools (including 1 graph_*), "
@@ -514,7 +519,7 @@ def run_gap_debate_agent(
     use_ops_memory: bool | None = None,
 ) -> str:
     print(f"\n{'='*60}")
-    print("Gap Debate Multi-Agent — pathomics/radiomics")
+    print("Gap Debate Multi-Agent — pathology AI / digital pathology")
     print(f"  Focus: {focus or 'all'}")
     print(f"  Top-N: {top_n}")
     print(f"  Debate rounds: {max_debate_rounds}")

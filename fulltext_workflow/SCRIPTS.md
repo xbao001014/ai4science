@@ -33,9 +33,9 @@ $py = "..\.venv\Scripts\python.exe"
 | `-SkipEnrich` | 跳过 enrich-s2 / import-if |
 | `-NoResume` | fetch 不跳过已有 PMID |
 
-**`-Stage weekly` 包含**：fetch(14d) → enrich-s2 → fulltext → extract(core) → hotspot-report → hotspot-brief → build → analyze → stats  
+**`-Stage weekly` 包含**：fetch(14d) → enrich-s2 → fulltext → extract(core) → compute-gap-lifecycle → hotspot-report → hotspot-brief → build → analyze → stats  
 
-**不含**：`import-if`、`compute-gap-lifecycle`、`gap-debate`、`bootstrap-landscape`
+**不含**：`import-if`、`gap-debate`、`bootstrap-landscape`
 
 ### `run_gap_ui.ps1` — Gap 分析 UI
 
@@ -92,7 +92,7 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py bootstrap-landscape --force # 强制重载（慢，约 20–30 分钟）
 & $py main.py gap-debate --focus "nasopharyngeal carcinoma" --top 6 -o output/gap_debate_report.md
 & $py main.py gap-debate --no-ops-memory --no-ops-persist
-& $py main.py idea-pipeline --focus radiomics --top 3 -o output/idea_pipeline_report.md
+& $py main.py idea-pipeline --focus "digital pathology" --top 3 -o output/idea_pipeline_report.md
 ```
 
 ### 一键建库（Python）
@@ -153,8 +153,7 @@ $py = "..\.venv\Scripts\python.exe"
 
 ```powershell
 .\run_pipeline.ps1 -Stage weekly
-# 可选：辩论前刷新 limitation 时间画像
-& $py main.py compute-gap-lifecycle --temporal-only
+# weekly 已含 compute-gap-lifecycle；可直接辩论
 & $py main.py gap-debate --focus "your topic" -o output/gap_debate_report.md
 .\run_gap_ui.ps1
 ```
@@ -162,8 +161,7 @@ $py = "..\.venv\Scripts\python.exe"
 ### 首次全量建库
 
 ```powershell
-.\run_pipeline.ps1 -Stage all
-& $py main.py compute-gap-lifecycle
+.\run_pipeline.ps1 -Stage all   # 已含 compute-gap-lifecycle
 & $py main.py bootstrap-landscape --force   # 若需要可行性分析
 ```
 
