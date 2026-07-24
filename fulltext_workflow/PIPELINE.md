@@ -282,7 +282,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 
 **Ops memory**（`analysis/ops_memory.py`）：
 
-- 按 `focus_key`（无 focus → `__all__`）回看最近 **4** 次空白，prompt **软避让**近重复方向（非硬过滤）
+- 按 `focus_key`（无 focus → `__all__`；已知疾病概念 → `disease_synonyms` canonical，如 `乳腺癌`/`breast cancer` → `breast carcinoma`）回看最近 **4** 次空白，prompt **软避让**近重复方向（非硬过滤）
 - 成功跑完后写入 `ops_runs` / `ops_gap_items` / `ops_proposals`
 - Gap UI sidebar：`Use ops memory`、`Persist this run`（默认开）
 - 维护：`scripts/clear_ops_memory.py`（清空）、`scripts/backfill_ops_proposals.py`（回填缺失字段）
@@ -291,7 +291,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 
 **Research focus / 中英文同义词**（`analysis/disease_synonyms.py`）：
 
-- Gap UI / CLI 的 focus 支持中文疾病名（如 `肠息肉`），解析为 canonical 概念后在 SQL 中展开英文短语与同义词
+- Gap UI / CLI 的 focus 支持中文疾病名（如 `肠息肉`），解析为 canonical 概念后在 SQL 中展开英文短语与同义词；ops memory 的 `focus_key` 使用同一 resolve 作为 lane key
 - 已覆盖：胃癌、肺腺癌/肺癌、结直肠癌/肠癌、结直肠息肉/腺瘤、肠炎、淋巴瘤、胃溃疡、胃息肉、肝癌、乳腺癌、鼻咽癌等；未命中时回退字面 `LIKE`
 - 方信 `DiseaseCode` 与概念对齐（如 `C_XR` 肠息肉、`BY_BNAI` 鼻咽癌、`F_FA` 肺癌）；Gap 可行性映射优先走方信编码
 - UI 在 Research focus 下方显示 `Resolved: …`；无映射时中文输入会提示尝试英文名

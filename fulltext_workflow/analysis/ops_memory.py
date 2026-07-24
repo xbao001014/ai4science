@@ -29,7 +29,33 @@ def normalize_focus_key(focus: str | None) -> str:
     if focus is None:
         return "__all__"
     s = " ".join(str(focus).strip().lower().split())
-    return s if s else "__all__"
+    if not s:
+        return "__all__"
+    from analysis.disease_synonyms import resolve_disease_concept
+
+    concept = resolve_disease_concept(s)
+    if concept is not None:
+        return " ".join(str(concept.canonical).strip().lower().split())
+    return s
+
+
+def migrate_ops_focus_keys(conn) -> int:
+    """Rewrite ops_runs.focus_key to disease canonical when resolvable. Idempotent."""
+    rows = conn.execute(
+        "SELECT run_id, focus_key FROM ops_runs WHERE focus_key != '__all__'"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        run_id = row["run_id"] if hasattr(row, "keys") else row[0]
+        old = row["focus_key"] if hasattr(row, "keys") else row[1]
+        new = normalize_focus_key(old)
+        if new != old:
+            conn.execute(
+                "UPDATE ops_runs SET focus_key=? WHERE run_id=?",
+                (new, run_id),
+            )
+            updated += 1
+    return updated
 
 
 def tokenize_for_fingerprint(text: str) -> list[str]:

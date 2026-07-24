@@ -408,6 +408,20 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
     if "critic_score" not in prop_cols:
         conn.execute("ALTER TABLE ops_proposals ADD COLUMN critic_score REAL")
 
+    # Ops memory: collapse synonym spellings onto disease canonical focus_key
+    try:
+        from analysis.ops_memory import migrate_ops_focus_keys
+    except ImportError:
+        migrate_ops_focus_keys = None  # type: ignore
+    if migrate_ops_focus_keys is not None:
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "ops_runs" in tables:
+            migrate_ops_focus_keys(conn)
+
 
 def upsert_paper(data: dict[str, Any]) -> int:
     with get_conn() as conn:

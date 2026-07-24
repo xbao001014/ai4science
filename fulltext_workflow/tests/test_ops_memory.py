@@ -57,6 +57,17 @@ def test_normalize_focus_key_lower_strip():
     assert normalize_focus_key("  Nasopharyngeal Carcinoma ") == "nasopharyngeal carcinoma"
 
 
+def test_normalize_focus_key_zh_en_same_lane():
+    assert normalize_focus_key("乳腺癌") == "breast carcinoma"
+    assert normalize_focus_key("breast cancer") == "breast carcinoma"
+    assert normalize_focus_key("Breast Cancer") == "breast carcinoma"
+    assert normalize_focus_key("乳腺癌") == normalize_focus_key("breast cancer")
+
+
+def test_normalize_focus_key_unresolved_literal():
+    assert normalize_focus_key("  Foo Bar ") == "foo bar"
+
+
 def test_fingerprint_stable_and_order_invariant():
     a = fingerprint_gap_title("Survival prediction with WSI")
     b = fingerprint_gap_title("WSI with Survival prediction")
@@ -199,10 +210,49 @@ def test_resolve_ops_memory_block_respects_flag():
     assert resolve_ops_memory_block("npc", False) == ""
 
 
+def test_migrate_legacy_focus_key_then_zh_load():
+    from db.schema import get_conn
+
+    _reset_ops_db()
+    # Simulate pre-fix row: literal English phrase, not canonical
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO ops_runs
+               (week_id, focus_raw, focus_key, source, started_at, finished_at)
+               VALUES ('2026-W30', 'breast cancer', 'breast cancer', 'test',
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+        )
+        run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            """INSERT INTO ops_gap_items
+               (run_id, rank_pos, title, research_question, fingerprint, status)
+               VALUES (?, 1, 'Legacy breast gap', 'RQ?', 'deadbeefdeadbeef', 'reported')""",
+            (run_id,),
+        )
+
+    from analysis.ops_memory import migrate_ops_focus_keys
+
+    with get_conn() as conn:
+        n = migrate_ops_focus_keys(conn)
+        assert n >= 1
+        key = conn.execute(
+            "SELECT focus_key FROM ops_runs WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        assert key == "breast carcinoma"
+        # idempotent
+        assert migrate_ops_focus_keys(conn) == 0
+
+    mem = load_recent_gaps("乳腺癌")
+    assert any(it.title == "Legacy breast gap" for it in mem.items)
+    assert mem.focus_key == "breast carcinoma"
+
+
 if __name__ == "__main__":
     tests = [
         test_normalize_focus_key_empty_is_all,
         test_normalize_focus_key_lower_strip,
+        test_normalize_focus_key_zh_en_same_lane,
+        test_normalize_focus_key_unresolved_literal,
         test_fingerprint_stable_and_order_invariant,
         test_jaccard_identical_high,
         test_jaccard_unrelated_low,
@@ -213,6 +263,7 @@ if __name__ == "__main__":
         test_link_hotspot_creates_or_updates_run,
         test_persist_proposal_fills_fields_and_links_gap,
         test_resolve_ops_memory_block_respects_flag,
+        test_migrate_legacy_focus_key_then_zh_load,
     ]
     for fn in tests:
         fn()
