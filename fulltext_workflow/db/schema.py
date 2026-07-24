@@ -9,17 +9,22 @@ from typing import Any, Callable, Generator
 
 import config
 
+# Prefer config.DB_PATH at call time so tests can re-point the database after import.
 DB_PATH = config.DB_PATH
 
 
+def _db_path() -> str:
+    return config.DB_PATH or DB_PATH
+
+
 def _ensure_dir() -> None:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(_db_path()), exist_ok=True)
 
 
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
     _ensure_dir()
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(_db_path(), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -55,6 +60,7 @@ CREATE TABLE IF NOT EXISTS papers (
     abstract                TEXT,
     pub_date                TEXT,
     year                    INTEGER,
+    date_precision          TEXT,
     journal_id              INTEGER REFERENCES journals(id),
     journal_name            TEXT,
     journal_abbr            TEXT,
@@ -110,6 +116,7 @@ CREATE TABLE IF NOT EXISTS entities (
     type        TEXT NOT NULL,
     cui         TEXT,
     aliases     TEXT,
+    access_class TEXT,
     UNIQUE(name, type)
 );
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
@@ -152,6 +159,17 @@ CREATE TABLE IF NOT EXISTS feasibility_assessments (
     assessed_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_feas_gap ON feasibility_assessments(gap_title);
+
+CREATE TABLE IF NOT EXISTS public_dataset_assessments (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    gap_title               TEXT,
+    keyword                 TEXT,
+    public_coverage_score   REAL,
+    status                  TEXT,
+    assessment_json         TEXT,
+    assessed_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pda_gap ON public_dataset_assessments(gap_title);
 
 CREATE TABLE IF NOT EXISTS limitation_temporal (
     limitation_id       INTEGER PRIMARY KEY REFERENCES entities(id),
@@ -255,7 +273,11 @@ CREATE TABLE IF NOT EXISTS ops_proposals (
     proposal_md         TEXT,
     feasibility_score   REAL,
     critic_score        REAL,
-    status              TEXT
+    status              TEXT,
+    target_difficulty   TEXT,
+    assessed_difficulty TEXT,
+    difficulty_delta    INTEGER,
+    difficulty_breakdown_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
 """
@@ -265,19 +287,24 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA_SQL)
         _migrate_db(conn)
-    print(f"[DB] Initialized database at {DB_PATH}")
+    print(f"[DB] Initialized database at {_db_path()}")
 
 
 def _migrate_db(conn: sqlite3.Connection) -> None:
     """Add columns for citation/IF weighting on existing databases."""
     paper_cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
     journal_cols = {r[1] for r in conn.execute("PRAGMA table_info(journals)").fetchall()}
+    entity_cols = {r[1] for r in conn.execute("PRAGMA table_info(entities)").fetchall()}
+
+    if "access_class" not in entity_cols:
+        conn.execute("ALTER TABLE entities ADD COLUMN access_class TEXT")
 
     for col, ddl in (
         ("s2id", "ALTER TABLE papers ADD COLUMN s2id TEXT"),
         ("citation_count", "ALTER TABLE papers ADD COLUMN citation_count INTEGER DEFAULT 0"),
         ("open_access", "ALTER TABLE papers ADD COLUMN open_access INTEGER DEFAULT 0"),
         ("citation_source", "ALTER TABLE papers ADD COLUMN citation_source TEXT"),
+        ("date_precision", "ALTER TABLE papers ADD COLUMN date_precision TEXT"),
     ):
         if col not in paper_cols:
             conn.execute(ddl)
@@ -397,7 +424,11 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             proposal_md         TEXT,
             feasibility_score   REAL,
             critic_score        REAL,
-            status              TEXT
+            status              TEXT,
+            target_difficulty   TEXT,
+            assessed_difficulty TEXT,
+            difficulty_delta    INTEGER,
+            difficulty_breakdown_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
     """)
@@ -407,6 +438,18 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
     }
     if "critic_score" not in prop_cols:
         conn.execute("ALTER TABLE ops_proposals ADD COLUMN critic_score REAL")
+
+    for col, ddl in (
+        ("target_difficulty", "ALTER TABLE ops_proposals ADD COLUMN target_difficulty TEXT"),
+        ("assessed_difficulty", "ALTER TABLE ops_proposals ADD COLUMN assessed_difficulty TEXT"),
+        ("difficulty_delta", "ALTER TABLE ops_proposals ADD COLUMN difficulty_delta INTEGER"),
+        (
+            "difficulty_breakdown_json",
+            "ALTER TABLE ops_proposals ADD COLUMN difficulty_breakdown_json TEXT",
+        ),
+    ):
+        if col not in prop_cols:
+            conn.execute(ddl)
 
     # Ops memory: collapse synonym spellings onto disease canonical focus_key
     try:
@@ -434,29 +477,58 @@ def upsert_paper(data: dict[str, Any]) -> int:
         if existing:
             old_queries = json.loads(existing["source_queries"] or "[]")
             merged = list(set(old_queries) | set(new_queries))
-            conn.execute(
-                """UPDATE papers SET
-                   source_queries=?,
-                   abstract=COALESCE(NULLIF(?, ''), abstract),
-                   title=COALESCE(NULLIF(?, ''), title),
-                   pmc_id=COALESCE(?, pmc_id)
-                   WHERE id=?""",
-                (
-                    json.dumps(merged),
-                    data.get("abstract", ""),
-                    data.get("title", ""),
-                    data.get("pmc_id"),
-                    existing["id"],
-                ),
-            )
+            # Backfill date fields only when date_precision is still unset.
+            row_full = conn.execute(
+                "SELECT date_precision FROM papers WHERE id=?", (existing["id"],)
+            ).fetchone()
+            existing_prec = (row_full["date_precision"] if row_full else None) or ""
+            new_prec = (data.get("date_precision") or "").strip()
+            if not existing_prec and new_prec:
+                conn.execute(
+                    """UPDATE papers SET
+                       source_queries=?,
+                       abstract=COALESCE(NULLIF(?, ''), abstract),
+                       title=COALESCE(NULLIF(?, ''), title),
+                       pmc_id=COALESCE(?, pmc_id),
+                       pub_date=COALESCE(NULLIF(?, ''), pub_date),
+                       year=COALESCE(?, year),
+                       date_precision=?
+                       WHERE id=?""",
+                    (
+                        json.dumps(merged),
+                        data.get("abstract", ""),
+                        data.get("title", ""),
+                        data.get("pmc_id"),
+                        data.get("pub_date") or "",
+                        data.get("year"),
+                        new_prec,
+                        existing["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """UPDATE papers SET
+                       source_queries=?,
+                       abstract=COALESCE(NULLIF(?, ''), abstract),
+                       title=COALESCE(NULLIF(?, ''), title),
+                       pmc_id=COALESCE(?, pmc_id)
+                       WHERE id=?""",
+                    (
+                        json.dumps(merged),
+                        data.get("abstract", ""),
+                        data.get("title", ""),
+                        data.get("pmc_id"),
+                        existing["id"],
+                    ),
+                )
             return existing["id"]
 
         conn.execute(
             """INSERT INTO papers
-               (pmid, doi, pmc_id, title, abstract, pub_date, year,
+               (pmid, doi, pmc_id, title, abstract, pub_date, year, date_precision,
                 journal_name, journal_abbr, issn, pub_types, mesh_terms,
                 keywords, source_queries, full_text_status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data.get("pmid"),
                 data.get("doi"),
@@ -465,6 +537,7 @@ def upsert_paper(data: dict[str, Any]) -> int:
                 data.get("abstract", ""),
                 data.get("pub_date"),
                 data.get("year"),
+                data.get("date_precision"),
                 data.get("journal_name"),
                 data.get("journal_abbr"),
                 data.get("issn"),
@@ -644,17 +717,38 @@ def mark_extraction_done(paper_id: int, study_type: str) -> None:
         )
 
 
-def upsert_entity(name: str, entity_type: str, cui: str = "") -> int:
+def upsert_entity(
+    name: str,
+    entity_type: str,
+    cui: str = "",
+    access_class: str | None = None,
+) -> int:
+    from extractor.dataset_access import stronger_access
+
     normalized = name.strip().lower()
+    ac = None
+    if entity_type == "Dataset" and access_class:
+        ac = access_class.strip().lower()
+        if ac not in ("public", "private", "unknown"):
+            ac = "unknown"
+
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id FROM entities WHERE name=? AND type=?", (normalized, entity_type)
+            "SELECT id, access_class FROM entities WHERE name=? AND type=?",
+            (normalized, entity_type),
         ).fetchone()
         if existing:
+            if entity_type == "Dataset" and ac:
+                merged = stronger_access(existing["access_class"], ac)
+                if merged != (existing["access_class"] or "unknown"):
+                    conn.execute(
+                        "UPDATE entities SET access_class=? WHERE id=?",
+                        (merged, existing["id"]),
+                    )
             return existing["id"]
         conn.execute(
-            "INSERT INTO entities (name, type, cui) VALUES (?,?,?)",
-            (normalized, entity_type, cui or None),
+            "INSERT INTO entities (name, type, cui, access_class) VALUES (?,?,?,?)",
+            (normalized, entity_type, cui or None, ac if entity_type == "Dataset" else None),
         )
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -774,6 +868,22 @@ def db_stats() -> dict[str, Any]:
             "journals_with_if": conn.execute(
                 "SELECT COUNT(*) FROM journals WHERE impact_factor IS NOT NULL"
             ).fetchone()[0],
+            "date_precision_day": conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE date_precision='day'"
+            ).fetchone()[0],
+            "date_precision_month": conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE date_precision='month'"
+            ).fetchone()[0],
+            "date_precision_year": conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE date_precision='year'"
+            ).fetchone()[0],
+            "date_precision_unknown": conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE date_precision='unknown'"
+            ).fetchone()[0],
+            "date_precision_missing": conn.execute(
+                """SELECT COUNT(*) FROM papers
+                   WHERE date_precision IS NULL OR date_precision=''"""
+            ).fetchone()[0],
         }
         stats["fulltext_available"] = stats["fulltext_jats"] + stats["fulltext_mineru_pdf"]
     return stats
@@ -849,6 +959,40 @@ def get_feasibility_assessments(limit: int = 50) -> list[dict[str, Any]]:
             """SELECT gap_title, hypothesis_id, feasibility_score, status,
                       assessment_json, assessed_at
                FROM feasibility_assessments
+               ORDER BY assessed_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_public_dataset_assessment(
+    gap_title: str,
+    keyword: str,
+    score: float,
+    status: str,
+    assessment: dict[str, Any],
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO public_dataset_assessments
+               (gap_title, keyword, public_coverage_score, status, assessment_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                gap_title,
+                keyword,
+                score,
+                status,
+                json.dumps(assessment, ensure_ascii=False),
+            ),
+        )
+
+
+def get_public_dataset_assessments(limit: int = 50) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT gap_title, keyword, public_coverage_score, status,
+                      assessment_json, assessed_at
+               FROM public_dataset_assessments
                ORDER BY assessed_at DESC LIMIT ?""",
             (limit,),
         ).fetchall()
@@ -1208,13 +1352,19 @@ def insert_ops_proposal(
     feasibility_score: float | None = None,
     critic_score: float | None = None,
     status: str = "",
+    target_difficulty: str | None = None,
+    assessed_difficulty: str | None = None,
+    difficulty_delta: int | None = None,
+    difficulty_breakdown_json: str | None = None,
 ) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO ops_proposals
                (run_id, gap_item_id, proposal_path, proposal_md,
-                feasibility_score, critic_score, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                feasibility_score, critic_score, status,
+                target_difficulty, assessed_difficulty, difficulty_delta,
+                difficulty_breakdown_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_id,
                 gap_item_id,
@@ -1223,6 +1373,10 @@ def insert_ops_proposal(
                 feasibility_score,
                 critic_score,
                 status or None,
+                target_difficulty,
+                assessed_difficulty,
+                difficulty_delta,
+                difficulty_breakdown_json,
             ),
         )
         return int(cur.lastrowid)

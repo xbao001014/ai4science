@@ -160,6 +160,18 @@ def cmd_gap_debate(args: argparse.Namespace) -> None:
             print(f"[Gap-Debate] Ops memory run_id={rid}")
 
 
+def cmd_backfill_date_precision(args: argparse.Namespace) -> None:
+    from db.schema import init_db
+    from fetcher.pubmed_fetcher import backfill_date_precision
+
+    init_db()
+    result = backfill_date_precision(limit=args.limit)
+    print(
+        f"[Backfill-DatePrecision] pending={result['pending']} "
+        f"updated={result['updated']} failed={result['failed']}"
+    )
+
+
 def cmd_watch_fetch(args: argparse.Namespace) -> None:
     from utils.fetch_progress import watch_fetch_progress
 
@@ -243,7 +255,9 @@ def cmd_compute_weekly_hotspots(args: argparse.Namespace) -> None:
     print("\n[Weekly-Hotspot] Summary:")
     print(f"  week_id          : {payload['week_id']}")
     print(f"  window_days      : {payload['window_days']}")
-    print(f"  papers_ingested  : {payload['papers_ingested']}")
+    print(f"  papers_in_window : {payload.get('papers_in_window', payload['papers_ingested'])}")
+    print(f"  excluded_year    : {payload.get('papers_excluded_low_precision', 0)}")
+    print(f"  time_axis        : {payload.get('time_axis', 'pub_date')}")
     print(f"  emerging_methods : {len(payload['emerging_methods'])}")
     print(f"  heating_diseases : {len(payload['heating_diseases'])}")
     print(f"  hot_combos       : {len(payload['hot_combos'])}")
@@ -265,7 +279,10 @@ def cmd_hotspot_report(args: argparse.Namespace) -> None:
         persist=not args.no_persist,
     )
     print(f"[Hotspot-Report] Saved to {path}")
-    print(f"  papers_ingested={payload['papers_ingested']}, week={payload['week_id']}")
+    print(
+        f"  papers_in_window={payload.get('papers_in_window', payload['papers_ingested'])}, "
+        f"week={payload['week_id']}, axis={payload.get('time_axis', 'pub_date')}"
+    )
     if payload.get("snapshot_rows") is not None:
         print(f"  snapshot_rows={payload['snapshot_rows']}")
     wow = payload.get("week_over_week") or {}
@@ -425,13 +442,13 @@ def main() -> None:
 
     p_hotspot = sub.add_parser(
         "compute-weekly-hotspots",
-        help="Compute recent-ingest research hotspots (stdout summary)",
+        help="Compute recent-publication research hotspots (stdout summary)",
     )
     p_hotspot.add_argument(
         "--days",
         type=int,
         default=None,
-        help=f"Recent ingest window in days (default: {config.HOTSPOT_WINDOW_DAYS})",
+        help=f"Recent publication window in days (default: {config.HOTSPOT_WINDOW_DAYS})",
     )
     p_hotspot.add_argument(
         "--prior-days",
@@ -448,7 +465,7 @@ def main() -> None:
         "--days",
         type=int,
         default=None,
-        help=f"Recent ingest window (default: {config.HOTSPOT_WINDOW_DAYS})",
+        help=f"Recent publication window (default: {config.HOTSPOT_WINDOW_DAYS})",
     )
     p_hotspot_report.add_argument(
         "--prior-days",
@@ -530,6 +547,17 @@ def main() -> None:
     )
 
     sub.add_parser("stats", help="Print database statistics")
+
+    p_backfill_dp = sub.add_parser(
+        "backfill-date-precision",
+        help="Re-fetch PubMed dates for papers missing date_precision",
+    )
+    p_backfill_dp.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Max papers to backfill (0 = all missing)",
+    )
 
     p_watch = sub.add_parser(
         "watch-fetch",
@@ -623,6 +651,7 @@ def main() -> None:
         "bootstrap-landscape": cmd_bootstrap_landscape,
         "idea-pipeline": cmd_idea_pipeline,
         "stats": cmd_stats,
+        "backfill-date-precision": cmd_backfill_date_precision,
         "watch-fetch": cmd_watch_fetch,
         "run-all": cmd_run_all,
         "run-db": cmd_run_db,

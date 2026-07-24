@@ -159,6 +159,39 @@ def test_link_hotspot_creates_or_updates_run():
     assert rid == rid2
 
 
+def test_persist_proposal_stores_difficulty_round_trip():
+    import json
+
+    from analysis.ops_memory import persist_proposal
+    from db.schema import get_conn
+
+    _reset_ops_db()
+    rid = create_ops_run("npc", "gap_ui")
+    persist_gaps_from_report(rid, SAMPLE_REPORT)
+    finalize_ops_run(rid)
+    prop_id = persist_proposal(
+        rid,
+        gap_title="NPC WSI survival modeling",
+        proposal_md="# Proposal\n",
+        target_difficulty="easy",
+        assessed_difficulty="hard",
+        difficulty_delta=2,
+        difficulty_breakdown_json='{"research_bar":"hard"}',
+    )
+    with get_conn() as conn:
+        row = dict(
+            conn.execute(
+                "SELECT target_difficulty, assessed_difficulty, difficulty_delta, "
+                "difficulty_breakdown_json FROM ops_proposals WHERE id=?",
+                (prop_id,),
+            ).fetchone()
+        )
+    assert row["target_difficulty"] == "easy"
+    assert row["assessed_difficulty"] == "hard"
+    assert row["difficulty_delta"] == 2
+    assert json.loads(row["difficulty_breakdown_json"]) == {"research_bar": "hard"}
+
+
 def test_persist_proposal_fills_fields_and_links_gap():
     from analysis.ops_memory import persist_proposal
     from db.schema import get_conn
@@ -261,6 +294,7 @@ if __name__ == "__main__":
         test_memory_prompt_and_revisited_tag,
         test_persist_debate_marks_revisited,
         test_link_hotspot_creates_or_updates_run,
+        test_persist_proposal_stores_difficulty_round_trip,
         test_persist_proposal_fills_fields_and_links_gap,
         test_resolve_ops_memory_block_respects_flag,
         test_migrate_legacy_focus_key_then_zh_load,

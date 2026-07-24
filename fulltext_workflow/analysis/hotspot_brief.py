@@ -41,8 +41,15 @@ def _build_brief_context(payload: dict[str, Any]) -> str:
     wow = payload.get("week_over_week") or {}
     slim = {
         "week_id": payload.get("week_id"),
-        "papers_ingested": payload.get("papers_ingested"),
+        "time_axis": payload.get("time_axis", "pub_date"),
+        "papers_in_window": payload.get(
+            "papers_in_window", payload.get("papers_ingested")
+        ),
+        "papers_excluded_low_precision": payload.get(
+            "papers_excluded_low_precision", 0
+        ),
         "window_days": payload.get("window_days"),
+        "eligible_precision": payload.get("eligible_precision"),
         "top_methods": payload.get("emerging_methods", [])[:8],
         "top_diseases": payload.get("heating_diseases", [])[:8],
         "top_combos": payload.get("hot_combos", [])[:8],

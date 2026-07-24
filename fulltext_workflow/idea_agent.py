@@ -25,6 +25,14 @@ from analysis.agent_utils import (
 from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
 from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
+from analysis.difficulty_scoring import (
+    DIFFICULTY_LEVELS,
+    assess_implementation_difficulty,
+    format_difficulty_markdown_header,
+    load_public_datasets_for_keyword,
+    load_supporting_papers_by_pmids,
+    load_supporting_papers_for_keyword,
+)
 from feasibility.disease_mapper import map_gap_to_disease
 from db.schema import get_conn, init_db
 
@@ -70,6 +78,7 @@ def tool_datasets_for_topic(keyword: str) -> dict:
     pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_ds.name AS dataset,
+               COALESCE(e_ds.access_class, 'unknown') AS access_class,
                COUNT(DISTINCT r_ds.source_pmid) AS used_by_papers
         FROM relations r_d
         JOIN entities e_d ON r_d.object_id = e_d.id
@@ -78,9 +87,24 @@ def tool_datasets_for_topic(keyword: str) -> dict:
         JOIN entities e_ds ON r_ds.object_id = e_ds.id
         WHERE r_ds.relation = 'USES_DATASET' AND e_ds.type = 'Dataset'
           {pmid_fc}
-        GROUP BY e_ds.id ORDER BY used_by_papers DESC LIMIT {config.TOOL_TOP_N}
+        GROUP BY e_ds.id
+        ORDER BY
+          CASE COALESCE(e_ds.access_class, 'unknown')
+            WHEN 'public' THEN 0
+            WHEN 'private' THEN 1
+            ELSE 2
+          END,
+          used_by_papers DESC
+        LIMIT {config.TOOL_TOP_N}
     """)
-    return {"description": f"Datasets in '{keyword}' research", "count": len(rows), "data": rows}
+    return {
+        "description": (
+            f"Datasets in '{keyword}' research "
+            "(access_class: public|private|unknown; Fangxin is separate via feasibility tools)"
+        ),
+        "count": len(rows),
+        "data": rows,
+    }
 
 
 def tool_metrics_for_topic(keyword: str) -> dict:
@@ -184,7 +208,11 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
     }},
     {"type": "function", "function": {
         "name": "datasets_for_topic",
-        "description": "List datasets used in research matching the keyword.",
+        "description": (
+            "List datasets used in research matching the keyword, with access_class "
+            "(public|private|unknown). Fangxin hospital data is assessed via feasibility tools, "
+            "not this list."
+        ),
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
@@ -366,11 +394,25 @@ Language:
 Tool-use rules:
 - Call SQL tools + graph_* tools + Fangxin feasibility tools (at least 5 tools, including 1 graph_*).
 - Prefer metrics_for_topic (with evidence_quote) and author_limitations_for_topic.
+- **Must** call public_dataset_assess (V-03) once to list recommended public datasets for the gap.
+- Call datasets_for_topic when discussing external data; respect access_class \
+(public|private|unknown). Prefer V-03 recommended_public when labeling public datasets.
 - Use pathology_disease_catalog / pathology_tasks_for_disease / text_disease_matches to confirm \
 Fangxin data support (disease must match the gap).
 - The final reply must be the **full proposal Markdown** (all sections). Do not stop after \
 "let me call a tool" without writing the proposal.
 - After tool calls finish, send one final message **without tool_calls** containing the full Markdown.
+
+Data-source rules (Fangxin first):
+- Primary cohort must be Fangxin pathology data when feasibility supports the gap.
+- Public datasets (from public_dataset_assess recommended_public, or access_class=public) \
+may be used for pretraining, external validation, baselines, or supplementary experiments.
+- Every public dataset used in the plan must be explicitly labeled, e.g. \
+`public dataset: Camelyon17`.
+- Do **not** replace Fangxin with public data as the sole train/validation cohort when Fangxin \
+is feasible.
+- If Fangxin is insufficient: keep a "Data Integration Limitations" section; public data may \
+carry more weight but must still be labeled, with rationale.
 
 End the proposal with:
 REVISION_NOTE: <≤50 words summarizing this version's changes; use "Initial version" for v1>
@@ -405,9 +447,13 @@ Flag proposals that depend on radiology imaging data unavailable in Fangxin.
 Review rules:
 - Call KG tools to verify data claims (at least 2 tools).
 - **Must** call feasibility_assess (V-01) to check disease_id / task_type / label requirements.
+- **Must** call public_dataset_assess (V-03) when the proposal cites public datasets or omits them.
 - If feasibility_score < 0.5, technical_feasibility must be ≤ 5 and accept must be false.
 - If feasibility_score >= 0.8 and available_cohort_size >= 500, you may note "Fangxin data feasible".
 - Check evidence_quote consistency; note extracted-corpus size limits.
+- Data sources: Fangxin must be primary when feasible; public datasets must be explicitly labeled \
+(`public dataset: <name>`); reject or demand revision if Fangxin-feasible proposals omit Fangxin \
+entirely or use unlabeled public data as the sole cohort.
 - Score five dimensions (each /20, total /100, report overall /10): scientific rigor, technical \
 feasibility, clinical value, innovation, completeness.
 - Below 7 requires substantive revision; 8+ may accept.
@@ -464,13 +510,57 @@ def _ensure_proposal_draft(
     return (finalized or text), bool(finalized)
 
 
+def _normalize_target_difficulty(target_difficulty: str | None) -> str:
+    target = (target_difficulty or "moderate").strip().lower()
+    return target if target in DIFFICULTY_LEVELS else "moderate"
+
+
+_DIFFICULTY_STEERING_SUFFIX = (
+    "Fangxin remains primary when feasible; label any public datasets. "
+    "Assessed difficulty is computed by the host (do not invent it)."
+)
+
+
+def _difficulty_steering_text(target_difficulty: str) -> str:
+    if target_difficulty == "easy":
+        tier = (
+            "Target implementation difficulty: easy. Prefer landable methods, established "
+            "architectures, and evidence/data requirements achievable with the available cohort."
+        )
+    elif target_difficulty == "hard":
+        tier = (
+            "Target implementation difficulty: hard. Ambitious high-contribution methods are "
+            "appropriate, while retaining Fangxin-first and explicitly labeled public-data rules."
+        )
+    else:
+        tier = (
+            "Target implementation difficulty: moderate. Balance methodological novelty with a "
+            "realistic engineering and clinical-validation path."
+        )
+    return f"{tier} {_DIFFICULTY_STEERING_SUFFIX}"
+
+
+def _prepend_difficulty_header(content: str, result: dict[str, Any]) -> str:
+    if "> **Difficulty**" in content:
+        return content
+    header = format_difficulty_markdown_header(result).rstrip()
+    return f"{header}\n\n{content.lstrip()}"
+
+
 def stream_idea_agent(
     gap_text: str,
     gap_data: dict | None = None,
     max_rounds: int = 3,
     accept_score: float = ACCEPT_SCORE,
+    target_difficulty: str = "moderate",
 ) -> Generator[dict, None, None]:
-    yield {"type": "start", "gap_text": gap_text, "max_rounds": max_rounds}
+    target_difficulty = _normalize_target_difficulty(target_difficulty)
+    yield {
+        "type": "start",
+        "gap_text": gap_text,
+        "max_rounds": max_rounds,
+        "target_difficulty": target_difficulty,
+    }
 
     gap_context = ""
     disease_id, disease_reason = _gap_disease_hint(gap_text)
@@ -497,6 +587,7 @@ def stream_idea_agent(
     final_score = 0.0
     completed_rounds = 0
     feasibility_score: float | None = None
+    available_cohort_size: int | None = None
     if gap_data:
         assess = gap_data.get("feasibility_assessment") or {}
         raw = assess.get("feasibility_score")
@@ -505,9 +596,15 @@ def stream_idea_agent(
                 feasibility_score = float(raw)
             except (TypeError, ValueError):
                 pass
+        raw_cohort = assess.get("available_cohort_size")
+        if raw_cohort is not None and str(raw_cohort).strip() != "":
+            try:
+                available_cohort_size = int(raw_cohort)
+            except (TypeError, ValueError):
+                pass
 
     def _capture_feasibility_from_event(event: dict) -> None:
-        nonlocal feasibility_score
+        nonlocal feasibility_score, available_cohort_size
         if event.get("type") != "tool_result":
             return
         if event.get("name") not in ("feasibility_assess", "tool_feasibility_assess"):
@@ -515,13 +612,49 @@ def stream_idea_agent(
         result = event.get("result")
         if not isinstance(result, dict):
             return
-        raw = result.get("feasibility_score")
-        if raw is None or str(raw).strip() == "":
-            return
-        try:
-            feasibility_score = float(raw)
-        except (TypeError, ValueError):
-            pass
+        raw_score = result.get("feasibility_score")
+        if raw_score is not None and str(raw_score).strip() != "":
+            try:
+                feasibility_score = float(raw_score)
+            except (TypeError, ValueError):
+                pass
+        raw_cohort = result.get("available_cohort_size")
+        if raw_cohort is not None and str(raw_cohort).strip() != "":
+            try:
+                available_cohort_size = int(raw_cohort)
+            except (TypeError, ValueError):
+                pass
+
+    def _assess_difficulty() -> dict[str, Any]:
+        papers: list[dict[str, Any]] = []
+        if gap_data:
+            linked_papers = gap_data.get("papers")
+            if isinstance(linked_papers, list):
+                papers = [row for row in linked_papers if isinstance(row, dict)]
+            if not papers:
+                support_pmids = gap_data.get("support_pmids")
+                if isinstance(support_pmids, list) and support_pmids:
+                    papers = load_supporting_papers_by_pmids(support_pmids)
+        if not papers:
+            papers = load_supporting_papers_for_keyword(gap_text)
+        public_datasets: list[str] = []
+        if gap_data:
+            pda = gap_data.get("public_dataset_assessment") or {}
+            if isinstance(pda, dict):
+                public_datasets = [
+                    str(r["dataset"])
+                    for r in (pda.get("recommended_public") or [])
+                    if isinstance(r, dict) and r.get("dataset")
+                ]
+        if not public_datasets:
+            public_datasets = load_public_datasets_for_keyword(gap_text)
+        return assess_implementation_difficulty(
+            target_difficulty=target_difficulty,
+            papers=papers,
+            feasibility_score=feasibility_score,
+            available_cohort_size=available_cohort_size,
+            public_datasets=public_datasets,
+        )
 
     for round_num in range(1, max_rounds + 1):
         yield {"type": "round_start", "round": round_num, "max_rounds": max_rounds}
@@ -532,7 +665,9 @@ def stream_idea_agent(
                 "for the following gap:\n\n"
                 f"{anchor_block}\n\n"
                 f"**Research gap**:\n{gap_text}\n{gap_context}\n\n"
-                "Call at least 5 tools (including 1 graph_*), then output the full English proposal."
+                f"{_difficulty_steering_text(target_difficulty)}\n\n"
+                "Call at least 5 tools (including 1 graph_* and public_dataset_assess), "
+                "then output the full English proposal."
             )
         else:
             issues_text = "\n".join(
@@ -548,6 +683,7 @@ def stream_idea_agent(
                 f"**Revision priority**: {last_feedback.get('revision_priority', '')}\n"
                 f"**Issues**:\n{issues_text}\n"
                 f"**KG verification**: {last_feedback.get('kg_verification', '')}\n\n"
+                f"{_difficulty_steering_text(target_difficulty)}\n\n"
                 f"Produce revised proposal v{round_num} in English for the same gap; "
                 "do not change disease or topic; gather more tool evidence if needed."
             )
@@ -587,12 +723,22 @@ def stream_idea_agent(
             gen_messages, gap_text=gap_text, round_num=round_num, draft=pre_draft
         )
         if agent_failed and not current_draft:
+            difficulty = _assess_difficulty()
+            yield {"type": "difficulty_assessed", **difficulty}
             yield {
                 "type": "final",
                 "content": "",
                 "rounds": completed_rounds,
                 "final_score": final_score,
                 "feasibility_score": feasibility_score,
+                "available_cohort_size": available_cohort_size,
+                "target_difficulty": difficulty["target_difficulty"],
+                "assessed_difficulty": difficulty["assessed_difficulty"],
+                "difficulty_delta": difficulty["difficulty_delta"],
+                "difficulty_color": difficulty["color"],
+                "difficulty_summary": difficulty["summary_line"],
+                "q_coverage_low": difficulty["q_coverage_low"],
+                "difficulty_breakdown": difficulty["breakdown"],
                 "aborted": True,
             }
             return
@@ -615,7 +761,8 @@ def stream_idea_agent(
             f"**Original gap (must not drift)**:\n{gap_text}\n\n"
             f"**Proposal**:\n{current_draft}\n\n"
             f"{feas_hint}"
-            "First call feasibility_assess, then at least one KG tool to verify key claims, "
+            "First call feasibility_assess and public_dataset_assess, then at least one KG tool "
+            "to verify key claims, "
             "then output the JSON review (English field values)."
         )
         critic_messages: list[dict] = [
@@ -663,6 +810,12 @@ def stream_idea_agent(
                 feasibility_score = float(raw_feas)
             except (TypeError, ValueError):
                 pass
+        raw_cohort = last_feedback.get("available_cohort_size")
+        if raw_cohort is not None and str(raw_cohort).strip() != "":
+            try:
+                available_cohort_size = int(raw_cohort)
+            except (TypeError, ValueError):
+                pass
         # Missing critic score must not block accept; only assessed low scores do.
         feas_for_accept = (
             feasibility_score if feasibility_score is not None else 1.0
@@ -688,12 +841,23 @@ def stream_idea_agent(
         if accept or round_num == max_rounds:
             break
 
+    difficulty = _assess_difficulty()
+    current_draft = _prepend_difficulty_header(current_draft, difficulty)
+    yield {"type": "difficulty_assessed", **difficulty}
     yield {
         "type": "final",
         "content": current_draft,
         "rounds": completed_rounds,
         "final_score": final_score,
         "feasibility_score": feasibility_score,
+        "available_cohort_size": available_cohort_size,
+        "target_difficulty": difficulty["target_difficulty"],
+        "assessed_difficulty": difficulty["assessed_difficulty"],
+        "difficulty_delta": difficulty["difficulty_delta"],
+        "difficulty_color": difficulty["color"],
+        "difficulty_summary": difficulty["summary_line"],
+        "q_coverage_low": difficulty["q_coverage_low"],
+        "difficulty_breakdown": difficulty["breakdown"],
     }
 
 
@@ -702,6 +866,7 @@ def run_idea_agent(
     gap_data: dict | None = None,
     max_rounds: int = 3,
     verbose: bool = False,
+    target_difficulty: str = "moderate",
 ) -> tuple[str, dict]:
     print(f"\n{'='*60}")
     print("Research Proposal — Generator x Critic")
@@ -715,7 +880,12 @@ def run_idea_agent(
         "feasibility_score": None,
         "rounds": 0,
     }
-    for event in stream_idea_agent(gap_text=gap_text, gap_data=gap_data, max_rounds=max_rounds):
+    for event in stream_idea_agent(
+        gap_text=gap_text,
+        gap_data=gap_data,
+        max_rounds=max_rounds,
+        target_difficulty=target_difficulty,
+    ):
         etype = event["type"]
         if etype == "round_start":
             print(f"\n--- Round {event['round']} / {event['max_rounds']} ---")

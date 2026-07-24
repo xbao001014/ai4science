@@ -136,6 +136,13 @@ def tool_feasibility_assess(
     return result
 
 
+def tool_public_dataset_assess(keyword: str) -> dict:
+    """V-03: public-dataset feasibility from extracted KG (paper-mediated)."""
+    from analysis.public_dataset_feasibility import assess_public_datasets
+
+    return assess_public_datasets(keyword or "")
+
+
 def tool_data_gap_analysis(
     disease_id: str | None = None,
     task_type: str = "survival_prediction",
@@ -308,6 +315,7 @@ FEASIBILITY_TOOLS: dict[str, Callable[..., dict]] = {
     "pathology_disease_catalog": tool_pathology_disease_catalog,
     "pathology_tasks_for_disease": tool_pathology_tasks_for_disease,
     "feasibility_assess": tool_feasibility_assess,
+    "public_dataset_assess": tool_public_dataset_assess,
     "data_gap_analysis": tool_data_gap_analysis,
     "literature_data_cross_matrix": tool_literature_data_cross_matrix,
     "disease_cohort_stats": tool_disease_cohort_stats,
@@ -370,6 +378,27 @@ FEASIBILITY_TOOL_SCHEMAS: list[dict] = [
                     "hypothesis_id": {"type": "string"},
                 },
                 "required": ["disease_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "public_dataset_assess",
+            "description": (
+                "Assess public-dataset feasibility from the extracted KG (V-03). "
+                "Selects datasets via papers matching the keyword (not dataset name). "
+                "Returns public_coverage_score, status (OK|WEAK|NONE), recommended_public."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "Gap title / focus topic (2–8 terms preferred)",
+                    },
+                },
+                "required": ["keyword"],
             },
         },
     },

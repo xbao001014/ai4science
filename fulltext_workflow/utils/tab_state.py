@@ -7,19 +7,32 @@ import re
 
 
 def normalize_tab_label(label: str) -> str:
+    """Slugify ASCII tab labels (legacy). Prefer explicit slug maps for Chinese UI."""
     slug = re.sub(r"[^a-z0-9]+", "-", label.strip().lower())
     return slug.strip("-")
 
 
-def build_tab_sync_script(tab_labels: list[str], requested_tab: str) -> str:
+def build_tab_sync_script(
+    tab_labels: list[str],
+    requested_tab: str,
+    *,
+    slug_by_label: dict[str, str] | None = None,
+) -> str:
     labels_json = json.dumps(tab_labels, ensure_ascii=False)
     requested_json = json.dumps(requested_tab, ensure_ascii=False)
+    slug_map_json = json.dumps(slug_by_label or {}, ensure_ascii=False)
     return f"""
 <script>
 (() => {{
   const tabLabels = {labels_json};
   const requestedTab = {requested_json};
-  const slugify = (label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const slugByLabel = {slug_map_json};
+  const slugify = (label) => {{
+    if (slugByLabel && Object.prototype.hasOwnProperty.call(slugByLabel, label)) {{
+      return slugByLabel[label];
+    }}
+    return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }};
   const parentDoc = window.parent.document;
   const parentWin = window.parent;
   const queryKey = "main_tab";

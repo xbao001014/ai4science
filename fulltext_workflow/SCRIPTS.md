@@ -58,6 +58,8 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py fetch
 & $py main.py fetch --since-days 14
 & $py main.py watch-fetch                 # 另开终端看 fetch 进度
+& $py main.py backfill-date-precision     # 存量补 date_precision（PubMed 重拉日期）
+& $py main.py backfill-date-precision --limit 200
 & $py main.py enrich-s2
 & $py main.py import-if                   # 默认 data/jcr.csv
 & $py main.py fetch-fulltext
@@ -132,6 +134,10 @@ $py = "..\.venv\Scripts\python.exe"
 & $py scripts/clear_ops_memory.py --focus "breast cancer" --yes
 & $py scripts/clear_ops_memory.py --yes --delete-files   # 同时删引用的 md
 
+# 清空整个 kg_fulltext.db（删文件并重建空表；不动 raw/）
+& $py scripts/clear_database.py           # 预览
+& $py scripts/clear_database.py --yes     # 确认清空
+
 # 补全历史 proposal 的 gap_item_id / status / proposal_path（一次性）
 & $py scripts/backfill_ops_proposals.py
 ```
@@ -143,6 +149,7 @@ $py = "..\.venv\Scripts\python.exe"
 | `fix_pmc_mismatch.py` | 修复 PMC XML 与 PMID/DOI 错配 |
 | `compare_extraction_quality.py` | 抽取质量 baseline 统计 |
 | `clear_ops_memory.py` | 清空周常 ops memory（可按 focus） |
+| `clear_database.py` | 清空整个 `kg_fulltext.db`（需 `--yes`；不动 `raw/`） |
 | `backfill_ops_proposals.py` | 回填 `ops_proposals` 缺失字段 |
 
 ---
@@ -186,6 +193,7 @@ $py = "..\.venv\Scripts\python.exe"
 | `PATHOLOGY_API_KEY` | 方信 landscape / 可行性 |
 | `PATHOLOGY_BOOTSTRAP_MAX_DISEASES` | landscape 最多病种（默认 30） |
 | `OPS_MEMORY_ENABLED` | Gap 周常记忆软去重 |
+| `V03_OK_MIN_PAPERS` | 公开数据集 V-03：无 alias 时达到 OK 的最少相关论文数（默认 3） |
 
 ---
 

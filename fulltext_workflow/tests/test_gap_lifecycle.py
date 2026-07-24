@@ -99,26 +99,53 @@ def _seed_persistent_fixture() -> int:
 
 
 def _seed_declining_fixture() -> None:
+    """Old limitation + a later paper (other limitation) so as_of is recent."""
     paper_old = upsert_paper({
         "pmid": "90000010",
         "title": "Old limitation only",
         "year": 2016,
         "abstract": "Legacy study.",
     })
+    paper_recent = upsert_paper({
+        "pmid": "90000011",
+        "title": "Recent unrelated limitation",
+        "year": 2024,
+        "abstract": "Recent study.",
+    })
     lim_id = upsert_entity("lack of external validation", "Limitation")
+    other_lim = upsert_entity("class imbalance", "Limitation")
     insert_relation(
         "Paper", paper_old, "REPORTS_LIMITATION", "Limitation", lim_id,
         source_pmid="90000010", evidence_section="limitations", polarity="asserted",
     )
+    insert_relation(
+        "Paper", paper_recent, "REPORTS_LIMITATION", "Limitation", other_lim,
+        source_pmid="90000011", evidence_section="limitations", polarity="asserted",
+    )
+
+
+def _seed_emerging_fixture() -> None:
+    paper = upsert_paper({
+        "pmid": "90000020",
+        "title": "Brand new limitation",
+        "year": 2024,
+        "abstract": "Newly proposed limitation.",
+    })
+    lim_id = upsert_entity("lack of multi-center data", "Limitation")
+    insert_relation(
+        "Paper", paper, "REPORTS_LIMITATION", "Limitation", lim_id,
+        source_pmid="90000020", evidence_section="limitations", polarity="asserted",
+    )
 
 
 def test_classify_temporal_status():
-    from analysis.gap_lifecycle import recent_year_cutoff
-
-    cutoff = recent_year_cutoff()
-    assert classify_temporal_status(cutoff, cutoff + 1, 2, 2, 1.0) == "emerging"
-    assert classify_temporal_status(2018, cutoff - 1, 4, 0, 0.0) == "declining"
-    assert classify_temporal_status(2018, cutoff + 1, 4, 2, 0.5) == "persistent"
+    as_of = 2024
+    # proposal_age = 0 <= GAP_EMERGING_MAX_AGE
+    assert classify_temporal_status(2024, 2024, 1, 1, 1.0, as_of_year=as_of) == "emerging"
+    # proposal_age = 6, no recent reports
+    assert classify_temporal_status(2018, 2020, 4, 0, 0.0, as_of_year=as_of) == "declining"
+    # proposal_age = 6, still reported recently with high recent_ratio
+    assert classify_temporal_status(2018, 2024, 4, 2, 0.5, as_of_year=as_of) == "persistent"
 
 
 def test_persistent_limitation_profile():
@@ -129,7 +156,21 @@ def test_persistent_limitation_profile():
     assert row["first_year"] == 2018
     assert row["last_year"] == 2024
     assert row["paper_cnt"] == 2
+    assert row["as_of_year"] == 2024
+    assert row["proposal_age"] == 6
     assert row["temporal_status"] == "persistent"
+
+
+def test_emerging_limitation_profile():
+    _setup_db()
+    _seed_emerging_fixture()
+    profiles = compute_limitation_temporal_profiles()
+    row = next(
+        r for r in profiles if r["limitation_name"] == "lack of multi-center data"
+    )
+    assert row["first_year"] == 2024
+    assert row["proposal_age"] == 0
+    assert row["temporal_status"] == "emerging"
 
 
 def test_resolution_signal_moderate():
@@ -161,6 +202,8 @@ def test_declining_limitation():
     row = next(
         r for r in profiles if r["limitation_name"] == "lack of external validation"
     )
+    assert row["as_of_year"] == 2024
+    assert row["proposal_age"] == 8
     assert row["temporal_status"] == "declining"
     assert row["recent_cnt"] == 0
 
@@ -187,6 +230,7 @@ def test_limitation_gap_status_tool_shape():
 if __name__ == "__main__":
     test_classify_temporal_status()
     test_persistent_limitation_profile()
+    test_emerging_limitation_profile()
     test_resolution_signal_moderate()
     test_exact_followup_count_via_bulk()
     test_declining_limitation()

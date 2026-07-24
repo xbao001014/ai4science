@@ -13,7 +13,13 @@ from typing import Any
 
 import config
 from analysis.feasibility_tools import tool_literature_data_cross_matrix
-from db.schema import db_stats, init_db, save_feasibility_assessment
+from analysis.public_dataset_feasibility import assess_public_datasets
+from db.schema import (
+    db_stats,
+    init_db,
+    save_feasibility_assessment,
+    save_public_dataset_assessment,
+)
 from evolution_agent import evolve_hypothesis
 from feasibility.client import PathologyDataClient
 from feasibility.disease_mapper import map_gap_to_disease
@@ -33,6 +39,7 @@ class GapFeasibilityResult:
     map_reason: str
     hypothesis: HypothesisRequest | None = None
     assessment: dict[str, Any] = field(default_factory=dict)
+    public_dataset_assessment: dict[str, Any] = field(default_factory=dict)
     status: str = "PENDING"
     evolution_log: list[dict[str, Any]] = field(default_factory=list)
     proposal: str = ""
@@ -46,6 +53,23 @@ def ensure_prerequisites() -> dict[str, Any]:
     if stats["extracted"] == 0:
         warnings.append("No extracted relations — run: python main.py extract")
     return {"stats": stats, "warnings": warnings}
+
+
+def _attach_public_dataset_assessment(
+    result: GapFeasibilityResult,
+    gap_title: str,
+    gap_text: str,
+) -> None:
+    keyword = f"{gap_title} {gap_text}".strip()
+    pda = assess_public_datasets(keyword)
+    result.public_dataset_assessment = pda
+    save_public_dataset_assessment(
+        gap_title=gap_title,
+        keyword=keyword,
+        score=float(pda.get("public_coverage_score") or 0),
+        status=str(pda.get("status") or "NONE"),
+        assessment=pda,
+    )
 
 
 def assess_gap_feasibility(
@@ -67,6 +91,7 @@ def assess_gap_feasibility(
 
     if not disease_id:
         result.status = "REJECTED_NO_DISEASE_MAPPING"
+        _attach_public_dataset_assessment(result, gap_title, gap_text or gap_title)
         return result
 
     hypothesis = HypothesisRequest.from_gap(
@@ -100,6 +125,7 @@ def assess_gap_feasibility(
         status=status,
         assessment=assessment,
     )
+    _attach_public_dataset_assessment(result, gap_title, gap_text or gap_title)
     return result
 
 
@@ -185,6 +211,7 @@ def run_idea_pipeline(
                 continue
             feas_ctx = {
                 "feasibility_assessment": fr.assessment,
+                "public_dataset_assessment": fr.public_dataset_assessment,
                 "disease_id": fr.disease_id,
                 "hypothesis": fr.hypothesis.to_api_body() if fr.hypothesis else {},
             }
@@ -281,6 +308,18 @@ def render_pipeline_report(
             f"- **note**: {assess.get('note', '')}",
             "",
         ])
+        pda = fr.public_dataset_assessment or {}
+        if pda:
+            rec = pda.get("recommended_public") or []
+            rec_names = ", ".join(
+                str(r.get("dataset") or "") for r in rec if r.get("dataset")
+            ) or "—"
+            lines.extend([
+                f"- **V-03 public status**: {pda.get('status', 'N/A')}",
+                f"- **public_coverage_score**: {pda.get('public_coverage_score', 'N/A')}",
+                f"- **recommended_public**: {rec_names}",
+                "",
+            ])
         breakdown = assess.get("breakdown")
         if breakdown:
             lines.append("**Breakdown:**")

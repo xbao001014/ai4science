@@ -1,20 +1,17 @@
 """
 fetcher/pmc_fetcher.py
 Resolve PubMed -> PMC links and fetch full text via Europe PMC REST API
-(with Entrez elink as fallback). Parse JATS into document_sections.
+(with NCBI ID Converter as fallback). Parse JATS into document_sections.
 """
 from __future__ import annotations
 
 import os
 import re
-import socket
 import time
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
 from typing import Any
 
 import requests
-from Bio import Entrez
 from tqdm import tqdm
 
 import config
@@ -25,27 +22,15 @@ from db.schema import (
     mark_fulltext_status,
 )
 
-Entrez.email = config.PUBMED_EMAIL
-Entrez.api_key = config.PUBMED_API_KEY or None
-
 _RATE_DELAY = 0.5
 _EPMC_BATCH = 25
-_ELINK_BATCH = 25
+_IDCONV_BATCH = 100
 _EPMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 _EPMC_FULLTEXT = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+_IDCONV_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/"
 _TIMEOUT = 60
-_ENTREZ_TIMEOUT = 90
-
-
-@contextmanager
-def _entrez_timeout(seconds: float):
-    """Biopython Entrez uses urllib without a default socket timeout — can hang forever."""
-    old = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(seconds)
-    try:
-        yield
-    finally:
-        socket.setdefaulttimeout(old)
+_IDCONV_TIMEOUT = 60
+_IDCONV_MAX_CONSECUTIVE_FAILURES = 5
 
 _SECTION_KEYWORDS: list[tuple[str, list[str]]] = [
     ("introduction", ["introduction", "background", "overview"]),
@@ -255,35 +240,77 @@ def _fetch_fulltext_xml(pmcid: str) -> bytes | None:
     return None
 
 
-def _elink_pmid_to_pmc_entrez(pmids: list[str]) -> dict[str, str]:
-    """Fallback: NCBI elink pmid -> PMC numeric id."""
+def _parse_idconv_pmid_to_pmc(payload: dict[str, Any]) -> dict[str, str]:
+    """Parse NCBI ID Converter JSON into pmid -> PMCxxxxxx."""
+    mapping: dict[str, str] = {}
+    for rec in payload.get("records", []) or []:
+        pmid = rec.get("pmid")
+        pmcid = (rec.get("pmcid") or "").strip()
+        if pmid is None or not pmcid:
+            continue
+        if not pmcid.upper().startswith("PMC"):
+            pmcid = f"PMC{pmcid}"
+        mapping[str(pmid)] = pmcid
+    return mapping
+
+
+def _idconv_pmid_to_pmc(pmids: list[str]) -> dict[str, str] | None:
+    """Fallback: NCBI ID Converter pmid -> PMC id.
+
+    Returns mapping (may be empty if none in PMC), or None after hard failures.
+    """
     if not pmids:
         return {}
-    mapping: dict[str, str] = {}
+    params = {
+        "ids": ",".join(str(p) for p in pmids),
+        "format": "json",
+        "tool": "build_kg_paper",
+    }
+    if config.PUBMED_EMAIL:
+        params["email"] = config.PUBMED_EMAIL
+
+    last_err: Exception | None = None
     for attempt in range(3):
         try:
-            with _entrez_timeout(_ENTREZ_TIMEOUT):
-                handle = Entrez.elink(dbfrom="pubmed", db="pmc", id=pmids)
-                records = Entrez.read(handle)
-                handle.close()
-            for record in records:
-                src_ids = record.get("IdList", [])
-                if not src_ids:
-                    continue
-                pmid = str(src_ids[0])
-                for ls in record.get("LinkSetDb", []):
-                    if ls.get("DbTo") == "pmc":
-                        for link in ls.get("Link", []):
-                            numeric = str(link.get("Id", ""))
-                            if numeric:
-                                mapping[pmid] = f"PMC{numeric}"
-                            break
-            return mapping
+            resp = requests.get(_IDCONV_URL, params=params, timeout=_IDCONV_TIMEOUT)
+            resp.raise_for_status()
+            return _parse_idconv_pmid_to_pmc(resp.json())
         except Exception as e:
+            last_err = e
             if attempt < 2:
-                time.sleep(3 * (attempt + 1))
-            else:
-                print(f"  [WARN] Entrez elink fallback failed: {e}")
+                time.sleep(2 * (attempt + 1))
+    print(f"  [WARN] NCBI ID Converter fallback failed: {last_err}")
+    return None
+
+
+def _resolve_missing_pmcids(missing: list[str]) -> dict[str, str]:
+    """Resolve PMIDs that Europe PMC missed; abort after consecutive API failures."""
+    mapping: dict[str, str] = {}
+    if not missing:
+        return mapping
+    batches = list(range(0, len(missing), _IDCONV_BATCH))
+    print(
+        f"[PMC/JATS] NCBI ID Converter fallback for {len(missing)} papers "
+        f"({len(batches)} batches)…",
+        flush=True,
+    )
+    consecutive_failures = 0
+    for i in tqdm(batches, desc="  NCBI idconv", unit="batch"):
+        batch = missing[i : i + _IDCONV_BATCH]
+        batch_map = _idconv_pmid_to_pmc(batch)
+        if batch_map is None:
+            consecutive_failures += 1
+            if consecutive_failures >= _IDCONV_MAX_CONSECUTIVE_FAILURES:
+                print(
+                    f"  [WARN] ID Converter failed {_IDCONV_MAX_CONSECUTIVE_FAILURES} "
+                    f"batches in a row — skipping remaining fallback.",
+                    flush=True,
+                )
+                break
+        else:
+            consecutive_failures = 0
+            mapping.update(batch_map)
+        time.sleep(_RATE_DELAY)
     return mapping
 
 
@@ -352,16 +379,7 @@ def fetch_jats_fulltext(cache_xml: bool = True) -> None:
 
     missing = [p for p in all_pmids if p not in pmid_to_pmcid]
     if missing:
-        elink_batches = range(0, len(missing), _ELINK_BATCH)
-        print(
-            f"[PMC/JATS] Entrez elink fallback for {len(missing)} papers "
-            f"({len(elink_batches)} batches, timeout={_ENTREZ_TIMEOUT}s)…",
-            flush=True,
-        )
-        for i in tqdm(elink_batches, desc="  Entrez elink", unit="batch"):
-            batch = missing[i : i + _ELINK_BATCH]
-            pmid_to_pmcid.update(_elink_pmid_to_pmc_entrez(batch))
-            time.sleep(_RATE_DELAY)
+        pmid_to_pmcid.update(_resolve_missing_pmcids(missing))
 
     print(f"[PMC] {len(pmid_to_pmcid)} / {len(all_pmids)} papers linked to PMC.")
 

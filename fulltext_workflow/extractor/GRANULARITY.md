@@ -12,10 +12,12 @@
 
 | 层 | 位置 | 作用 |
 |----|------|------|
-| Prompt 政策 | `section_extractor._BASE_SYSTEM` / `_SECTION_HINTS` | 引导 LLM 直接产出正确粒度 |
-| 后处理 | `entity_normalize.postprocess_triples` | 兜底过滤漏网的伞词、训练套路、过粗 Disease、放射影像 Modality |
+| Prompt 政策 | `section_extractor._BASE_SYSTEM` / `_SECTION_HINTS` | 引导 LLM 直接产出正确粒度与**本文研究内容** |
+| 后处理 | `entity_normalize.postprocess_triples` | 兜底过滤漏网的伞词、训练套路、过粗 Disease、放射影像 Modality；Method 贡献/对比冲突消解 |
 
 **原则**：prompt 定意图；名单/规则可维护、可单测。发现线上噪音时，优先补后处理名单，必要时再改 prompt 正反例。
+
+**研究内容优先（Study-content）**：Paper→X 只保留本文队列、任务、提出/采用方法、实验对比方法、所用模态/数据集、报告指标与作者自述局限；related work / 背景举例不抽。
 
 语料与检索侧（`search_queries.py`）已聚焦病理 AI；`pathomics_radiomics` 默认关闭。粒度政策应与此一致，不鼓励 CT/MRI radiomics 方向。
 
@@ -43,11 +45,21 @@
 | `_GENERIC_METHODS` | 伞词；若同批已有更具体 Method 则丢弃；若仅有伞词则保留但 `confidence≤0.5` | 新伞词反复出现时追加 |
 | `_LOW_VALUE_METHODS` | 精确匹配；**一律丢弃**（即使是唯一 Method） | 新训练/工程噪音精确名 |
 | `_LOW_VALUE_METHOD_PATTERNS` | 正则匹配；一律丢弃 | 变体拼写（如 `early-stop`、`lr schedule`） |
-| `_NO_APPLIES_METHOD_SECTIONS` | `discussion` / `future_work` / `introduction` 禁止 `APPLIES_METHOD` | 一般不改 |
+| `_NO_PAPER_METHOD_SECTIONS` | `discussion` / `future_work` / `introduction` 禁止 `APPLIES_METHOD` 与 `COMPARES_METHOD` | 一般不改 |
+| 贡献优先于对比 | 同名 Method 同时有两列时保留 `APPLIES_METHOD`、丢弃 `COMPARES_METHOD` | 一般不改 |
 
 相关函数：`is_generic_method`、`is_low_value_method`。
 
-### 2.3 Prompt 同步
+### 2.3 Method 两列
+
+| Relation | 含义 |
+|----------|------|
+| `APPLIES_METHOD` | 本文提出或采用的核心方法 |
+| `COMPARES_METHOD` | 本文实验中明确对比的 baseline |
+
+仅引用、未参与本文实验的方法：两列都不保留。`repair_triple_relation` 在 object 为 Method 时默认映射到 `APPLIES_METHOD`，**不会**自动发明 `COMPARES_METHOD`。
+
+### 2.4 Prompt 同步
 
 改名单后，检查 `section_extractor` 中 Method 政策与 Examples 是否仍一致（尤其 BAD 例是否覆盖新噪音）。
 
@@ -143,6 +155,7 @@
 | Relation | 期望 object.type |
 |----------|------------------|
 | `APPLIES_METHOD` | Method |
+| `COMPARES_METHOD` | Method |
 | `PERFORMS_TASK` | Task |
 | `TARGETS_DISEASE` | Disease |
 | `OPERATES_ON` | Tissue |
@@ -173,7 +186,28 @@
 
 ---
 
-## 7. 维护工作流（推荐）
+## 7. Dataset：公开 / 私有（access_class）
+
+关系仍为 `USES_DATASET`。实体列 `entities.access_class` ∈ `public|private|unknown`。
+
+| 来源 | 行为 |
+|------|------|
+| `PUBLIC_DATASET_ALIASES`（`extractor/dataset_access.py`） | 命中 → **强制 public** |
+| 私有线索（in-house / institutional / our hospital…） | → private（未命中公开名单时） |
+| LLM `access_hint` | 名单未命中时采用 |
+| 默认 | unknown |
+
+冲突升级：`public` > `private` > `unknown`（`upsert_entity` 合并）。
+
+Proposal：方信为主队列；公开数据集可作预训练/外验/对比，正文必须标注 `public dataset: <name>`；方信可行时不得仅用公开数据替代。
+
+下游消费：**V-03**（`analysis/public_dataset_feasibility.py` / 工具 `public_dataset_assess`）按 focus 相关论文选出 `access_class=public` 的数据集，供 idea-pipeline / gap_ui / Research Proposal 并行参考（不并入方信 `feasibility_score`）。
+
+维护：新基准数据集追加到 `PUBLIC_DATASET_ALIASES`，并补 `tests/test_dataset_access.py`。
+
+---
+
+## 8. 维护工作流（推荐）
 
 1. **复现噪音**：从 `relations` 找出不良实体名，或 `relation`/`object_type` 不一致行。
 2. **先改后处理**：追加名单 / 关系修复规则；在 `tests/test_entity_normalize.py` 增加用例。
@@ -189,21 +223,25 @@ cd fulltext_workflow
 
 ---
 
-## 8. 相关文件索引
+## 9. 相关文件索引
 
 | 文件 | 内容 |
 |------|------|
-| `extractor/section_extractor.py` | Method / Disease / Modality / Relation prompt |
+| `extractor/section_extractor.py` | Method / Disease / Modality / Relation / Dataset prompt |
 | `extractor/entity_normalize.py` | 粒度后处理 + `repair_triple_relation` |
+| `extractor/dataset_access.py` | Dataset `access_class` 公开名单与解析 |
+| `analysis/public_dataset_feasibility.py` | V-03 公开数据集可行性（消费 access_class） |
 | `extractor/study_classifier.py` | 研究类型分类 prompt |
 | `tests/test_entity_normalize.py` | 粒度与关系修复单测 |
+| `tests/test_dataset_access.py` | Dataset 公开/私有解析单测 |
+| `tests/test_public_dataset_feasibility.py` | V-03 状态与论文中介选集 |
 | `../search_queries.py` | PubMed 检索主题（病理 AI，14 组启用） |
 | `scripts/bootstrap_raw_sample.py` | 从 `raw/` 装载样本并抽取 |
 | `scripts/reset_extraction.py` | 重置已抽取结果以便重抽 |
 
 ---
 
-## 9. 变更记录（摘要）
+## 10. 变更记录（摘要）
 
 | 日期 | 变更 |
 |------|------|
@@ -212,3 +250,4 @@ cd fulltext_workflow
 | 2026-07-18 | 检索与 agent 措辞对齐病理 AI；`pathomics_radiomics` 默认关闭 |
 | 2026-07-18 | Modality：仅病理模态；放射影像黑名单 + 别名规范化 |
 | 2026-07-18 | Relation 误用修复：prompt 对照表 + `repair_triple_relation` |
+| 2026-07-19 | Dataset `access_class`：公开名单优先；proposal 方信优先 + 公开数据须标注 |

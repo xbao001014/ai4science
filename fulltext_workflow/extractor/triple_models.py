@@ -15,6 +15,7 @@ _ENTITY_TYPES = frozenset(
 
 RelationLiteral = Literal[
     "APPLIES_METHOD",
+    "COMPARES_METHOD",
     "TARGETS_DISEASE",
     "OPERATES_ON",
     "PERFORMS_TASK",
@@ -42,6 +43,8 @@ class Triple(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence_quote: Optional[str] = Field(default=None, max_length=300)
     polarity: Literal["asserted", "hypothesized"] = "asserted"
+    # Dataset-only hint from LLM; resolved to entities.access_class at ingest.
+    access_hint: Optional[Literal["public", "private", "unknown"]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -50,6 +53,7 @@ class Triple(BaseModel):
 
         - subject.type \"Paper\" (or unknown): coerced — Paper→X ingest ignores subject
         - metric_value as number: coerced to string
+        - access_hint case-normalized
         """
         if not isinstance(data, dict):
             return data
@@ -67,6 +71,10 @@ class Triple(BaseModel):
         mv = out.get("metric_value")
         if mv is not None and not isinstance(mv, str):
             out["metric_value"] = str(mv)
+        hint = out.get("access_hint")
+        if isinstance(hint, str):
+            h = hint.strip().lower()
+            out["access_hint"] = h if h in ("public", "private", "unknown") else None
         return out
 
 

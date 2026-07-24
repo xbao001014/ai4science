@@ -192,6 +192,10 @@ def persist_proposal(
     feasibility_score: float | None = None,
     critic_score: float | None = None,
     status: str = "",
+    target_difficulty: str | None = None,
+    assessed_difficulty: str | None = None,
+    difficulty_delta: int | None = None,
+    difficulty_breakdown_json: str | None = None,
     write_file: bool = True,
 ) -> int:
     """Persist a research proposal linked to an ops run / gap item.
@@ -229,6 +233,10 @@ def persist_proposal(
         feasibility_score=feasibility_score,
         critic_score=critic_score,
         status=status or "generated",
+        target_difficulty=target_difficulty,
+        assessed_difficulty=assessed_difficulty,
+        difficulty_delta=difficulty_delta,
+        difficulty_breakdown_json=difficulty_breakdown_json,
     )
     if path:
         update_ops_run_proposal_path(run_id, path)

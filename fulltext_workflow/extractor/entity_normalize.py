@@ -278,11 +278,17 @@ _MODALITY_ALIASES: dict[str, str] = {
     "spatial omics": "spatial transcriptomics",
 }
 
-_NO_APPLIES_METHOD_SECTIONS = frozenset({"discussion", "future_work", "introduction"})
+# Sections where Paper→Method contribution/baseline edges are unreliable (background).
+_NO_PAPER_METHOD_SECTIONS = frozenset({"discussion", "future_work", "introduction"})
+# Back-compat alias
+_NO_APPLIES_METHOD_SECTIONS = _NO_PAPER_METHOD_SECTIONS
+
+_PAPER_METHOD_RELATIONS = frozenset({"APPLIES_METHOD", "COMPARES_METHOD"})
 
 # Paper→X relations: object type must match. Mismatches are repaired by remapping relation.
 _RELATION_EXPECTED_OBJECT: dict[str, str] = {
     "APPLIES_METHOD": "Method",
+    "COMPARES_METHOD": "Method",
     "TARGETS_DISEASE": "Disease",
     "OPERATES_ON": "Tissue",
     "PERFORMS_TASK": "Task",
@@ -471,7 +477,7 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
     specific_methods = {
         _norm_key(t.object.name)
         for t in normalized
-        if t.relation == "APPLIES_METHOD"
+        if t.relation in _PAPER_METHOD_RELATIONS
         and t.object.type == "Method"
         and not is_generic_method(t.object.name)
         and not is_low_value_method(t.object.name)
@@ -481,8 +487,8 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
     out: list[Triple] = []
     for triple in normalized:
         if (
-            triple.relation == "APPLIES_METHOD"
-            and section_type in _NO_APPLIES_METHOD_SECTIONS
+            triple.relation in _PAPER_METHOD_RELATIONS
+            and section_type in _NO_PAPER_METHOD_SECTIONS
         ):
             continue
 
@@ -497,7 +503,7 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
                 continue
 
         if obj_type == "Method" and is_low_value_method(obj_name):
-            if triple.relation in ("APPLIES_METHOD", "RELATED_TO"):
+            if triple.relation in ("APPLIES_METHOD", "COMPARES_METHOD", "RELATED_TO"):
                 continue
 
         if obj_type == "Disease" and should_drop_disease(obj_name, disease_cohort):
@@ -511,7 +517,7 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
             continue
 
         if (
-            triple.relation == "APPLIES_METHOD"
+            triple.relation in _PAPER_METHOD_RELATIONS
             and obj_type == "Method"
             and specific_methods
             and is_generic_method(obj_name)
@@ -519,9 +525,29 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
             continue
 
         confidence = triple.confidence
-        if triple.relation == "APPLIES_METHOD" and obj_type == "Method":
-            if is_generic_method(obj_name):
-                confidence = min(confidence, 0.5)
+        if (
+            triple.relation in _PAPER_METHOD_RELATIONS
+            and obj_type == "Method"
+            and is_generic_method(obj_name)
+        ):
+            confidence = min(confidence, 0.5)
 
         out.append(triple.model_copy(update={"confidence": confidence}))
+
+    # Same Method as both contribution and baseline → keep contribution only.
+    applies_names = {
+        _norm_key(t.object.name)
+        for t in out
+        if t.relation == "APPLIES_METHOD" and t.object.type == "Method"
+    }
+    if applies_names:
+        out = [
+            t
+            for t in out
+            if not (
+                t.relation == "COMPARES_METHOD"
+                and t.object.type == "Method"
+                and _norm_key(t.object.name) in applies_names
+            )
+        ]
     return out

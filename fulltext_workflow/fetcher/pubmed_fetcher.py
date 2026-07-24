@@ -65,22 +65,82 @@ def _search_pmids(query: str, max_results: int, since_days: int | None = None) -
     return list(record.get("IdList", []))
 
 
-def _parse_date(article: ET.Element) -> tuple[str, int]:
+_MONTH_MAP = {
+    "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
+    "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
+    "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+}
+_SEASON_MONTH = {
+    "Spring": "03", "Summer": "06", "Fall": "09", "Autumn": "09", "Winter": "12",
+}
+
+
+def _normalize_month(raw: str) -> str | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if raw in _MONTH_MAP:
+        return _MONTH_MAP[raw]
+    if raw.isdigit() and 1 <= int(raw) <= 12:
+        return raw.zfill(2)
+    # Ranges like "Jan-Feb" → first month
+    for sep in ("-", "/", " "):
+        if sep in raw:
+            return _normalize_month(raw.split(sep, 1)[0])
+    return None
+
+
+def _parse_medline_date(text: str) -> tuple[str, int, str]:
+    """Best-effort parse of MedlineDate (e.g. '2020 Spring', '2019 Nov-Dec')."""
+    text = (text or "").strip()
+    if not text:
+        return "", 0, "unknown"
+    year_s = text[:4] if len(text) >= 4 and text[:4].isdigit() else ""
+    if not year_s:
+        return "", 0, "unknown"
+    year = int(year_s)
+    rest = text[4:].strip()
+    if not rest:
+        return f"{year_s}-01-01", year, "year"
+    for season, month in _SEASON_MONTH.items():
+        if season.lower() in rest.lower():
+            return f"{year_s}-{month}-01", year, "month"
+    month = _normalize_month(rest.split()[0] if rest else "")
+    if month:
+        return f"{year_s}-{month}-01", year, "month"
+    return f"{year_s}-01-01", year, "unknown"
+
+
+def _parse_date(article: ET.Element) -> tuple[str, int, str]:
+    """Return (pub_date ISO, year, date_precision: day|month|year|unknown)."""
     pub_date_el = article.find(".//PubDate")
     if pub_date_el is None:
-        return "", 0
-    year = pub_date_el.findtext("Year", "")
-    month = pub_date_el.findtext("Month", "01")
-    day = pub_date_el.findtext("Day", "01")
-    month_map = {
-        "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
-        "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
-        "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
-    }
-    month_num = month_map.get(month, month.zfill(2) if month.isdigit() else "01")
-    day_num = day.zfill(2) if day.isdigit() else "01"
-    iso_date = f"{year}-{month_num}-{day_num}" if year else ""
-    return iso_date, int(year) if year.isdigit() else 0
+        return "", 0, "unknown"
+
+    year_el = pub_date_el.find("Year")
+    month_el = pub_date_el.find("Month")
+    day_el = pub_date_el.find("Day")
+    medline_el = pub_date_el.find("MedlineDate")
+
+    if year_el is None or not (year_el.text or "").strip().isdigit():
+        if medline_el is not None and (medline_el.text or "").strip():
+            return _parse_medline_date(medline_el.text or "")
+        return "", 0, "unknown"
+
+    year_s = year_el.text.strip()
+    year = int(year_s)
+    has_month = month_el is not None and bool((month_el.text or "").strip())
+    has_day = day_el is not None and bool((day_el.text or "").strip())
+
+    month_num = _normalize_month(month_el.text if has_month else "") or "01"
+    day_raw = (day_el.text or "").strip() if has_day else ""
+    day_num = day_raw.zfill(2) if day_raw.isdigit() else "01"
+
+    if has_month and has_day and day_raw.isdigit():
+        return f"{year_s}-{month_num}-{day_num}", year, "day"
+    if has_month:
+        return f"{year_s}-{month_num}-01", year, "month"
+    return f"{year_s}-01-01", year, "year"
 
 
 def _parse_single_article(
@@ -106,9 +166,10 @@ def _parse_single_article(
             abstract_texts.append(text)
     data["abstract"] = " ".join(abstract_texts).strip()
 
-    pub_date_str, year_int = _parse_date(article)
+    pub_date_str, year_int, date_precision = _parse_date(article)
     data["pub_date"] = pub_date_str
     data["year"] = year_int
+    data["date_precision"] = date_precision
 
     journal_el = article.find("Journal")
     if journal_el is not None:
@@ -250,3 +311,61 @@ def fetch_all_queries(resume: bool = True, since_days: int | None = None) -> Non
             time.sleep(_RATE_DELAY)
 
     print("\n[PubMed] Fetch complete.")
+
+
+def backfill_date_precision(*, limit: int | None = None) -> dict[str, int]:
+    """Re-fetch PubMed XML for papers missing date_precision; update date triple."""
+    with get_conn() as conn:
+        sql = """
+            SELECT pmid FROM papers
+            WHERE pmid IS NOT NULL AND pmid != ''
+              AND (date_precision IS NULL OR date_precision = '')
+            ORDER BY id
+        """
+        if limit and limit > 0:
+            sql += f" LIMIT {int(limit)}"
+        pmids = [r["pmid"] for r in conn.execute(sql).fetchall()]
+
+    total = len(pmids)
+    updated = 0
+    failed = 0
+    print(f"[DatePrecision] {total} papers need backfill.")
+    if not pmids:
+        return {"pending": 0, "updated": 0, "failed": 0}
+
+    batches = [pmids[i : i + _BATCH_SIZE] for i in range(0, total, _BATCH_SIZE)]
+    for batch in tqdm(batches, desc="  Backfill date_precision", unit="batch"):
+        try:
+            articles = _fetch_batch(batch)
+        except Exception as e:
+            print(f"\n  [ERROR] Batch failed: {e}. Retrying after 5s...")
+            time.sleep(5)
+            try:
+                articles = _fetch_batch(batch)
+            except Exception as e2:
+                print(f"  [ERROR] Retry failed: {e2}.")
+                failed += len(batch)
+                continue
+
+        by_pmid = {a.get("pmid"): a for a in articles if a.get("pmid")}
+        for pmid in batch:
+            art = by_pmid.get(pmid)
+            if not art or not art.get("date_precision"):
+                failed += 1
+                continue
+            upsert_paper(
+                {
+                    "pmid": pmid,
+                    "title": art.get("title") or "",
+                    "abstract": art.get("abstract") or "",
+                    "pub_date": art.get("pub_date"),
+                    "year": art.get("year"),
+                    "date_precision": art.get("date_precision"),
+                    "pmc_id": art.get("pmc_id"),
+                }
+            )
+            updated += 1
+        time.sleep(_RATE_DELAY)
+
+    print(f"[DatePrecision] updated={updated}, failed/skipped={failed}")
+    return {"pending": total, "updated": updated, "failed": failed}

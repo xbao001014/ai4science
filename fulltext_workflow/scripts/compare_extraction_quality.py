@@ -33,8 +33,13 @@ def _top_entities(entity_type: str, relation: str, limit: int = 20) -> list[tupl
 
 
 def print_db_baseline() -> None:
-    print("=== DB baseline: top Methods (APPLIES_METHOD) ===")
+    print("=== DB: top Methods (APPLIES_METHOD = contribution) ===")
     for name, cnt in _top_entities("Method", "APPLIES_METHOD"):
+        tag = " [generic]" if is_generic_method(name) else ""
+        print(f"  {cnt:4d}  {name}{tag}")
+
+    print("\n=== DB: top Methods (COMPARES_METHOD = baselines) ===")
+    for name, cnt in _top_entities("Method", "COMPARES_METHOD"):
         tag = " [generic]" if is_generic_method(name) else ""
         print(f"  {cnt:4d}  {name}{tag}")
 
@@ -46,7 +51,7 @@ def print_db_baseline() -> None:
         cnt for name, cnt in _top_entities("Method", "APPLIES_METHOD", limit=500)
         if is_generic_method(name)
     )
-    print(f"\nGeneric methods in top-500: {generic_total} relations")
+    print(f"\nGeneric methods in APPLIES_METHOD top-500: {generic_total} relations")
 
 
 def _sample_papers(limit: int) -> list[dict]:
@@ -94,6 +99,7 @@ def live_reextract(pmid: str | None, limit: int, section_types: set[str]) -> Non
             continue
 
         method_names: Counter[str] = Counter()
+        compares_names: Counter[str] = Counter()
         limitation_names: Counter[str] = Counter()
         for sec in jobs:
             triples = _extract_from_text(
@@ -105,10 +111,13 @@ def live_reextract(pmid: str | None, limit: int, section_types: set[str]) -> Non
             for t in triples:
                 if t.object.type == "Method" and t.relation == "APPLIES_METHOD":
                     method_names[t.object.name] += 1
+                if t.object.type == "Method" and t.relation == "COMPARES_METHOD":
+                    compares_names[t.object.name] += 1
                 if t.object.type == "Limitation" and t.relation == "REPORTS_LIMITATION":
                     limitation_names[t.object.name] += 1
 
-        print("  Methods:", ", ".join(method_names) or "(none)")
+        print("  APPLIES_METHOD:", ", ".join(method_names) or "(none)")
+        print("  COMPARES_METHOD:", ", ".join(compares_names) or "(none)")
         print("  Limitations:", ", ".join(limitation_names) or "(none)")
 
 

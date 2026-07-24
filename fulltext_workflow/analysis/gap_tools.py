@@ -286,8 +286,10 @@ def tool_limitation_temporal_profile(focus: str | None = None) -> dict:
             : config.TOOL_TOP_N
         ]
     desc = (
-        "Limitation temporal profile: first/last year, recent_ratio, temporal_status "
-        "(persistent/emerging/declining/stable)"
+        "Limitation temporal profile: first/last year, proposal_age "
+        "(as_of_year - first_year), recent_ratio, temporal_status "
+        "(persistent/emerging/declining/stable). "
+        "Status uses corpus as_of_year + proposal age, not SEARCH_YEAR_*."
     )
     if focus:
         desc += f" (focus: {focus})"
@@ -541,8 +543,9 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "limitation_temporal_profile",
             "description": (
-                "Limitation temporal profile with first_year, last_year, recent_ratio, "
-                "temporal_status (persistent/emerging/declining/stable), impact_tier."
+                "Limitation temporal profile with first_year, last_year, proposal_age, "
+                "recent_ratio, temporal_status (persistent/emerging/declining/stable "
+                "by corpus as_of + proposal age, not SEARCH_YEAR), impact_tier."
             ),
             "parameters": {
                 "type": "object",

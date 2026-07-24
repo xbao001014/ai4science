@@ -79,7 +79,7 @@ Debate Process · Weekly Hotspot · Visualization · Evidence & Literature · Ga
 | `graph/` + `viz/` | NetworkX / Pyvis |
 | `analysis/gap_tools.py` | SQL Gap + impact 加权 |
 | `analysis/gap_lifecycle.py` | limitation 时间画像 |
-| `analysis/weekly_hotspot.py` | 周入库热点 + WoW |
+| `analysis/weekly_hotspot.py` | 周发表热点 + WoW |
 | `analysis/ops_memory.py` | 周常辩论记忆软去重 |
 | `gap_agent.py` | Opportunity Scout × Evidence Reviewer × Final Synthesizer |
 | `idea_agent.py` + `pipeline.py` | 可行性门控 + 方案生成 |

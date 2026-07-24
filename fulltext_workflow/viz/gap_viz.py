@@ -107,11 +107,11 @@ def build_debate_funnel_figure(stats: dict[str, int]) -> Any:
         return None
 
     stages = [
-        ("Opportunity Scout", stats.get("scout_candidates", 0), "#2ca02c"),
-        ("Verified", stats.get("verified", 0), "#1f77b4"),
-        ("Weak evidence", stats.get("weak_evidence", 0), "#ff7f0e"),
-        ("False gaps", stats.get("false_gaps", 0), "#d62728"),
-        ("Final report", stats.get("final_gaps", 0), "#9467bd"),
+        ("机会侦察", stats.get("scout_candidates", 0), "#2ca02c"),
+        ("已核实", stats.get("verified", 0), "#1f77b4"),
+        ("弱证据", stats.get("weak_evidence", 0), "#ff7f0e"),
+        ("伪空白", stats.get("false_gaps", 0), "#d62728"),
+        ("最终报告", stats.get("final_gaps", 0), "#9467bd"),
     ]
     labels = [s[0] for s in stages]
     values = [s[1] for s in stages]
@@ -128,8 +128,8 @@ def build_debate_funnel_figure(stats: dict[str, int]) -> Any:
         )
     )
     fig.update_layout(
-        title="Gap Debate Funnel",
-        xaxis_title="Count",
+        title="空白辩论漏斗",
+        xaxis_title="数量",
         yaxis=dict(autorange="reversed"),
         height=320,
         margin=dict(l=120, r=40, t=50, b=40),
@@ -189,19 +189,19 @@ def build_method_disease_heatmap(
                 [0.35, "#ffbb78"],
                 [1.0, "#98df8a"],
             ],
-            colorbar=dict(title="Papers"),
+            colorbar=dict(title="论文数"),
             hovertemplate=(
                 "Method: %{y}<br>Disease: %{x}<br>Papers: %{z}<extra></extra>"
             ),
         )
     )
-    title = "Method × Disease Literature Coverage"
+    title = "方法 × 疾病文献覆盖"
     if focus:
-        title += f" (focus: {focus})"
+        title += f"（焦点：{focus}）"
     fig.update_layout(
         title=title,
-        xaxis_title="Disease",
-        yaxis_title="Method",
+        xaxis_title="疾病",
+        yaxis_title="方法",
         height=max(360, 28 * len(pivot.index) + 120),
         margin=dict(l=140, r=40, t=60, b=120),
         xaxis=dict(tickangle=-35),
@@ -251,12 +251,12 @@ def build_lit_data_scatter(rows: list[dict]) -> Any:
             "unknown": "#9e9e9e",
         },
         labels={
-            "cohort_size": "Fangxin cohort size",
-            "literature_paper_cnt": "Literature papers (lower = larger gap)",
-            "data_support": "Data support",
-            "cross_priority_score": "Priority score",
+            "cohort_size": "方信队列规模",
+            "literature_paper_cnt": "文献论文数（越低空白越大）",
+            "data_support": "数据支撑",
+            "cross_priority_score": "优先级得分",
         },
-        title="Literature Gap × Data Support (priority = bubble size)",
+        title="文献空白 × 数据支撑（气泡大小 = 优先级）",
     )
 
     if len(df) >= 2:
@@ -284,7 +284,7 @@ def tool_category_stats(
             continue
         name = ev.get("name", "")
         meta = tool_meta.get(name, {})
-        category = meta.get("category", "Other")
+        category = meta.get("category", "其他")
         label = meta.get("label", name)
         n = _record_count(ev.get("result", {}))
         if n <= 0:
@@ -316,7 +316,7 @@ def build_tool_treemap(
         values="records",
         color="category",
         color_discrete_map=color_map,
-        title="Evidence Retrieved by Tool (debate session)",
+        title="辩论会话中各工具检索到的证据",
     )
     fig.update_layout(height=400, margin=dict(l=10, r=10, t=50, b=10))
     fig.update_traces(textinfo="label+value")
@@ -335,7 +335,7 @@ def build_subtype_bar(distribution: list[dict], *, top_n: int = 8) -> Any:
     if not rows:
         return None
     df = pd.DataFrame(rows)
-    fig = px.bar(df, x="count", y="label", orientation="h", title="Subtype distribution (top)")
+    fig = px.bar(df, x="count", y="label", orientation="h", title="亚型分布（Top）")
     fig.update_layout(height=max(280, 28 * len(rows) + 80), yaxis=dict(autorange="reversed"), margin=dict(l=120, r=20, t=50, b=40))
     return fig
 
@@ -352,7 +352,7 @@ def build_molecular_bar(positivity: list[dict], *, top_n: int = 8) -> Any:
     if not rows:
         return None
     df = pd.DataFrame(rows)
-    fig = px.bar(df, x="value", y="label", orientation="h", title="Molecular positivity (top)")
+    fig = px.bar(df, x="value", y="label", orientation="h", title="分子阳性率（Top）")
     fig.update_layout(height=max(280, 28 * len(rows) + 80), yaxis=dict(autorange="reversed"), margin=dict(l=120, r=20, t=50, b=40))
     return fig
 

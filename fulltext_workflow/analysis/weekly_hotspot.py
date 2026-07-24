@@ -1,4 +1,4 @@
-"""Weekly research hotspot detection from incrementally ingested papers."""
+"""Weekly research hotspot detection from recent publication dates."""
 from __future__ import annotations
 
 import json
@@ -16,6 +16,9 @@ from db.schema import (
     replace_weekly_hotspot_snapshots,
     upsert_weekly_hotspot_run,
 )
+
+# Main boards require at least month-level PubMed dates (折中).
+_ELIGIBLE_PRECISION = ("day", "month")
 
 
 def _q(sql: str, params: tuple = ()) -> list[dict]:
@@ -63,16 +66,45 @@ def _window_params(window_days: int, prior_days: int) -> tuple[str, str, str]:
     return recent_start, prior_start, recent_start
 
 
-def count_ingested_papers(window_days: int) -> int:
+def _eligible_pub_predicate(alias: str = "p") -> str:
+    """SQL fragment: paper has usable pub_date for weekly windows."""
+    return (
+        f"{alias}.date_precision IN ('day', 'month') "
+        f"AND {alias}.pub_date IS NOT NULL AND trim({alias}.pub_date) != ''"
+    )
+
+
+def count_window_papers(window_days: int) -> int:
+    """Count papers with eligible pub_date in the recent publication window."""
     recent_start, _, _ = _window_params(window_days, 0)
     row = _q(
-        """
-        SELECT COUNT(*) AS n FROM papers
-        WHERE created_at >= datetime('now', ?)
+        f"""
+        SELECT COUNT(*) AS n FROM papers p
+        WHERE {_eligible_pub_predicate('p')}
+          AND date(p.pub_date) >= date('now', ?)
         """,
         (recent_start,),
     )
     return int(row[0]["n"]) if row else 0
+
+
+def count_excluded_low_precision(window_days: int) -> int:
+    """Papers whose pub_date falls in-window but precision is year/unknown."""
+    recent_start, _, _ = _window_params(window_days, 0)
+    row = _q(
+        """
+        SELECT COUNT(*) AS n FROM papers p
+        WHERE p.pub_date IS NOT NULL AND trim(p.pub_date) != ''
+          AND date(p.pub_date) >= date('now', ?)
+          AND COALESCE(p.date_precision, '') NOT IN ('day', 'month')
+        """,
+        (recent_start,),
+    )
+    return int(row[0]["n"] if row else 0)
+
+
+# Backward-compatible alias (old name meant ingest count).
+count_ingested_papers = count_window_papers
 
 
 def _enrich_entity_rows(rows: list[dict]) -> list[dict]:
@@ -96,7 +128,7 @@ def compute_emerging_entities(
     min_recent: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Entities ranked by velocity in the recent ingest window."""
+    """Entities ranked by velocity in the recent publication window."""
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
     min_r = min_recent if min_recent is not None else config.HOTSPOT_MIN_RECENT_PAPERS
@@ -107,16 +139,20 @@ def compute_emerging_entities(
     relation_filter = (
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )
+    eligible = _eligible_pub_predicate("p")
 
     rows = _q(
         f"""
         WITH recent_pmids AS (
-            SELECT pmid FROM papers WHERE created_at >= datetime('now', ?)
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
-            SELECT pmid FROM papers
-            WHERE created_at >= datetime('now', ?)
-              AND created_at < datetime('now', ?)
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
+              AND date(p.pub_date) < date('now', ?)
         )
         SELECT e.name,
                e.type,
@@ -162,6 +198,7 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
     relation_filter = (
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )
+    eligible = _eligible_pub_predicate("p")
     rows = _q(
         f"""
         SELECT DISTINCT p.pmid
@@ -170,7 +207,8 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
         JOIN entities e ON r.object_id = e.id
         WHERE e.name = ? AND e.type = ?
           {relation_filter}
-          AND p.created_at >= datetime('now', ?)
+          AND {eligible}
+          AND date(p.pub_date) >= date('now', ?)
         ORDER BY COALESCE(p.citation_count, 0) DESC, p.year DESC
         LIMIT 3
         """,
@@ -185,21 +223,25 @@ def compute_hot_combos(
     prior_days: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Method×disease pairs active in the recent ingest window."""
+    """Method×disease pairs active in the recent publication window."""
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, prior_start, prior_end = _window_params(window, prior)
+    eligible = _eligible_pub_predicate("p")
 
     rows = _q(
-        """
+        f"""
         WITH recent_pmids AS (
-            SELECT pmid FROM papers WHERE created_at >= datetime('now', ?)
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
-            SELECT pmid FROM papers
-            WHERE created_at >= datetime('now', ?)
-              AND created_at < datetime('now', ?)
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
+              AND date(p.pub_date) < date('now', ?)
         ),
         combo AS (
             SELECT em.name AS method,
@@ -259,13 +301,14 @@ def compute_emerging_limitations(
     window_days: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Limitations newly reported in the recent ingest window."""
+    """Limitations newly reported in the recent publication window."""
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, _, _ = _window_params(window, 0)
+    eligible = _eligible_pub_predicate("p")
 
     rows = _q(
-        """
+        f"""
         SELECT e.name AS limitation,
                COUNT(DISTINCT r.source_pmid) AS recent_cnt,
                ROUND(AVG(COALESCE(p.citation_count, 0)), 1) AS avg_cite
@@ -273,7 +316,8 @@ def compute_emerging_limitations(
         JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE r.relation = 'REPORTS_LIMITATION'
-          AND p.created_at >= datetime('now', ?)
+          AND {eligible}
+          AND date(p.pub_date) >= date('now', ?)
         GROUP BY e.id
         HAVING recent_cnt >= 1
         ORDER BY recent_cnt DESC
@@ -293,7 +337,8 @@ def compute_weekly_hotspots(
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
     wid = week_id()
-    ingested = count_ingested_papers(window)
+    in_window = count_window_papers(window)
+    excluded = count_excluded_low_precision(window)
 
     methods = compute_emerging_entities("Method", window_days=window, prior_days=prior)
     diseases = compute_emerging_entities("Disease", window_days=window, prior_days=prior)
@@ -312,7 +357,12 @@ def compute_weekly_hotspots(
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "window_days": window,
         "prior_window_days": prior,
-        "papers_ingested": ingested,
+        "time_axis": "pub_date",
+        "eligible_precision": list(_ELIGIBLE_PRECISION),
+        "papers_in_window": in_window,
+        # Persist column / older callers still use papers_ingested.
+        "papers_ingested": in_window,
+        "papers_excluded_low_precision": excluded,
         "emerging_methods": methods,
         "heating_diseases": diseases,
         "emerging_tasks": tasks,
@@ -663,12 +713,15 @@ def generate_hotspot_report(
         "",
         "## Window",
         "",
-        f"- Recent ingest window: **{data['window_days']} days** (`papers.created_at`)",
+        f"- Publication window: **{data['window_days']} days** (`papers.pub_date`)",
+        f"- Eligible date precision: **{', '.join(data.get('eligible_precision') or ['day', 'month'])}** "
+        "(year/unknown excluded from main boards)",
         f"- Prior comparison window: **{data['prior_window_days']} days**",
-        f"- Papers ingested in window: **{data['papers_ingested']}**",
+        f"- Papers in window: **{data.get('papers_in_window', data.get('papers_ingested', 0))}**",
+        f"- Excluded (year/unknown in window): **{data.get('papers_excluded_low_precision', 0)}**",
         "",
         "> Velocity = (recent_cnt − prior_cnt) / max(prior_cnt, 1). "
-        "Week-over-week uses **persisted snapshots**, not ingest windows alone.",
+        "Week-over-week uses **persisted snapshots**, not publication windows alone.",
         "",
     ]
     lines.extend(_format_wow_section(comparison))
@@ -697,7 +750,7 @@ def generate_hotspot_report(
             data["hot_combos"],
             ["method", "disease", "recent_cnt", "prior_cnt", "velocity", "gap_phase", "emerging_score"],
         ),
-        "## New Limitations (recent ingest)",
+        "## New Limitations (recent publication window)",
         "",
         _format_table(
             data["new_limitations"],

@@ -257,3 +257,55 @@ def test_related_to_requires_method_method():
     assert repair_triple_relation(bad) is None
     out = postprocess_triples([bad], "methods")
     assert out == []
+
+
+def _compares_triple(name: str) -> Triple:
+    return Triple(
+        subject=Entity(name="paper", type="Disease"),
+        relation="COMPARES_METHOD",
+        object=Entity(name=name, type="Method"),
+        evidence_quote="test",
+    )
+
+
+def test_compares_method_kept_in_methods_section():
+    out = postprocess_triples([_compares_triple("clam")], "methods")
+    assert len(out) == 1
+    assert out[0].relation == "COMPARES_METHOD"
+    assert out[0].object.name == "clam"
+
+
+def test_compares_method_banned_in_introduction():
+    out = postprocess_triples([_compares_triple("clam")], "introduction")
+    assert out == []
+
+
+def test_compares_method_drops_low_value():
+    out = postprocess_triples([_compares_triple("early stopping")], "methods")
+    assert out == []
+
+
+def test_prefers_applies_over_compares_same_method():
+    triples = [
+        _method_triple("ssl-histonet"),
+        _compares_triple("ssl-histonet"),
+        _compares_triple("clam"),
+    ]
+    out = postprocess_triples(triples, "methods")
+    by_rel = {(t.relation, t.object.name) for t in out}
+    assert ("APPLIES_METHOD", "ssl-histonet") in by_rel
+    assert ("COMPARES_METHOD", "clam") in by_rel
+    assert ("COMPARES_METHOD", "ssl-histonet") not in by_rel
+
+
+def test_repair_does_not_invent_compares_method():
+    # Wrong relation + Method object → remapped to APPLIES_METHOD, not COMPARES_METHOD
+    t = Triple(
+        subject=Entity(name="paper", type="Disease"),
+        relation="PERFORMS_TASK",
+        object=Entity(name="clam", type="Method"),
+        evidence_quote="test",
+    )
+    fixed = repair_triple_relation(t)
+    assert fixed is not None
+    assert fixed.relation == "APPLIES_METHOD"

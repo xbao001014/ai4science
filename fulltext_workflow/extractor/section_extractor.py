@@ -16,9 +16,13 @@ from db.schema import (
     mark_extraction_done,
     upsert_entity,
 )
+from extractor.dataset_access import normalize_dataset_name, resolve_dataset_access
 from extractor.entity_normalize import postprocess_triples
 from extractor.llm_client import configure_concurrency, llm_call_structured, truncate_input
 from extractor.skip_rules import skip_extraction_reason as _skip_extraction_reason
+from extractor.skip_rules import skip_nonsubstantive_fulltext as _skip_nonsubstantive_fulltext
+from extractor.section_utils import merge_sections_by_type
+
 from extractor.study_classifier import classify_study_type
 from extractor.triple_models import Entity, ExtractionResult, RelationLiteral, Triple
 
@@ -32,10 +36,20 @@ Extract structured knowledge triples from the given paper section.
 Prioritize pathology-native evidence (WSI, H&E, IHC, cytology). Do not invent \
 radiology/imaging-only facts (CT/MRI radiomics) when the section is about pathology.
 
+STUDY-CONTENT ONLY (CRITICAL):
+  - Extract facts about THIS paper's own study: its cohort, tasks, proposed/adopted
+    methods, experimental baselines, modalities/datasets used, reported metrics,
+    and author-stated limitations.
+  - Do NOT extract background-only mentions from related work, field surveys, or
+    illustrative examples that are not objects of THIS study.
+  - Disease / Task / Modality / Dataset: keep only what this paper studies or uses;
+    drop other diseases/tasks/modalities mentioned only as context.
+
 Entity types: Disease, Method, Task, Tissue, Dataset, Metric, Modality, Limitation
 
 Relation types (object type MUST match):
-  APPLIES_METHOD → Method
+  APPLIES_METHOD → Method   (this paper's proposed or adopted core method)
+  COMPARES_METHOD → Method  (explicit baseline / comparison method evaluated here)
   PERFORMS_TASK → Task
   TARGETS_DISEASE → Disease
   OPERATES_ON → Tissue
@@ -47,6 +61,16 @@ Relation types (object type MUST match):
 
   BAD: APPLIES_METHOD with object type Task (use PERFORMS_TASK instead)
   BAD: OPERATES_ON with object type Modality (use USES_MODALITY instead)
+  BAD: APPLIES_METHOD for a baseline that is only compared (use COMPARES_METHOD)
+  BAD: COMPARES_METHOD for citation-only related work with no experiment here
+  BAD: any Paper→X fact that is background-only, not this study's content
+
+Dataset access (for USES_DATASET triples only):
+  - Set access_hint to public | private | unknown when clear from the text
+  - public: named open benchmarks / downloadable cohorts (Camelyon, TCGA, PANDA, …)
+  - private: in-house / institutional / hospital-only cohorts
+  - unknown: if not stated
+  - access_hint is optional; omit rather than guess without cues
 
 General rules:
   - Extract only facts clearly stated in the section text
@@ -92,6 +116,11 @@ Method naming policy (CRITICAL) — backbone + contribution level:
     (e.g. "cross-attention fusion module", "dual-stream mil aggregator") when it is central
   - Compound format when useful: "hover-net nuclei segmentation", "clam multiple instance learning",
     "resnet-50 backbone", "transmil wsi classification"
+  - APPLIES_METHOD: only methods this paper proposes or adopts as its own pipeline
+  - COMPARES_METHOD: only methods explicitly used as baseline / compared against / outperformed
+    IN THIS PAPER's experiments (with comparison setup or reported metrics)
+  - Do NOT extract citation-only related-work methods into either Method relation
+  - If the same method is both adopted and compared, prefer APPLIES_METHOD only
   - AVOID umbrella terms unless nothing more specific is stated:
     deep learning, machine learning, artificial intelligence, AI, pathomics,
     computational pathology, digital pathology, neural network, statistical analysis
@@ -112,15 +141,23 @@ Limitation policy:
 
 Examples:
   TEXT: "We trained ResNet-50 with transfer learning on WSIs, using Adam and early stopping."
-  GOOD: Method="resnet-50", Task="classification", Modality="wsi"
+  GOOD: Method="resnet-50" via APPLIES_METHOD, Task="classification", Modality="wsi"
   BAD: Method="transfer learning", Method="adam", Method="early stopping", Method="deep learning"
 
+  TEXT: "We propose SSL-HistoNet and compare against CLAM and ResNet-50 on the same cohort."
+  GOOD: APPLIES_METHOD="ssl-histonet", COMPARES_METHOD="clam", COMPARES_METHOD="resnet-50"
+  BAD: APPLIES_METHOD="clam" (baseline, not this paper's method)
+
+  TEXT: "Prior work used TransMIL for WSI classification; we study a different problem."
+  GOOD: (no Method triples — citation-only, not this study)
+  BAD: APPLIES_METHOD or COMPARES_METHOD for TransMIL
+
   TEXT: "Nuclei were segmented with Hover-Net; slide-level labels used CLAM."
-  GOOD: Method="hover-net nuclei segmentation", Method="clam multiple instance learning"
+  GOOD: APPLIES_METHOD="hover-net nuclei segmentation", APPLIES_METHOD="clam multiple instance learning"
   BAD: Method="deep learning", Method="computational pathology"
 
   TEXT: "We apply random flips, color jitter, and mixup; the model uses a novel dual-attention MIL head."
-  GOOD: Method="dual-attention mil"
+  GOOD: APPLIES_METHOD="dual-attention mil"
   BAD: Method="data augmentation", Method="mixup", Method="color jitter"
 
   TEXT: "MRI and CT radiomics were compared; WSIs were stained with H&E."
@@ -130,6 +167,10 @@ Examples:
   TEXT: "We study HER2-positive invasive ductal carcinoma of the breast on WSIs."
   GOOD: Disease="her2-positive invasive ductal carcinoma", Modality="wsi"
   BAD: Disease="breast cancer", Disease="cancer", Disease="carcinoma"
+
+  TEXT: "Breast cancer is common; our cohort is lung adenocarcinoma only."
+  GOOD: Disease="lung adenocarcinoma"
+  BAD: Disease="breast cancer" (background example, not this study)
 
   TEXT: "Cohort: lung adenocarcinoma (EGFR-mutant) and squamous cell carcinoma."
   GOOD: Disease="egfr-mutant lung adenocarcinoma", Disease="lung squamous cell carcinoma"
@@ -147,6 +188,9 @@ Object type MUST match the relation as listed above.
   {"subject": {"name": "paper", "type": "Method"}, "relation": "APPLIES_METHOD",
    "object": {"name": "resnet-50", "type": "Method"}, "metric_value": null,
    "confidence": 1.0, "evidence_quote": "...", "polarity": "asserted"},
+  {"subject": {"name": "paper", "type": "Method"}, "relation": "COMPARES_METHOD",
+   "object": {"name": "clam", "type": "Method"}, "metric_value": null,
+   "confidence": 1.0, "evidence_quote": "...", "polarity": "asserted"},
   {"subject": {"name": "paper", "type": "Method"}, "relation": "PERFORMS_TASK",
    "object": {"name": "classification", "type": "Task"}, "metric_value": null,
    "confidence": 1.0, "evidence_quote": "...", "polarity": "asserted"},
@@ -158,19 +202,24 @@ Object type MUST match the relation as listed above.
 
 _SECTION_HINTS = {
     "methods": (
-        "Focus on backbones, contribution-level algorithms/modules, datasets, tasks, "
+        "Focus on THIS study's backbones, contribution-level algorithms/modules, "
+        "experimental baselines (COMPARES_METHOD), datasets, tasks, "
         "pathology modalities (WSI/H&E/IHC/cytology — not CT/MRI). "
-        "APPLIES_METHOD only for research-relevant Methods implemented or evaluated here — "
-        "not training tricks (augmentation, early stopping, optimizers, LR schedules)."
+        "APPLIES_METHOD only for research-relevant Methods implemented or adopted here — "
+        "not training tricks (augmentation, early stopping, optimizers, LR schedules). "
+        "COMPARES_METHOD only for baselines explicitly compared in this paper."
     ),
     "results": (
         "Focus on metrics with numeric values in metric_value (e.g. AUC=0.92). "
-        "APPLIES_METHOD only for named models/algorithms whose performance is reported — "
-        "not training hyperparameters."
+        "APPLIES_METHOD only for this paper's named models whose performance is reported; "
+        "COMPARES_METHOD for baselines whose comparison results are reported — "
+        "not training hyperparameters. Study-content only."
     ),
     "discussion": (
-        "Focus on Limitation, Disease (subtype/molecular class if stated), Task, Modality. "
-        "Do NOT emit APPLIES_METHOD — generic ML/DL mentions here are not this paper's methods."
+        "Focus on Limitation, Disease (subtype/molecular class if stated), Task, Modality "
+        "for THIS study. "
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD — method names here are usually not "
+        "reliable contribution/baseline edges."
     ),
     "limitations": (
         "Extract Limitation entities and REPORTS_LIMITATION relations only. "
@@ -178,19 +227,21 @@ _SECTION_HINTS = {
     ),
     "future_work": (
         "Extract hypothesized Limitation and Task entities; use polarity=hypothesized. "
-        "Do NOT emit APPLIES_METHOD unless authors name a concrete new algorithm."
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD unless authors name a concrete new algorithm."
     ),
     "introduction": (
-        "Focus on Disease (prefer histologic/molecular subtype), Task, Modality context. "
-        "Do NOT emit APPLIES_METHOD. Do not emit bare cancer/tumor umbrellas."
+        "Focus on THIS study's Disease (prefer histologic/molecular subtype), Task, Modality. "
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD. "
+        "Do not emit bare cancer/tumor umbrellas or background-only diseases."
     ),
     "abstract": (
-        "Extract core Disease, Method, Task, Dataset, Metric relations. "
-        "Disease = finest stated subtype/class; Method = backbone/contribution-level only."
+        "Extract THIS study's core Disease, Method, Task, Dataset, Metric relations. "
+        "Disease = finest stated subtype/class; Method = backbone/contribution via "
+        "APPLIES_METHOD; baselines via COMPARES_METHOD when clearly compared."
     ),
     "other": (
-        "Extract clear pathology AI facts; Disease at subtype level; "
-        "Method = backbone/contribution-level only."
+        "Extract clear pathology AI facts for THIS study only; Disease at subtype level; "
+        "Method = backbone/contribution-level; baselines as COMPARES_METHOD when explicit."
     ),
 }
 
@@ -255,7 +306,20 @@ def _save_triple(
                 polarity=triple.polarity,
             )
         else:
-            obj_id = upsert_entity(triple.object.name, triple.object.type)
+            obj_name = triple.object.name
+            access_class = None
+            if triple.object.type == "Dataset" or triple.relation == "USES_DATASET":
+                obj_name = normalize_dataset_name(obj_name)
+                access_class = resolve_dataset_access(
+                    obj_name,
+                    evidence_quote=triple.evidence_quote,
+                    access_hint=triple.access_hint,
+                )
+            obj_id = upsert_entity(
+                obj_name,
+                triple.object.type,
+                access_class=access_class,
+            )
             insert_relation(
                 subject_type="Paper",
                 subject_id=paper_id,
@@ -294,7 +358,23 @@ def _relation_count(pmid: str) -> int:
             ).fetchone()[0]
 
 
-from extractor.section_utils import merge_sections_by_type
+def _other_as_discussion_job(sections) -> dict | None:
+    """Promote long `other` body to discussion when core sections are missing/empty."""
+    min_chars = config.EXTRACT_OTHER_FALLBACK_MIN_CHARS
+    other_secs = [sec for sec in sections if sec["section_type"] == "other"]
+    merged = merge_sections_by_type(other_secs)
+    if not merged:
+        return None
+    job = merged[0]
+    if len((job.get("content") or "").strip()) < min_chars:
+        return None
+    return {
+        "section_type": "discussion",
+        "title": job.get("title") or "discussion (from other)",
+        "content": job["content"],
+    }
+
+
 def _extract_fulltext(
     paper: dict, paper_id: int, pmid: str, title: str, granularity: str
 ) -> int:
@@ -315,6 +395,16 @@ def _extract_fulltext(
         )
         for triple in triples:
             _save_triple(triple, paper_id, pmid, sec_type, granularity)
+
+    # Core-only with no methods/results/… : try long `other` as discussion
+    if not jobs and config.EXTRACT_CORE_ONLY:
+        promo = _other_as_discussion_job(sections)
+        if promo:
+            print(
+                f"\n  [Extractor] PMID {pmid}: no core sections; "
+                f"extracting other as discussion ({len(promo['content'])} chars)."
+            )
+            jobs = [promo]
 
     if not jobs:
         abstract_text = (paper.get("abstract") or "").strip()
@@ -342,7 +432,21 @@ def _extract_fulltext(
             for fut in as_completed(futures):
                 fut.result()
 
-    return _relation_count(pmid) - before
+    added = _relation_count(pmid) - before
+    # Core ran but yielded nothing — salvage long `other` once
+    if added == 0 and config.EXTRACT_CORE_ONLY and "other" not in extract_types:
+        promo = _other_as_discussion_job(sections)
+        if promo and not any(
+            (j.get("title") or "").startswith("discussion (from other)") for j in jobs
+        ):
+            print(
+                f"\n  [Extractor] PMID {pmid}: 0 from core; "
+                f"retrying other as discussion ({len(promo['content'])} chars)."
+            )
+            _run_one(promo)
+            added = _relation_count(pmid) - before
+
+    return added
 
 
 def _extract_abstract_fallback(paper_id: int, pmid: str, title: str, abstract: str) -> int:
@@ -382,6 +486,21 @@ def _process_paper(paper) -> None:
         study_type = classify_study_type(title, abstract, pub_types)
         status = paper["full_text_status"]
         added = 0
+
+        if status in ("available", "pdf_available"):
+            sections = get_paper_sections(paper_id)
+            sec_dicts = [
+                {
+                    "section_type": s["section_type"],
+                    "content": s["content"] or "",
+                }
+                for s in sections
+            ]
+            thin = _skip_nonsubstantive_fulltext(abstract, sec_dicts)
+            if thin:
+                print(f"\n  [Extractor] PMID {pmid}: skip ({thin})")
+                mark_extraction_done(paper_id, "other")
+                return
 
         if status == "available":
             added = _extract_fulltext(dict(paper), paper_id, pmid, title, "fulltext")

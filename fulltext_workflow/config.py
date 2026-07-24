@@ -67,6 +67,12 @@ GAP_WEIGHT_EVIDENCE: float = float(os.getenv("GAP_WEIGHT_EVIDENCE", "1.0"))
 GAP_WEIGHT_IMPACT: float = float(os.getenv("GAP_WEIGHT_IMPACT", "1.0"))
 GAP_WEIGHT_FEASIBILITY: float = float(os.getenv("GAP_WEIGHT_FEASIBILITY", "1.0"))
 GAP_RECENT_YEARS: int = int(os.getenv("GAP_RECENT_YEARS", "3"))
+# Max age (as_of_year - first_year) to still count as emerging; default = GAP_RECENT_YEARS
+GAP_EMERGING_MAX_AGE: int = int(
+    os.getenv("GAP_EMERGING_MAX_AGE", str(GAP_RECENT_YEARS))
+)
+# Papers with year <= first_year + GAP_EARLY_YEARS count as early (proposal window)
+GAP_EARLY_YEARS: int = int(os.getenv("GAP_EARLY_YEARS", "1"))
 GAP_PERSISTENT_RATIO: float = float(os.getenv("GAP_PERSISTENT_RATIO", "0.3"))
 GAP_RESOLUTION_MIN_FOLLOWUP: int = int(os.getenv("GAP_RESOLUTION_MIN_FOLLOWUP", "2"))
 # Batch resolution: skip emerging (recent-only limitations); comma-separated statuses
@@ -88,7 +94,7 @@ SEARCH_YEAR_END = int(os.getenv("FULLTEXT_SEARCH_YEAR_END", str(SEARCH_YEAR_END)
 # 0 = disabled (full year-window search). CLI --since-days overrides this.
 FETCH_EDAT_DAYS: int = int(os.getenv("FETCH_EDAT_DAYS", "0"))
 
-# Weekly hotspot detection (papers.created_at ingest window)
+# Weekly hotspot detection (papers.pub_date publication window; day/month precision)
 def _default_hotspot_window() -> int:
     explicit = os.getenv("HOTSPOT_WINDOW_DAYS")
     if explicit:
@@ -151,6 +157,10 @@ LLM_RATE_LIMIT_COOLDOWN: float = float(os.getenv("LLM_RATE_LIMIT_COOLDOWN", "45"
 DEFAULT_EXTRACT_LIMIT: int = 30
 # Extraction speed: core sections ~6 calls/paper vs all ~22 (skip other/intro)
 EXTRACT_CORE_ONLY: bool = os.getenv("EXTRACT_CORE_ONLY", "true").lower() == "true"
+# When core sections are empty/empty-yield, promote long `other` body as discussion
+EXTRACT_OTHER_FALLBACK_MIN_CHARS: int = int(
+    os.getenv("EXTRACT_OTHER_FALLBACK_MIN_CHARS", "1500")
+)
 EXTRACT_SECTION_WORKERS: int = int(os.getenv("EXTRACT_SECTION_WORKERS", "1"))
 EXTRACT_PAPER_WORKERS: int = int(os.getenv("EXTRACT_PAPER_WORKERS", "1"))
 EXTRACT_MAX_SECTION_CHARS: int = int(os.getenv("EXTRACT_MAX_SECTION_CHARS", "12000"))
@@ -217,3 +227,22 @@ MOCK_DATA_DIR: str = str(_ROOT / "feasibility" / "mock_data")
 FEASIBILITY_SCORE_APPROVE: float = 0.8
 FEASIBILITY_SCORE_REJECT: float = 0.2
 FEASIBILITY_SCORE_MARGINAL: float = 0.5
+
+# Implementation difficulty (proposal target / assessed)
+DIFFICULTY_Q1_HARD: float = float(os.getenv("DIFFICULTY_Q1_HARD", "0.55"))
+DIFFICULTY_Q1_MODERATE: float = float(os.getenv("DIFFICULTY_Q1_MODERATE", "0.25"))
+DIFFICULTY_IF_HARD: float = float(os.getenv("DIFFICULTY_IF_HARD", "8.0"))
+DIFFICULTY_IF_MODERATE: float = float(os.getenv("DIFFICULTY_IF_MODERATE", "3.0"))
+DIFFICULTY_Q_COVERAGE_LOW: float = float(os.getenv("DIFFICULTY_Q_COVERAGE_LOW", "0.4"))
+DIFFICULTY_FX_EASY_SCORE: float = float(os.getenv("DIFFICULTY_FX_EASY_SCORE", "0.8"))
+DIFFICULTY_FX_EASY_COHORT: int = int(os.getenv("DIFFICULTY_FX_EASY_COHORT", "500"))
+DIFFICULTY_FX_MOD_SCORE: float = float(os.getenv("DIFFICULTY_FX_MOD_SCORE", "0.5"))
+DIFFICULTY_FX_MOD_COHORT: int = int(os.getenv("DIFFICULTY_FX_MOD_COHORT", "200"))
+
+# Public dataset feasibility (V-03) — parallel to Fangxin V-01
+V03_OK_MIN_PAPERS: int = int(os.getenv("V03_OK_MIN_PAPERS", "3"))
+V03_SCORE_ALIAS_BONUS: float = float(os.getenv("V03_SCORE_ALIAS_BONUS", "0.25"))
+V03_SCORE_PER_PUBLIC: float = float(os.getenv("V03_SCORE_PER_PUBLIC", "0.15"))
+V03_SCORE_COVERAGE_CAP: float = float(os.getenv("V03_SCORE_COVERAGE_CAP", "1.0"))
+V03_EXAMPLE_PMIDS: int = int(os.getenv("V03_EXAMPLE_PMIDS", "3"))
+V03_MAX_PUBLIC_FOR_SCORE: int = int(os.getenv("V03_MAX_PUBLIC_FOR_SCORE", "4"))

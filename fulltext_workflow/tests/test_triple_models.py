@@ -69,3 +69,18 @@ def test_extraction_result_accepts_paper_subjects():
     result = ExtractionResult.model_validate(raw)
     assert len(result.triples) == 2
     assert result.triples[1].metric_value == "0.98"
+
+
+def test_compares_method_relation_validates():
+    t = Triple.model_validate(
+        {
+            "subject": {"name": "paper", "type": "Method"},
+            "relation": "COMPARES_METHOD",
+            "object": {"name": "clam", "type": "Method"},
+            "metric_value": None,
+            "confidence": 1.0,
+            "evidence_quote": "compare against CLAM",
+            "polarity": "asserted",
+        }
+    )
+    assert t.relation == "COMPARES_METHOD"

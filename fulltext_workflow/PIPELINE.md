@@ -100,7 +100,7 @@ flowchart TD
 | 生命周期 | `compute-gap-lifecycle` | Gap 推荐 | limitation 时间画像 + 填补信号 |
 | 建图 | `build` | 必需 | NetworkX → GEXF + HTML |
 | 分析 | `analyze` | 推荐 | 静态 SQL Gap 报告 |
-| 周热点 | `hotspot-report` / `hotspot-brief` | 周更推荐 | 入库窗口热点 + WoW + LLM 简报 |
+| 周热点 | `hotspot-report` / `hotspot-brief` | 周更推荐 | 发表窗口热点 + WoW + LLM 简报 |
 | 辩论/方案 | `gap-debate` / `idea-pipeline` | 可选 | 默认读写 ops memory；需 LLM |
 | UI | `streamlit run gap_ui.py` | 可选 | 七标签页交互分析 |
 | **建库一键** | `run-db` | 可选 | fetch → enrich → import-if → fulltext → extract |
@@ -229,7 +229,8 @@ flowchart TD
 **模块**：`analysis/gap_lifecycle.py`、`db/schema.py`（`limitation_temporal`、`limitation_resolution_signals`）  
 **作用**：
 
-- 按 `papers.year` 聚合每条 limitation 的 first/last year、recent_ratio、temporal_status
+- 按 `papers.year` 聚合每条 limitation 的 first/last year、`proposal_age`（`as_of_year - first_year`）、recent_ratio、temporal_status
+- **时间锚**：`as_of_year = MAX(year)`（语料中报道 limitation 的论文），**不**使用 `SEARCH_YEAR_*`；emerging/persistent/declining 由提出龄 + 近期是否仍被报道判定
 - 启发式检测后期 disease/task/method 跟进论文（resolution_signal: none/weak/moderate）
 - 供 `limitation_temporal_profile`、`limitation_gap_status`、`combo_gap_temporal` 工具与 Gap Debate 使用
 
@@ -313,8 +314,8 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 & $py main.py idea-pipeline --skip-debate --gap-report output/gap_debate_report.md --skip-ideas
 ```
 
-**模块**：`pipeline.py`、`feasibility/`、`idea_agent.py`、`evolution_agent.py`  
-**作用**：结合 LIS 队列数据评估研究空白的数据可行性，Generator × Critic 迭代产出研究方案。
+**模块**：`pipeline.py`、`feasibility/`、`analysis/public_dataset_feasibility.py`、`idea_agent.py`、`evolution_agent.py`  
+**作用**：结合 LIS 队列（V-01/V-02）与 KG 公开数据集（V-03，经 focus 相关论文选出）评估研究空白的数据可行性，Generator × Critic 迭代产出研究方案。V-03 与方信得分并行，不合并。
 
 ---
 
@@ -337,7 +338,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 | Visualization | Gap / 实体可视化 |
 | Evidence & Literature | 证据与文献列表 |
 | Gap Report | 可下载辩论报告 |
-| Data Feasibility (Fangxin LIS) | 方信数据可行性 |
+| Data Feasibility (Fangxin LIS) | 方信 V-01/V-02 + 公开数据集 V-03 |
 | Research Proposal | Generator × Critic 方案 |
 
 ---
@@ -403,10 +404,11 @@ PowerShell 脚本等价：
 | `analysis/gap_tools.py` | SQL Gap 工具 + impact 加权 |
 | `analysis/impact_scoring.py` | citation/IF → impact_score |
 | `analysis/gap_lifecycle.py` | limitation 时间画像与填补信号 |
-| `analysis/weekly_hotspot.py` | 每周入库热点（velocity + emerging_score + WoW） |
+| `analysis/weekly_hotspot.py` | 每周发表热点（`pub_date` + velocity + emerging_score + WoW） |
 | `analysis/hotspot_brief.py` | LLM 热点周报简报 |
 | `analysis/ops_memory.py` | 周常 gap/proposal 持久化与软避让 |
-| `analysis/feasibility_tools.py` | 病理数据可行性 LLM 工具 |
+| `analysis/feasibility_tools.py` | 病理数据可行性 LLM 工具（含 V-03 `public_dataset_assess`） |
+| `analysis/public_dataset_feasibility.py` | 公开数据集可行性 V-03（论文中介选集） |
 | `analysis/graph_tools.py` | 实体图分析（PageRank/社区/可达性） |
 | `gap_agent.py` | Gap 辩论多智能体 |
 | `debate_labels.py` | 辩论角色 UI 文案映射 |
@@ -480,7 +482,7 @@ FULLTEXT_SEARCH_YEAR_END=2026          # 每年 1 月更新
 FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=关闭
 HOTSPOT_WINDOW_DAYS=14                 # weekly 热点检测窗口（默认跟 FETCH_EDAT_DAYS）
 HOTSPOT_PRIOR_WINDOW_DAYS=14           # 上一窗口，用于算 velocity
-HOTSPOT_MIN_RECENT_PAPERS=2            # 实体至少 N 篇新入库论文才上榜
+HOTSPOT_MIN_RECENT_PAPERS=2            # 实体至少 N 篇窗口内发表论文才上榜
 OPS_MEMORY_ENABLED=1
 OPS_MEMORY_LOOKBACK_RUNS=4
 ```
@@ -519,19 +521,21 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 
 ### 7.2 Weekly Hotspot
 
-基于 `papers.created_at` 入库窗口 + velocity（与全库 `hotspot_entities` 不同）。输出：`output/weekly_hotspot_{week_id}.md`。
+基于 `papers.pub_date` 发表窗口（仅 `date_precision` ∈ `day`/`month`）+ velocity（与全库 `hotspot_entities` 不同）。年精度/unknown 不进主榜。输出：`output/weekly_hotspot_{week_id}.md`。
+
+`papers.date_precision` 由抓取写入；存量用 `backfill-date-precision` 补全。
 
 **表结构**（`kg_fulltext.db`）：
 
 | 表 | 作用 |
 |----|------|
-| `weekly_hotspot_runs` | 每周元数据（week_id、窗口、入库论文数、报告路径） |
+| `weekly_hotspot_runs` | 每周元数据（week_id、窗口、窗口内发表论文数、报告路径） |
 | `weekly_hotspot_snapshots` | 各榜单行（board、item_key、rank、score、top_pmids） |
 
 **board 类型**：`method` / `disease` / `task` / `combo` / `limitation`  
 **combo 的 item_key**：`{method}|{disease}`
 
-一次性 bulk 入库时 prior 窗口常为空，周环比应依赖**持久化快照**。
+一次性 bulk 入库时 prior 发表窗口可能偏空，周环比应依赖**持久化快照**。
 
 **周环比**（`compare_with_previous_week`）：
 

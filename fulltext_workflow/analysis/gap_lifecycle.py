@@ -4,6 +4,7 @@ from __future__ import annotations
 import bisect
 import json
 import time
+from datetime import date
 from typing import Any
 
 import config
@@ -20,12 +21,25 @@ def _log(msg: str) -> None:
     print(f"[Gap-Lifecycle] {msg}", flush=True)
 
 
-def corpus_midpoint() -> int:
-    return (config.SEARCH_YEAR_START + config.SEARCH_YEAR_END) // 2
+def limitation_as_of_year() -> int:
+    """Corpus clock: latest year among papers that report a limitation."""
+    rows = _q(
+        """
+        SELECT MAX(p.year) AS max_year
+        FROM relations r
+        JOIN papers p ON r.source_pmid = p.pmid
+        WHERE r.relation = 'REPORTS_LIMITATION'
+          AND p.year IS NOT NULL
+        """
+    )
+    max_year = rows[0]["max_year"] if rows else None
+    return int(max_year) if max_year else date.today().year
 
 
-def recent_year_cutoff() -> int:
-    return config.SEARCH_YEAR_END - config.GAP_RECENT_YEARS
+def recent_year_cutoff(as_of_year: int | None = None) -> int:
+    """Recent window start relative to corpus as_of (not SEARCH_YEAR_END)."""
+    as_of = as_of_year if as_of_year is not None else limitation_as_of_year()
+    return as_of - config.GAP_RECENT_YEARS
 
 
 def classify_temporal_status(
@@ -34,15 +48,19 @@ def classify_temporal_status(
     paper_cnt: int,
     recent_cnt: int,
     recent_ratio: float,
+    as_of_year: int | None = None,
 ) -> str:
+    """Classify by proposal age (as_of - first_year), not search-year window."""
     if not first_year or not last_year or paper_cnt <= 0:
         return "stable"
-    cutoff = recent_year_cutoff()
-    if first_year >= cutoff:
+    as_of = as_of_year if as_of_year is not None else limitation_as_of_year()
+    cutoff = recent_year_cutoff(as_of)
+    proposal_age = as_of - int(first_year)
+    if proposal_age <= config.GAP_EMERGING_MAX_AGE:
         return "emerging"
     if recent_cnt == 0 and last_year < cutoff:
         return "declining"
-    if first_year < cutoff and recent_ratio >= config.GAP_PERSISTENT_RATIO:
+    if recent_cnt > 0 and recent_ratio >= config.GAP_PERSISTENT_RATIO:
         return "persistent"
     return "stable"
 
@@ -81,37 +99,51 @@ def compute_limitation_temporal_profiles(
     focus: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build limitation temporal rows from relations + papers (live compute)."""
-    midpoint = corpus_midpoint()
-    recent_cutoff = recent_year_cutoff()
+    as_of_year = limitation_as_of_year()
+    recent_cutoff = recent_year_cutoff(as_of_year)
+    early_years = config.GAP_EARLY_YEARS
     from analysis.focus_filter import focus_pmid_in_clause, normalize_focus
 
     f = normalize_focus(focus)
     focus_sql = focus_pmid_in_clause("r.source_pmid", f)
-    params: list[Any] = [midpoint, recent_cutoff]
 
     base_rows = _q(
         f"""
-        SELECT e.id AS limitation_id,
-               e.name AS limitation_name,
-               MIN(p.year) AS first_year,
-               MAX(p.year) AS last_year,
-               COUNT(DISTINCT r.source_pmid) AS paper_cnt,
-               SUM(CASE WHEN r.polarity = 'asserted' THEN 1 ELSE 0 END) AS asserted_cnt,
-               SUM(CASE WHEN r.polarity = 'hypothesized' THEN 1 ELSE 0 END) AS hypothesized_cnt,
-               SUM(CASE WHEN p.year <= ? THEN 1 ELSE 0 END) AS early_cnt,
-               SUM(CASE WHEN p.year >= ? THEN 1 ELSE 0 END) AS recent_cnt,
-               GROUP_CONCAT(DISTINCT r.evidence_section) AS sections
-        FROM relations r
-        JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
-        JOIN papers p ON r.source_pmid = p.pmid
-        WHERE r.relation = 'REPORTS_LIMITATION'
-          AND p.year IS NOT NULL
-          {focus_sql}
-        GROUP BY e.id
-        HAVING paper_cnt >= 1
-        ORDER BY paper_cnt DESC
+        WITH lim_base AS (
+            SELECT e.id AS limitation_id,
+                   e.name AS limitation_name,
+                   MIN(p.year) AS first_year,
+                   MAX(p.year) AS last_year,
+                   COUNT(DISTINCT r.source_pmid) AS paper_cnt,
+                   SUM(CASE WHEN r.polarity = 'asserted' THEN 1 ELSE 0 END) AS asserted_cnt,
+                   SUM(CASE WHEN r.polarity = 'hypothesized' THEN 1 ELSE 0 END)
+                       AS hypothesized_cnt,
+                   SUM(CASE WHEN p.year >= ? THEN 1 ELSE 0 END) AS recent_cnt,
+                   GROUP_CONCAT(DISTINCT r.evidence_section) AS sections
+            FROM relations r
+            JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
+            JOIN papers p ON r.source_pmid = p.pmid
+            WHERE r.relation = 'REPORTS_LIMITATION'
+              AND p.year IS NOT NULL
+              {focus_sql}
+            GROUP BY e.id
+            HAVING paper_cnt >= 1
+        )
+        SELECT lb.*,
+               (
+                   SELECT COUNT(DISTINCT r2.source_pmid)
+                   FROM relations r2
+                   JOIN papers p2 ON r2.source_pmid = p2.pmid
+                   WHERE r2.object_id = lb.limitation_id
+                     AND r2.relation = 'REPORTS_LIMITATION'
+                     AND p2.year IS NOT NULL
+                     AND p2.year <= lb.first_year + ?
+               ) AS early_cnt
+        FROM lim_base lb
+        ORDER BY lb.paper_cnt DESC
         """,
-        tuple(params),
+        # recent_cutoff binds first in lim_base; early_years in subquery
+        (recent_cutoff, early_years),
     )
 
     impact_map = _limitation_impact_by_id()
@@ -122,8 +154,16 @@ def compute_limitation_temporal_profiles(
         recent_ratio = round(recent_cnt / max(paper_cnt, 1), 3)
         first_year = row.get("first_year")
         last_year = row.get("last_year")
+        proposal_age = (
+            (as_of_year - int(first_year)) if first_year is not None else None
+        )
         status = classify_temporal_status(
-            first_year, last_year, paper_cnt, recent_cnt, recent_ratio
+            first_year,
+            last_year,
+            paper_cnt,
+            recent_cnt,
+            recent_ratio,
+            as_of_year=as_of_year,
         )
         impact = impact_map.get(
             row["limitation_id"],
@@ -137,6 +177,8 @@ def compute_limitation_temporal_profiles(
             "first_year": first_year,
             "last_year": last_year,
             "year_span": year_span,
+            "as_of_year": as_of_year,
+            "proposal_age": proposal_age,
             "paper_cnt": paper_cnt,
             "asserted_cnt": int(row["asserted_cnt"] or 0),
             "hypothesized_cnt": int(row["hypothesized_cnt"] or 0),
@@ -754,7 +796,8 @@ def compute_combo_gap_temporal(focus: str | None = None) -> list[dict[str, Any]]
     for row in combo_rows:
         buckets[(row["method"], row["disease"])].append(int(row["year"]))
 
-    recent_cutoff = recent_year_cutoff()
+    as_of_year = limitation_as_of_year()
+    recent_cutoff = recent_year_cutoff(as_of_year)
     gaps: list[dict[str, Any]] = []
     for method in method_names:
         for disease in disease_names:

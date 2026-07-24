@@ -13,7 +13,7 @@
 | 能力 | 说明 |
 |------|------|
 | 三角色辩论 | Opportunity Scout → Evidence Reviewer → Final Synthesizer |
-| 周热点 | 入库窗口热点榜、Week-over-Week、交叉机会、LLM 简报 |
+| 周热点 | 发表窗口热点榜、Week-over-Week、交叉机会、LLM 简报 |
 | 可视化 | Plotly：辩论漏斗、工具 treemap、method×disease、lit×data |
 | 证据追溯 | PMID、证据章节、引用片段、语料 focus 匹配文献 |
 | 空白报告 | Markdown Gap Report，可下载；默认写入 ops memory |
@@ -162,7 +162,7 @@ Extracted 为 0 时先跑抽取流水线。
 
 ### 5.2 Weekly Hotspot
 
-**无需先辩论即可使用。** 基于 `papers.created_at` 入库窗口与持久化快照。
+**无需先辩论即可使用。** 基于 `papers.pub_date` 发表窗口（`date_precision` ∈ day/month）与持久化快照。
 
 | 操作 | 作用 |
 |------|------|
