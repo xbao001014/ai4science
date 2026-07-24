@@ -42,7 +42,10 @@ env/
 
 # ── Local agent / SDD scratch (do not upload) ─────────────────────────────────
 .superpowers/
-docs/
+docs/*
+!docs/superpowers/
+!docs/superpowers/specs/
+!docs/superpowers/specs/**
 api_document.md
 pathology_data_api_spec.md
 
