@@ -157,6 +157,10 @@ LLM_RATE_LIMIT_COOLDOWN: float = float(os.getenv("LLM_RATE_LIMIT_COOLDOWN", "45"
 DEFAULT_EXTRACT_LIMIT: int = 30
 # Extraction speed: core sections ~6 calls/paper vs all ~22 (skip other/intro)
 EXTRACT_CORE_ONLY: bool = os.getenv("EXTRACT_CORE_ONLY", "true").lower() == "true"
+RECONCILE_ENABLED: bool = os.getenv("RECONCILE_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on",
+)
+RECONCILE_MAX_CHARS: int = int(os.getenv("RECONCILE_MAX_CHARS", "32000"))
 # When core sections are empty/empty-yield, promote long `other` body as discussion
 EXTRACT_OTHER_FALLBACK_MIN_CHARS: int = int(
     os.getenv("EXTRACT_OTHER_FALLBACK_MIN_CHARS", "1500")
