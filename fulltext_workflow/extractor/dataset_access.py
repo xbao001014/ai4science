@@ -51,6 +51,30 @@ PUBLIC_DATASET_ALIASES: dict[str, str] = {
     "camelyon17 dataset": "camelyon17",
 }
 
+LITERATURE_PLATFORM_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "pubmed",
+        "pubmed central",
+        "pmc",
+        "ncbi",
+        "ncbi geo",
+        "geo",
+        "gene expression omnibus",
+        "google scholar",
+        "web of science",
+        "scopus",
+        "medline",
+        "embase",
+        "cochrane library",
+        "cochrane",
+        "europe pmc",
+        "semantic scholar",
+        "crossref",
+        "dimensions",
+        "openalex",
+    }
+)
+
 _PRIVATE_CUES = re.compile(
     r"\b("
     r"in[\s-]?house|institutional|our\s+hospital|our\s+institution|"
@@ -64,6 +88,16 @@ _PRIVATE_CUES = re.compile(
 
 def _norm_key(name: str) -> str:
     return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def is_literature_platform(name: str) -> bool:
+    key = _norm_key(name)
+    if key in LITERATURE_PLATFORM_BLOCKLIST:
+        return True
+    for token in LITERATURE_PLATFORM_BLOCKLIST:
+        if re.search(rf"(^|[^a-z0-9]){re.escape(token)}([^a-z0-9]|$)", key):
+            return True
+    return False
 
 
 def normalize_dataset_name(name: str) -> str:
@@ -93,6 +127,8 @@ def resolve_dataset_access(
     Order: public alias list → private cues (name/evidence) → LLM hint → unknown.
     """
     key = _norm_key(name)
+    if is_literature_platform(key):
+        return "unknown"
     if key in PUBLIC_DATASET_ALIASES or any(
         key == canon or key.startswith(canon + " ") or canon in key
         for canon in set(PUBLIC_DATASET_ALIASES.values())
@@ -110,10 +146,9 @@ def resolve_dataset_access(
 
     hint = (access_hint or "").strip().lower()
     if hint in ("public", "private", "unknown"):
-        # Never let hint override a public alias (already returned); private/unknown ok
         if hint == "public":
-            # Unlisted "public" from LLM — trust with caution; keep as public
-            return "public"
+            # Unlisted public hints are not trusted.
+            return "unknown"
         return hint  # type: ignore[return-value]
 
     return "unknown"

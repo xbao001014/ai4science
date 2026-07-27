@@ -9,6 +9,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from extractor.dataset_access import (  # noqa: E402
+    is_literature_platform,
     normalize_dataset_name,
     resolve_dataset_access,
     stronger_access,
@@ -51,7 +52,23 @@ def test_alias_beats_private_cue():
 
 def test_llm_hint_used_when_unknown():
     assert resolve_dataset_access("some rare bank", access_hint="private") == "private"
-    assert resolve_dataset_access("some rare bank", access_hint="public") == "public"
+
+
+def test_literature_platform_blocklist():
+    assert is_literature_platform("PubMed")
+    assert is_literature_platform("pubmed central")
+    assert is_literature_platform("NCBI GEO")
+    assert is_literature_platform("Google Scholar")
+    assert not is_literature_platform("camelyon16")
+    assert not is_literature_platform("tcga")
+
+
+def test_llm_public_hint_unlisted_becomes_unknown():
+    assert resolve_dataset_access("some rare bank", access_hint="public") == "unknown"
+
+
+def test_llm_private_hint_still_honored():
+    assert resolve_dataset_access("some rare bank", access_hint="private") == "private"
 
 
 def test_default_unknown():
