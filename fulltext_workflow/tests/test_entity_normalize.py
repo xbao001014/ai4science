@@ -298,6 +298,21 @@ def test_prefers_applies_over_compares_same_method():
     assert ("COMPARES_METHOD", "ssl-histonet") not in by_rel
 
 
+def test_postprocess_drops_pubmed_as_dataset():
+    t = Triple(
+        subject=Entity(name="paper", type="Method"),
+        relation="USES_DATASET",
+        object=Entity(name="PubMed", type="Dataset"),
+        confidence=0.9,
+        evidence_quote="searched PubMed",
+    )
+    out = postprocess_triples([t], "methods")
+    assert all(
+        not (x.relation == "USES_DATASET" and "pubmed" in x.object.name.lower())
+        for x in out
+    )
+
+
 def test_repair_does_not_invent_compares_method():
     # Wrong relation + Method object → remapped to APPLIES_METHOD, not COMPARES_METHOD
     t = Triple(

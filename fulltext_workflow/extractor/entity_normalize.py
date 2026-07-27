@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from extractor.dataset_access import is_literature_platform, normalize_dataset_name
 from extractor.triple_models import Triple
 
 _GENERIC_METHODS = frozenset(
@@ -515,6 +516,16 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
 
         if obj_type == "Modality" and is_radiology_modality(obj_name):
             continue
+
+        if obj_type == "Dataset" or triple.relation == "USES_DATASET":
+            canon = normalize_dataset_name(obj_name)
+            if is_literature_platform(obj_name) or is_literature_platform(canon):
+                continue
+            if canon != obj_name:
+                triple = triple.model_copy(
+                    update={"object": triple.object.model_copy(update={"name": canon})}
+                )
+                obj_name = canon
 
         if (
             triple.relation in _PAPER_METHOD_RELATIONS
