@@ -241,10 +241,35 @@ cd fulltext_workflow
 
 ---
 
-## 10. 变更记录（摘要）
+## 10. Pass 2：全文 reconcile（fulltext_reconcile）
+
+抽取分两遍；Pass 1 仍是分章节 LLM 三元组（`extraction_pass=section`），Pass 2 在有实质全文时做窄域 reconcile（`extractor/fulltext_reconcile.py`）。
+
+| 阶段 | 输入 | 输出 |
+|------|------|------|
+| Pass 1 | 各 section 文本 | 带 `evidence_section` / `evidence_quote` 的三元组 |
+| 规则层 | Pass 1 Dataset 三元组 | 文献平台黑名单拒收；未上公开名单的 `public` hint 降为 `unknown` |
+| Pass 2 | 截断全文 + Pass 1 实体摘要 | Dataset keep/merge/drop、Method–Disease–Dataset bindings、Limitation 合并 |
+
+**`relations.status`**：`active`（下游默认读取）\| `superseded`（被 Pass 2 合并/丢弃的旧边；`superseded_by` 指向 canonical entity）。Limitation 合并走 supersede，不保留双份并行 store。
+
+**`papers.reconcile_status`**：`pending` \| `done` \| `skipped_no_ft` \| `failed`。无全文仅 Pass 1+规则；Pass 2 失败保留 Pass 1 结果，可 `main.py reconcile` 重跑。
+
+### Pilot QA（Phase 0，全库重抽前必过）
+
+1. 选 **20–50** 篇有 PMC/MinerU 全文的 PMID（含已知 PubMed/GEO 污染样例），写入本地 `data/pilot_pmids.txt`（一行一个 PMID，`#` 注释；`data/` 不入库）。
+2. `main.py extract --pmid-list data/pilot_pmids.txt --force-reextract`，再 `main.py reconcile --pmid-list data/pilot_pmids.txt`。
+3. `python scripts/pilot_reconcile_qa.py --pmid-list data/pilot_pmids.txt --out output/pilot_qa.csv` 导出审阅表。
+4. **建议门禁**（可调）：文献平台 active Dataset 假阳性 = 0；`access_class=public` 人工精度 ≥ 90%；明显 limitation 合并错误 ≤ 10%。
+5. 门禁通过后再做全库 Pass 1+2 重抽。
+
+---
+
+## 11. 变更记录（摘要）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-27 | Pass 2 reconcile 文档 + pilot QA 脚本 |
 | 2026-07-18 | Method 政策 B：prompt + 低价值 Method 黑名单 |
 | 2026-07-18 | Disease 政策 C：prompt + 泛词/器官级后处理与组织学→器官启发式 |
 | 2026-07-18 | 检索与 agent 措辞对齐病理 AI；`pathomics_radiomics` 默认关闭 |
