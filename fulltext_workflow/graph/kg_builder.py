@@ -57,7 +57,12 @@ class KGBuilder:
             papers = [dict(r) for r in conn.execute("SELECT * FROM papers").fetchall()]
             journals = [dict(r) for r in conn.execute("SELECT * FROM journals").fetchall()]
             entities = [dict(r) for r in conn.execute("SELECT * FROM entities").fetchall()]
-            relations = [dict(r) for r in conn.execute("SELECT * FROM relations").fetchall()]
+            relations = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM relations WHERE COALESCE(status, 'active') = 'active'"
+                ).fetchall()
+            ]
 
         journal_id_map: dict[int, str] = {}
         for j in journals:

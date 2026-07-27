@@ -251,6 +251,8 @@ cd fulltext_workflow
 | 规则层 | Pass 1 Dataset 三元组 | 文献平台黑名单拒收；未上公开名单的 `public` hint 降为 `unknown` |
 | Pass 2 | 截断全文 + Pass 1 实体摘要 | Dataset keep/merge/drop、Method–Disease–Dataset bindings、Limitation 合并 |
 
+**全文截断**：`assemble_reconcile_text` 按 section 优先级填充至 `RECONCILE_MAX_CHARS`；末段超预算时用 **head + `\n...\n` + tail**（保留段首与段尾），而非仅 head。
+
 **`relations.status`**：`active`（下游默认读取）\| `superseded`（被 Pass 2 合并/丢弃的旧边；`superseded_by` 指向 canonical entity）。Limitation 合并走 supersede，不保留双份并行 store。
 
 **`papers.reconcile_status`**：`pending` \| `done` \| `skipped_no_ft` \| `failed`。无全文仅 Pass 1+规则；Pass 2 失败保留 Pass 1 结果，可 `main.py reconcile` 重跑。

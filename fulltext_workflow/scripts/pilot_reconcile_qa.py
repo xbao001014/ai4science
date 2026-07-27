@@ -44,7 +44,7 @@ def _entity_names(pmid: str, relation: str, status: str) -> list[str]:
             JOIN entities e ON e.id = r.object_id
             WHERE r.source_pmid = ?
               AND r.relation = ?
-              AND r.status = ?
+              AND COALESCE(r.status, 'active') = ?
             ORDER BY e.name
             """,
             (pmid, relation, status),
@@ -66,8 +66,9 @@ def _join_names(names: list[str]) -> str:
 
 
 def build_row(pmid: str, paper: dict | None) -> dict[str, str | int]:
-    reconcile_status = ""
-    if paper is not None:
+    if paper is None:
+        reconcile_status = "missing"
+    else:
         reconcile_status = paper.get("reconcile_status") or "pending"
 
     active_datasets = _entity_names(pmid, "USES_DATASET", "active")

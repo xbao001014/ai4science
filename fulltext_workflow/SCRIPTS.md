@@ -77,9 +77,12 @@ $py = "..\.venv\Scripts\python.exe"
 
 `data/pilot_pmids.txt` is local (`fulltext_workflow/data/` is gitignored).
 
+On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults to `true`** (Pass 2 runs after Pass 1 when fulltext exists). Run pilot QA and review `output/pilot_qa.csv` **before** a full-corpus `--force-reextract`.
+
 ```powershell
 & $py main.py extract --pmid-list data/pilot_pmids.txt --force-reextract --limit 0
 & $py main.py reconcile --pmid-list data/pilot_pmids.txt
+& $py scripts/pilot_reconcile_qa.py --pmid-list data/pilot_pmids.txt --out output/pilot_qa.csv
 & $py main.py reconcile   # pending/failed with fulltext
 ```
 
@@ -164,6 +167,7 @@ $py = "..\.venv\Scripts\python.exe"
 | `clear_ops_memory.py` | 清空周常 ops memory（可按 focus） |
 | `clear_database.py` | 清空整个 `kg_fulltext.db`（需 `--yes`；不动 `raw/`） |
 | `backfill_ops_proposals.py` | 回填 `ops_proposals` 缺失字段 |
+| `pilot_reconcile_qa.py` | Pass 2 pilot 审阅 CSV（active/superseded datasets、platform_hit） |
 
 ---
 
