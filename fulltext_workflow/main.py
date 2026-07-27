@@ -108,7 +108,19 @@ def cmd_reconcile(args: argparse.Namespace) -> None:
 
     init_db()
     if args.pmid_list:
-        papers = get_papers_by_pmids(_load_pmid_list(args.pmid_list))
+        requested = _load_pmid_list(args.pmid_list)
+        all_papers = get_papers_by_pmids(requested)
+        by_pmid = {p["pmid"]: p for p in all_papers}
+        papers = [p for p in all_papers if p["extraction_done"] == 1]
+        skipped = [
+            pmid
+            for pmid in requested
+            if pmid not in by_pmid or by_pmid[pmid]["extraction_done"] != 1
+        ]
+        if skipped:
+            print(
+                f"[Reconcile] Skipped {len(skipped)} PMID(s) without Pass 1: {skipped}"
+            )
     else:
         with get_conn() as conn:
             papers = conn.execute(
