@@ -136,7 +136,9 @@ def cmd_reconcile(args: argparse.Namespace) -> None:
         paper_id = paper["id"]
         pmid = paper["pmid"] or ""
         print(f"\n  [Reconcile] PMID {pmid} (status={paper['reconcile_status']})")
-        _run_reconcile_for_paper(paper, paper_id, pmid)
+        _run_reconcile_for_paper(
+            paper, paper_id, pmid, study_type=paper["study_type"] if "study_type" in paper.keys() else None
+        )
     print("\n[Reconcile] Stats:", db_stats())
 
 

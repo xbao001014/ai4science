@@ -33,7 +33,10 @@ Return exactly this shape:
 
 Rules:
 - Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, ScienceDirect, Scopus, Web of Science, etc.) — they are not experimental datasets.
-- NEVER drop curated public benchmarks (TCGA, Camelyon16/17, CPTAC, BreakHis, BACH, PANDA, MIDOG, DigestPath, etc.). Use keep, or merge aliases into that canonical name.
+- USES_DATASET must reflect datasets THIS study experimentally used (train/val/test/evaluate). Never keep datasets only listed in a review table, related-work survey, or background citation.
+- For review / meta-analysis papers: drop ALL datasets unless the authors clearly ran their own analysis on a named cohort (prefer empty datasets).
+- NEVER drop curated public benchmarks (TCGA, Camelyon16/17, CPTAC, BreakHis, BACH, PANDA, MIDOG, DigestPath, etc.) when this study actually used them. Use keep, or merge aliases into that canonical name.
+- Do not invent new dataset names that were not already in the Pass 1 entity summary, except merging aliases of existing ones.
 - Do not mark a dataset public unless it is a well-known public research dataset named in the paper; when unsure use unknown.
 - Do not set `access` to `public` for dataset names that are not on the known public alias list (unlisted names must stay `unknown`).
 - merge: collapse aliases to one canonical dataset name already implied by Pass 1 or known public aliases.
@@ -173,11 +176,29 @@ def parse_reconcile_payload(raw: dict) -> dict:
     }
 
 
-def call_reconcile_llm(text: str, entity_summary: str) -> dict:
+def call_reconcile_llm(
+    text: str, entity_summary: str, *, study_type: str | None = None
+) -> dict:
     from extractor.llm_client import llm_call_structured
 
-    user = f"ENTITY SUMMARY (Pass1):\n{entity_summary}\n\nFULLTEXT:\n{text}"
+    st = study_type or "unknown"
+    user = (
+        f"STUDY TYPE: {st}\n"
+        f"ENTITY SUMMARY (Pass1):\n{entity_summary}\n\nFULLTEXT:\n{text}"
+    )
     return parse_reconcile_payload(llm_call_structured(RECONCILE_SYSTEM, user))
+
+
+def _pass1_dataset_names(pmid: str) -> set[str]:
+    from db.schema import list_relations_for_pmid
+    from extractor.dataset_access import normalize_dataset_name
+
+    names: set[str] = set()
+    for rel in list_relations_for_pmid(pmid, "USES_DATASET"):
+        if rel["status"] != "active":
+            continue
+        names.add(normalize_dataset_name(rel["object_name"]))
+    return names
 
 
 def summarize_pass1_entities(pmid: str) -> str:
@@ -226,6 +247,8 @@ def _apply_dataset_actions(
     paper_id: int,
     pmid: str,
     datasets: list[dict[str, str]],
+    *,
+    study_type: str | None = None,
 ) -> None:
     from db.schema import (
         insert_relation,
@@ -240,12 +263,21 @@ def _apply_dataset_actions(
         resolve_dataset_access,
     )
 
+    # Reviews/meta-analyses survey others' data — clear USES_DATASET.
+    if (study_type or "").lower() in ("review", "meta_analysis"):
+        for rel in list_relations_for_pmid(pmid, "USES_DATASET"):
+            if rel["status"] == "active":
+                supersede_relation(rel["id"], None)
+        return
+
     existing = list_relations_for_pmid(pmid, "USES_DATASET")
+    pass1_names = _pass1_dataset_names(pmid)
 
     for row in datasets:
         name = row["name"]
         action = row["action"]
         access_hint = row.get("access", "unknown")
+        canon = normalize_dataset_name(name)
 
         if is_literature_platform(name):
             for rel in existing:
@@ -270,8 +302,10 @@ def _apply_dataset_actions(
                     supersede_relation(rel["id"], None)
 
         elif action == "keep":
+            # Do not invent survey-only datasets absent from Pass 1.
+            if canon not in pass1_names:
+                continue
             access = resolve_dataset_access(name, access_hint=access_hint)
-            canon = normalize_dataset_name(name)
             entity_id = upsert_entity(canon, "Dataset", access_class=access)
             has_active = any(
                 r["status"] == "active"
@@ -294,7 +328,12 @@ def _apply_dataset_actions(
                 )
 
         elif action == "merge":
-            canon = normalize_dataset_name(name)
+            # Merge only among / into names already present in Pass 1.
+            related_in_pass1 = canon in pass1_names or any(
+                _dataset_name_matches(n, name) or n == canon for n in pass1_names
+            )
+            if not related_in_pass1:
+                continue
             access = resolve_dataset_access(canon, access_hint=access_hint)
             entity_id = upsert_entity(canon, "Dataset", access_class=access)
             for rel in existing:
@@ -365,7 +404,12 @@ def _apply_limitation_merges(
         )
 
 
-def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
+def _apply_bindings(
+    pmid: str,
+    bindings: list[dict[str, str]],
+    *,
+    study_type: str | None = None,
+) -> None:
     from db.schema import upsert_entity, upsert_paper_entity_binding
     from extractor.dataset_access import (
         is_literature_platform,
@@ -373,6 +417,9 @@ def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
         resolve_dataset_access,
     )
     from extractor.entity_normalize import normalize_entity_name
+
+    survey = (study_type or "").lower() in ("review", "meta_analysis")
+    pass1_names = set() if survey else _pass1_dataset_names(pmid)
 
     for row in bindings:
         method = normalize_entity_name(row.get("method") or "", "Method")
@@ -383,10 +430,15 @@ def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
         disease_id = upsert_entity(disease, "Disease") if disease else None
         dataset_id = None
         dataset_name = (row.get("dataset") or "").strip()
-        if dataset_name and not is_literature_platform(dataset_name):
+        if (
+            dataset_name
+            and not survey
+            and not is_literature_platform(dataset_name)
+        ):
             canon = normalize_dataset_name(dataset_name)
-            access = resolve_dataset_access(canon)
-            dataset_id = upsert_entity(canon, "Dataset", access_class=access)
+            if canon in pass1_names:
+                access = resolve_dataset_access(canon)
+                dataset_id = upsert_entity(canon, "Dataset", access_class=access)
         upsert_paper_entity_binding(
             pmid,
             method_entity_id=method_id,
@@ -396,9 +448,17 @@ def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
         )
 
 
-def apply_reconcile_payload(paper_id: int, pmid: str, payload: dict) -> None:
+def apply_reconcile_payload(
+    paper_id: int,
+    pmid: str,
+    payload: dict,
+    *,
+    study_type: str | None = None,
+) -> None:
     """Persist Pass 2 reconcile decisions: datasets, limitations, bindings."""
     normalized = parse_reconcile_payload(payload)
-    _apply_dataset_actions(paper_id, pmid, normalized["datasets"])
+    _apply_dataset_actions(
+        paper_id, pmid, normalized["datasets"], study_type=study_type
+    )
     _apply_limitation_merges(paper_id, pmid, normalized["limitations"])
-    _apply_bindings(pmid, normalized["bindings"])
+    _apply_bindings(pmid, normalized["bindings"], study_type=study_type)

@@ -313,6 +313,21 @@ def test_postprocess_drops_pubmed_as_dataset():
     )
 
 
+def test_postprocess_drops_all_datasets_for_review_study_type():
+    t = Triple(
+        subject=Entity(name="paper", type="Method"),
+        relation="USES_DATASET",
+        object=Entity(name="camelyon16", type="Dataset"),
+        confidence=0.9,
+        evidence_quote="reviewed Camelyon16 studies",
+    )
+    out = postprocess_triples([t], "methods", study_type="review")
+    assert out == []
+    kept = postprocess_triples([t], "methods", study_type="ai_algorithm")
+    assert len(kept) == 1
+    assert kept[0].object.name == "camelyon16"
+
+
 def test_repair_does_not_invent_compares_method():
     # Wrong relation + Method object → remapped to APPLIES_METHOD, not COMPARES_METHOD
     t = Triple(

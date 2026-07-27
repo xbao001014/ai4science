@@ -47,6 +47,15 @@ STUDY-CONTENT ONLY (CRITICAL):
   - Disease / Task / Modality / Dataset: keep only what this paper studies or uses;
     drop other diseases/tasks/modalities mentioned only as context.
 
+Dataset policy (CRITICAL):
+  - USES_DATASET only for datasets THIS study experimentally used (train/val/test,
+    fine-tune, evaluate, or release as this paper's contribution).
+  - Do NOT extract datasets merely cited, compared in a literature table, surveyed
+    in a review, or named only in related work / background.
+  - For narrative/systematic reviews and meta-analyses: usually extract NO
+    USES_DATASET at all, unless the authors clearly ran their own analysis on a
+    named cohort (rare — prefer zero datasets over surveying others' data).
+
 Entity types: Disease, Method, Task, Tissue, Dataset, Metric, Modality, Limitation
 
 Relation types (object type MUST match):
@@ -258,11 +267,14 @@ def _extract_from_text(
     section_type: str,
     section_title: str,
     content: str,
+    *,
+    study_type: str | None = None,
 ) -> list[Triple]:
     if not content.strip():
         return []
     user_msg = (
         f"Paper title: {title}\n"
+        f"Study type: {study_type or 'unknown'}\n"
         f"Section type: {section_type}\n"
         f"Section title: {section_title}\n"
         f"Section text:\n{truncate_input(content)}\n\n"
@@ -280,7 +292,7 @@ def _extract_from_text(
                 triples.append(Triple.model_validate(item))
             except Exception:
                 pass
-    return postprocess_triples(triples, section_type)
+    return postprocess_triples(triples, section_type, study_type=study_type)
 
 
 def _save_triple(
@@ -382,7 +394,9 @@ def _other_as_discussion_job(sections) -> dict | None:
 
 
 def _extract_fulltext(
-    paper: dict, paper_id: int, pmid: str, title: str, granularity: str
+    paper: dict, paper_id: int, pmid: str, title: str, granularity: str,
+    *,
+    study_type: str | None = None,
 ) -> int:
     sections = get_paper_sections(paper_id)
     extract_types = _section_types_for_paper(has_fulltext=True)
@@ -398,6 +412,7 @@ def _extract_fulltext(
             sec_type,
             sec["title"] or sec_type,
             sec["content"],
+            study_type=study_type,
         )
         for triple in triples:
             _save_triple(triple, paper_id, pmid, sec_type, granularity)
@@ -425,7 +440,9 @@ def _extract_fulltext(
                     (sec["content"] or "").strip() for sec in abstract_secs
                 )
         if abstract_text:
-            _extract_abstract_fallback(paper_id, pmid, title, abstract_text)
+            _extract_abstract_fallback(
+                paper_id, pmid, title, abstract_text, study_type=study_type
+            )
         return _relation_count(pmid) - before
 
     workers = max(1, config.EXTRACT_SECTION_WORKERS)
@@ -455,15 +472,26 @@ def _extract_fulltext(
     return added
 
 
-def _extract_abstract_fallback(paper_id: int, pmid: str, title: str, abstract: str) -> int:
+def _extract_abstract_fallback(
+    paper_id: int,
+    pmid: str,
+    title: str,
+    abstract: str,
+    *,
+    study_type: str | None = None,
+) -> int:
     before = _relation_count(pmid)
-    triples = _extract_from_text(title, "abstract", "Abstract", abstract)
+    triples = _extract_from_text(
+        title, "abstract", "Abstract", abstract, study_type=study_type
+    )
     for triple in triples:
         _save_triple(triple, paper_id, pmid, "abstract", "abstract")
     return _relation_count(pmid) - before
 
 
-def _run_reconcile_for_paper(paper, paper_id: int, pmid: str) -> None:
+def _run_reconcile_for_paper(
+    paper, paper_id: int, pmid: str, *, study_type: str | None = None
+) -> None:
     from db.schema import set_paper_reconcile_status
     from extractor.fulltext_reconcile import (
         apply_reconcile_payload,
@@ -486,11 +514,13 @@ def _run_reconcile_for_paper(paper, paper_id: int, pmid: str) -> None:
     if not any((s["content"] or "").strip() for s in sec_dicts):
         set_paper_reconcile_status(paper_id, "skipped_no_ft")
         return
+    if study_type is None and "study_type" in paper.keys():
+        study_type = paper["study_type"]
     try:
         text = assemble_reconcile_text(sec_dicts, max_chars=config.RECONCILE_MAX_CHARS)
         summary = summarize_pass1_entities(pmid)
-        payload = call_reconcile_llm(text, summary)
-        apply_reconcile_payload(paper_id, pmid, payload)
+        payload = call_reconcile_llm(text, summary, study_type=study_type)
+        apply_reconcile_payload(paper_id, pmid, payload, study_type=study_type)
         set_paper_reconcile_status(paper_id, "done")
     except Exception as e:
         print(f"\n  [Reconcile] PMID {pmid}: failed: {e}")
@@ -543,15 +573,23 @@ def _process_paper(paper) -> None:
                 return
 
         if status == "available":
-            added = _extract_fulltext(dict(paper), paper_id, pmid, title, "fulltext")
+            added = _extract_fulltext(
+                dict(paper), paper_id, pmid, title, "fulltext", study_type=study_type
+            )
         elif status == "pdf_available":
-            added = _extract_fulltext(dict(paper), paper_id, pmid, title, "mineru_pdf")
+            added = _extract_fulltext(
+                dict(paper), paper_id, pmid, title, "mineru_pdf", study_type=study_type
+            )
         else:
-            added = _extract_abstract_fallback(paper_id, pmid, title, abstract)
+            added = _extract_abstract_fallback(
+                paper_id, pmid, title, abstract, study_type=study_type
+            )
 
         if added == 0 and abstract.strip() and status in ("available", "pdf_available"):
             print(f"\n  [Extractor] PMID {pmid}: 0 relations from fulltext, trying abstract.")
-            added = _extract_abstract_fallback(paper_id, pmid, title, abstract)
+            added = _extract_abstract_fallback(
+                paper_id, pmid, title, abstract, study_type=study_type
+            )
 
         if added == 0:
             print(
@@ -561,7 +599,7 @@ def _process_paper(paper) -> None:
             return
 
         mark_extraction_done(paper_id, study_type)
-        _run_reconcile_for_paper(paper, paper_id, pmid)
+        _run_reconcile_for_paper(paper, paper_id, pmid, study_type=study_type)
     except Exception as e:
         print(f"\n  [Extractor] Error on PMID {pmid}: {e}")
 

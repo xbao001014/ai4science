@@ -321,6 +321,96 @@ def test_apply_dataset_merge_supersedes_aliases(monkeypatch):
     assert all(r["superseded_by"] == canon_id for r in superseded)
 
 
+def test_review_study_type_clears_all_datasets(monkeypatch):
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "66778899"
+    paper_id = upsert_paper({"pmid": pmid, "title": "A systematic review"})
+    tcga_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        tcga_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {"name": "tcga", "access": "public", "action": "keep", "reason": "survey"}
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="review",
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        superseded = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='superseded'""",
+            (pmid,),
+        ).fetchone()[0]
+    assert active == 0
+    assert superseded == 1
+
+
+def test_pass2_keep_cannot_invent_survey_dataset(monkeypatch):
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "44556677"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Algorithm paper"})
+    cam_id = upsert_entity("camelyon16", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        cam_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "inbreast",
+                    "access": "public",
+                    "action": "keep",
+                    "reason": "mentioned in related work only",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="ai_algorithm",
+    )
+    with get_conn() as conn:
+        names = {
+            r["name"]
+            for r in conn.execute(
+                """SELECT e.name FROM relations r
+                   JOIN entities e ON e.id=r.object_id
+                   WHERE r.source_pmid=? AND r.relation='USES_DATASET'
+                     AND r.status='active'""",
+                (pmid,),
+            )
+        }
+    assert names == {"camelyon16"}
+
+
 def test_drop_cannot_remove_public_alias(monkeypatch):
     from extractor.fulltext_reconcile import apply_reconcile_payload
 

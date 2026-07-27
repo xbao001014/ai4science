@@ -455,8 +455,16 @@ def repair_triple_relation(triple: Triple) -> Triple | None:
     return triple.model_copy(update={"relation": new_rel})
 
 
-def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple]:
+def postprocess_triples(
+    triples: list[Triple],
+    section_type: str,
+    *,
+    study_type: str | None = None,
+) -> list[Triple]:
     """Repair relations, filter low-value methods / coarse diseases / radiology modalities."""
+    # Reviews/meta-analyses survey others' data — do not ingest USES_DATASET.
+    drop_all_datasets = (study_type or "").lower() in ("review", "meta_analysis")
+
     normalized: list[Triple] = []
     for triple in triples:
         obj_name = triple.object.name
@@ -518,6 +526,8 @@ def postprocess_triples(triples: list[Triple], section_type: str) -> list[Triple
             continue
 
         if obj_type == "Dataset" or triple.relation == "USES_DATASET":
+            if drop_all_datasets:
+                continue
             canon = normalize_dataset_name(obj_name)
             if is_literature_platform(obj_name) or is_literature_platform(canon):
                 continue
