@@ -44,6 +44,7 @@ def _query_datasets_for_pmids(pmids: list[str]) -> list[dict[str, Any]]:
         FROM relations r_ds
         JOIN entities e_ds ON r_ds.object_id = e_ds.id
         WHERE r_ds.relation = 'USES_DATASET'
+          AND COALESCE(r_ds.status, 'active') = 'active'
           AND e_ds.type = 'Dataset'
           AND r_ds.source_pmid IN ({placeholders})
         GROUP BY e_ds.id

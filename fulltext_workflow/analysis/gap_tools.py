@@ -33,6 +33,7 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
         JOIN entities e ON r.object_id = e.id
         WHERE (r.relation IN ('REPORTS_LIMITATION')
            OR (e.type='Limitation' AND r.relation='REPORTS_LIMITATION'))
+           AND COALESCE(r.status, 'active') = 'active'
            {fc}
         GROUP BY e.id
         ORDER BY paper_cnt DESC
@@ -46,7 +47,9 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
                    GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes
             FROM relations r
             JOIN entities e ON r.object_id = e.id
-            WHERE e.type='Limitation' {fc}
+            WHERE e.type='Limitation'
+              AND COALESCE(r.status, 'active') = 'active'
+              {fc}
             GROUP BY e.id
             ORDER BY paper_cnt DESC
             LIMIT {config.TOOL_TOP_N}
@@ -121,6 +124,7 @@ def tool_corpus_focus_coverage(focus: str | None = None) -> dict:
     lim_cnt = _q(f"""
         SELECT COUNT(*) AS cnt FROM relations r
         WHERE r.relation = 'REPORTS_LIMITATION'
+          AND COALESCE(r.status, 'active') = 'active'
         {focus_pmid_in_clause('r.source_pmid', f)}
     """)
     method_cnt = _q(f"""
@@ -345,6 +349,7 @@ def tool_limitation_impact_rank(focus: str | None = None) -> dict:
         {_paper_impact_join()}
         WHERE (r.relation = 'REPORTS_LIMITATION'
            OR (e.type = 'Limitation' AND r.relation = 'REPORTS_LIMITATION'))
+          AND COALESCE(r.status, 'active') = 'active'
           {fc}
         GROUP BY e.id
         HAVING paper_cnt >= 1

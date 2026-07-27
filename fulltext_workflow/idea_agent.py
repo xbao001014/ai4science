@@ -86,6 +86,7 @@ def tool_datasets_for_topic(keyword: str) -> dict:
         JOIN relations r_ds ON r_ds.source_pmid = p.pmid
         JOIN entities e_ds ON r_ds.object_id = e_ds.id
         WHERE r_ds.relation = 'USES_DATASET' AND e_ds.type = 'Dataset'
+          AND COALESCE(r_ds.status, 'active') = 'active'
           {pmid_fc}
         GROUP BY e_ds.id
         ORDER BY
@@ -136,6 +137,7 @@ def tool_author_limitations_for_topic(keyword: str) -> dict:
         JOIN entities e ON r.object_id = e.id
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE (r.relation = 'REPORTS_LIMITATION' OR e.type = 'Limitation')
+          AND COALESCE(r.status, 'active') = 'active'
           {pmid_fc}
         LIMIT {config.TOOL_TOP_N}
     """)

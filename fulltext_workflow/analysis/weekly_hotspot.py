@@ -316,6 +316,7 @@ def compute_emerging_limitations(
         JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE r.relation = 'REPORTS_LIMITATION'
+          AND COALESCE(r.status, 'active') = 'active'
           AND {eligible}
           AND date(p.pub_date) >= date('now', ?)
         GROUP BY e.id

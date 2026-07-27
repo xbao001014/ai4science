@@ -29,6 +29,7 @@ def limitation_as_of_year() -> int:
         FROM relations r
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE r.relation = 'REPORTS_LIMITATION'
+          AND COALESCE(r.status, 'active') = 'active'
           AND p.year IS NOT NULL
         """
     )
@@ -83,6 +84,7 @@ def _limitation_impact_by_id() -> dict[int, dict[str, Any]]:
         JOIN papers p ON r.source_pmid = p.pmid
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE r.relation = 'REPORTS_LIMITATION'
+          AND COALESCE(r.status, 'active') = 'active'
           AND p.year IS NOT NULL
         """
     )
@@ -124,6 +126,7 @@ def compute_limitation_temporal_profiles(
             JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
             JOIN papers p ON r.source_pmid = p.pmid
             WHERE r.relation = 'REPORTS_LIMITATION'
+              AND COALESCE(r.status, 'active') = 'active'
               AND p.year IS NOT NULL
               {focus_sql}
             GROUP BY e.id
@@ -136,6 +139,7 @@ def compute_limitation_temporal_profiles(
                    JOIN papers p2 ON r2.source_pmid = p2.pmid
                    WHERE r2.object_id = lb.limitation_id
                      AND r2.relation = 'REPORTS_LIMITATION'
+                     AND COALESCE(r2.status, 'active') = 'active'
                      AND p2.year IS NOT NULL
                      AND p2.year <= lb.first_year + ?
                ) AS early_cnt
@@ -239,6 +243,7 @@ class _FollowupIndex:
             FROM relations r
             JOIN papers p ON r.source_pmid = p.pmid
             WHERE r.relation = 'REPORTS_LIMITATION'
+              AND COALESCE(r.status, 'active') = 'active'
               AND p.year IS NOT NULL
             """
         )
@@ -505,6 +510,7 @@ def _load_anchor_diseases_by_limitation() -> dict[int, tuple[int, int | None, se
         FROM limitation_temporal lt
         JOIN relations r ON r.object_id = lt.limitation_id
             AND r.relation = 'REPORTS_LIMITATION'
+            AND COALESCE(r.status, 'active') = 'active'
         JOIN papers p ON p.pmid = r.source_pmid
         JOIN relations rd ON rd.source_pmid = r.source_pmid
         JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
