@@ -9,8 +9,10 @@ from tqdm import tqdm
 
 import config
 from db.schema import (
+    clear_paper_kg_extractions,
     get_conn,
     get_paper_sections,
+    get_papers_by_pmids,
     get_papers_for_extraction,
     insert_relation,
     mark_extraction_done,
@@ -304,6 +306,8 @@ def _save_triple(
                 evidence_quote=triple.evidence_quote or "",
                 extraction_granularity=granularity,
                 polarity=triple.polarity,
+                extraction_pass="section",
+                status="active",
             )
         else:
             obj_name = triple.object.name
@@ -333,6 +337,8 @@ def _save_triple(
                 evidence_quote=triple.evidence_quote or "",
                 extraction_granularity=granularity,
                 polarity=triple.polarity,
+                extraction_pass="section",
+                status="active",
             )
 
 
@@ -457,6 +463,40 @@ def _extract_abstract_fallback(paper_id: int, pmid: str, title: str, abstract: s
     return _relation_count(pmid) - before
 
 
+def _run_reconcile_for_paper(paper, paper_id: int, pmid: str) -> None:
+    from db.schema import set_paper_reconcile_status
+    from extractor.fulltext_reconcile import (
+        apply_reconcile_payload,
+        assemble_reconcile_text,
+        call_reconcile_llm,
+        summarize_pass1_entities,
+    )
+
+    if not config.RECONCILE_ENABLED:
+        return
+    status = paper["full_text_status"]
+    if status not in ("available", "pdf_available"):
+        set_paper_reconcile_status(paper_id, "skipped_no_ft")
+        return
+    sections = get_paper_sections(paper_id)
+    sec_dicts = [
+        {"section_type": s["section_type"], "content": s["content"] or ""}
+        for s in sections
+    ]
+    if not any((s["content"] or "").strip() for s in sec_dicts):
+        set_paper_reconcile_status(paper_id, "skipped_no_ft")
+        return
+    try:
+        text = assemble_reconcile_text(sec_dicts, max_chars=config.RECONCILE_MAX_CHARS)
+        summary = summarize_pass1_entities(pmid)
+        payload = call_reconcile_llm(text, summary)
+        apply_reconcile_payload(paper_id, pmid, payload)
+        set_paper_reconcile_status(paper_id, "done")
+    except Exception as e:
+        print(f"\n  [Reconcile] PMID {pmid}: failed: {e}")
+        set_paper_reconcile_status(paper_id, "failed")
+
+
 def _process_paper(paper) -> None:
     paper_id = paper["id"]
     pmid = paper["pmid"] or ""
@@ -521,12 +561,24 @@ def _process_paper(paper) -> None:
             return
 
         mark_extraction_done(paper_id, study_type)
+        _run_reconcile_for_paper(paper, paper_id, pmid)
     except Exception as e:
         print(f"\n  [Extractor] Error on PMID {pmid}: {e}")
 
 
-def run_extraction(limit: int | None = None) -> None:
-    if limit is None:
+def run_extraction(
+    limit: int | None = None,
+    *,
+    pmids: list[str] | None = None,
+    force_reextract: bool = False,
+) -> None:
+    if pmids:
+        if force_reextract:
+            for pmid in pmids:
+                clear_paper_kg_extractions(pmid)
+        papers = get_papers_by_pmids(pmids)
+        lim = len(papers)
+    elif limit is None:
         lim = config.DEFAULT_EXTRACT_LIMIT
         papers = get_papers_for_extraction(limit=lim)
     elif limit == 0:

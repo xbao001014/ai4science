@@ -169,6 +169,34 @@ def call_reconcile_llm(text: str, entity_summary: str) -> dict:
     return parse_reconcile_payload(llm_call_structured(RECONCILE_SYSTEM, user))
 
 
+def summarize_pass1_entities(pmid: str) -> str:
+    """Distinct active entity names by type from Pass 1 relations for a PMID."""
+    from db.schema import get_conn
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT e.type, e.name
+               FROM relations r
+               JOIN entities e ON e.id = r.object_id
+               WHERE r.source_pmid=? AND r.status='active'
+               ORDER BY e.type, e.name""",
+            (pmid,),
+        ).fetchall()
+
+    by_type: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (row["type"], row["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        by_type.setdefault(row["type"], []).append(row["name"])
+
+    return "\n".join(
+        f"{etype}: {', '.join(names)}" for etype, names in sorted(by_type.items())
+    )
+
+
 def _dataset_name_matches(object_name: str, payload_name: str) -> bool:
     from extractor.dataset_access import normalize_dataset_name
 
