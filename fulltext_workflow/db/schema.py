@@ -894,6 +894,27 @@ def supersede_relation(relation_id: int, superseded_by: int | None) -> None:
         )
 
 
+def list_relations_for_pmid(
+    pmid: str,
+    relation: str | None = None,
+) -> list[sqlite3.Row]:
+    """Relations for a PMID with object entity name joined."""
+    clauses = ["r.source_pmid=?"]
+    params: list[Any] = [pmid]
+    if relation:
+        clauses.append("r.relation=?")
+        params.append(relation)
+    where = " AND ".join(clauses)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""SELECT r.*, e.name AS object_name
+                FROM relations r
+                JOIN entities e ON e.id = r.object_id
+                WHERE {where}""",
+            tuple(params),
+        ).fetchall()
+
+
 def set_paper_reconcile_status(paper_id: int, status: str) -> None:
     with get_conn() as conn:
         conn.execute(

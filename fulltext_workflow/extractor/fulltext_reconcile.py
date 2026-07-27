@@ -167,3 +167,143 @@ def call_reconcile_llm(text: str, entity_summary: str) -> dict:
 
     user = f"ENTITY SUMMARY (Pass1):\n{entity_summary}\n\nFULLTEXT:\n{text}"
     return parse_reconcile_payload(llm_call_structured(RECONCILE_SYSTEM, user))
+
+
+def _dataset_name_matches(object_name: str, payload_name: str) -> bool:
+    from extractor.dataset_access import normalize_dataset_name
+
+    return normalize_dataset_name(object_name) == normalize_dataset_name(payload_name)
+
+
+def _limitation_name_matches(object_name: str, merge_name: str) -> bool:
+    from extractor.entity_normalize import normalize_entity_name
+
+    return normalize_entity_name(object_name, "Limitation") == normalize_entity_name(
+        merge_name, "Limitation"
+    )
+
+
+def _apply_dataset_actions(
+    paper_id: int,
+    pmid: str,
+    datasets: list[dict[str, str]],
+) -> None:
+    from db.schema import (
+        insert_relation,
+        list_relations_for_pmid,
+        supersede_relation,
+        upsert_entity,
+    )
+    from extractor.dataset_access import normalize_dataset_name, resolve_dataset_access
+
+    existing = list_relations_for_pmid(pmid, "USES_DATASET")
+
+    for row in datasets:
+        name = row["name"]
+        action = row["action"]
+        access_hint = row.get("access", "unknown")
+
+        if action == "drop":
+            for rel in existing:
+                if rel["status"] != "active":
+                    continue
+                if _dataset_name_matches(rel["object_name"], name):
+                    supersede_relation(rel["id"], None)
+
+        elif action == "keep":
+            access = resolve_dataset_access(name, access_hint=access_hint)
+            canon = normalize_dataset_name(name)
+            upsert_entity(canon, "Dataset", access_class=access)
+
+        elif action == "merge":
+            canon = normalize_dataset_name(name)
+            access = resolve_dataset_access(canon, access_hint=access_hint)
+            entity_id = upsert_entity(canon, "Dataset", access_class=access)
+            for rel in existing:
+                if rel["status"] != "active":
+                    continue
+                if _dataset_name_matches(rel["object_name"], name):
+                    supersede_relation(rel["id"], None)
+            insert_relation(
+                "Paper",
+                paper_id,
+                "USES_DATASET",
+                "Dataset",
+                entity_id,
+                source_pmid=pmid,
+                extraction_pass="fulltext_reconcile",
+                status="active",
+            )
+
+
+def _apply_limitation_merges(
+    paper_id: int,
+    pmid: str,
+    limitations: list[dict[str, Any]],
+) -> None:
+    from db.schema import (
+        insert_relation,
+        list_relations_for_pmid,
+        supersede_relation,
+        upsert_entity,
+    )
+    from extractor.entity_normalize import normalize_entity_name
+
+    existing = list_relations_for_pmid(pmid, "REPORTS_LIMITATION")
+
+    for lim in limitations:
+        canonical_name = normalize_entity_name(lim["canonical"], "Limitation")
+        canonical_id = upsert_entity(canonical_name, "Limitation")
+        for merge_name in lim.get("merges") or []:
+            for rel in existing:
+                if rel["status"] != "active":
+                    continue
+                if _limitation_name_matches(rel["object_name"], merge_name):
+                    supersede_relation(rel["id"], canonical_id)
+        insert_relation(
+            "Paper",
+            paper_id,
+            "REPORTS_LIMITATION",
+            "Limitation",
+            canonical_id,
+            source_pmid=pmid,
+            evidence_quote=lim.get("quote") or "",
+            evidence_section="fulltext_reconcile",
+            extraction_pass="fulltext_reconcile",
+            status="active",
+        )
+
+
+def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
+    from db.schema import upsert_entity, upsert_paper_entity_binding
+    from extractor.dataset_access import normalize_dataset_name, resolve_dataset_access
+    from extractor.entity_normalize import normalize_entity_name
+
+    for row in bindings:
+        method = normalize_entity_name(row.get("method") or "", "Method")
+        disease = normalize_entity_name(row.get("disease") or "", "Disease")
+        if not method and not disease:
+            continue
+        method_id = upsert_entity(method, "Method") if method else None
+        disease_id = upsert_entity(disease, "Disease") if disease else None
+        dataset_id = None
+        dataset_name = (row.get("dataset") or "").strip()
+        if dataset_name:
+            canon = normalize_dataset_name(dataset_name)
+            access = resolve_dataset_access(canon)
+            dataset_id = upsert_entity(canon, "Dataset", access_class=access)
+        upsert_paper_entity_binding(
+            pmid,
+            method_entity_id=method_id,
+            disease_entity_id=disease_id,
+            dataset_entity_id=dataset_id,
+            evidence_quote=row.get("quote") or "",
+        )
+
+
+def apply_reconcile_payload(paper_id: int, pmid: str, payload: dict) -> None:
+    """Persist Pass 2 reconcile decisions: datasets, limitations, bindings."""
+    normalized = parse_reconcile_payload(payload)
+    _apply_dataset_actions(paper_id, pmid, normalized["datasets"])
+    _apply_limitation_merges(paper_id, pmid, normalized["limitations"])
+    _apply_bindings(pmid, normalized["bindings"])
