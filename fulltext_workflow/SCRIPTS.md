@@ -71,6 +71,19 @@ $py = "..\.venv\Scripts\python.exe"
 ```powershell
 & $py main.py extract --limit 0 --core-only
 & $py main.py extract --limit 30
+```
+
+### Pilot re-extract
+
+`data/pilot_pmids.txt` is local (`fulltext_workflow/data/` is gitignored).
+
+```powershell
+& $py main.py extract --pmid-list data/pilot_pmids.txt --force-reextract --limit 0
+& $py main.py reconcile --pmid-list data/pilot_pmids.txt
+& $py main.py reconcile   # pending/failed with fulltext
+```
+
+```powershell
 & $py main.py compute-gap-lifecycle
 & $py main.py compute-gap-lifecycle --temporal-only   # 更快
 & $py main.py build

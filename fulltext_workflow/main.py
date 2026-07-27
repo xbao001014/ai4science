@@ -62,8 +62,17 @@ def cmd_fetch_fulltext(_args: argparse.Namespace) -> None:
     print("\n[Fetch-Fulltext] Stats:", db_stats())
 
 
+def _load_pmid_list(path_str: str) -> list[str]:
+    path = Path(path_str)
+    return [
+        ln.strip()
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.startswith("#")
+    ]
+
+
 def cmd_extract(args: argparse.Namespace) -> None:
-    from db.schema import db_stats, get_papers_for_extraction, init_db
+    from db.schema import db_stats, get_papers_by_pmids, get_papers_for_extraction, init_db
     from extractor.section_extractor import run_extraction
 
     init_db()
@@ -77,11 +86,46 @@ def cmd_extract(args: argparse.Namespace) -> None:
         config.EXTRACT_PAPER_WORKERS = max(1, args.paper_workers)
 
     limit = args.limit if args.limit is not None else None
-    preview = get_papers_for_extraction(limit=0 if limit == 0 else (limit or 9999))
-    label = "all" if limit == 0 else (limit or config.DEFAULT_EXTRACT_LIMIT)
+    pmids = _load_pmid_list(args.pmid_list) if args.pmid_list else None
+    if pmids:
+        preview = get_papers_by_pmids(pmids)
+        label = f"pmid-list ({len(pmids)} requested)"
+    else:
+        preview = get_papers_for_extraction(limit=0 if limit == 0 else (limit or 9999))
+        label = "all" if limit == 0 else (limit or config.DEFAULT_EXTRACT_LIMIT)
     print(f"  Papers queued: {len(preview)} (limit={label})")
-    run_extraction(limit=limit)
+    run_extraction(
+        limit=limit,
+        pmids=pmids,
+        force_reextract=bool(args.force_reextract),
+    )
     print("\n[Extract] Stats:", db_stats())
+
+
+def cmd_reconcile(args: argparse.Namespace) -> None:
+    from db.schema import db_stats, get_conn, get_papers_by_pmids, init_db
+    from extractor.section_extractor import _run_reconcile_for_paper
+
+    init_db()
+    if args.pmid_list:
+        papers = get_papers_by_pmids(_load_pmid_list(args.pmid_list))
+    else:
+        with get_conn() as conn:
+            papers = conn.execute(
+                """SELECT * FROM papers
+                   WHERE extraction_done=1
+                     AND COALESCE(reconcile_status, 'pending') IN ('pending', 'failed')
+                     AND full_text_status IN ('available', 'pdf_available')
+                   ORDER BY year DESC"""
+            ).fetchall()
+
+    print(f"[Reconcile] {len(papers)} paper(s)")
+    for paper in papers:
+        paper_id = paper["id"]
+        pmid = paper["pmid"] or ""
+        print(f"\n  [Reconcile] PMID {pmid} (status={paper['reconcile_status']})")
+        _run_reconcile_for_paper(paper, paper_id, pmid)
+    print("\n[Reconcile] Stats:", db_stats())
 
 
 def cmd_build(_args: argparse.Namespace) -> None:
@@ -421,6 +465,28 @@ def main() -> None:
         default=None,
         help="Parallel papers (default from EXTRACT_PAPER_WORKERS)",
     )
+    p_ext.add_argument(
+        "--pmid-list",
+        type=str,
+        default=None,
+        help="Text file, one PMID per line",
+    )
+    p_ext.add_argument(
+        "--force-reextract",
+        action="store_true",
+        help="Clear relations/bindings for target PMIDs before Pass1+2",
+    )
+
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Pass-2 fulltext reconcile only (requires Pass1)",
+    )
+    p_reconcile.add_argument(
+        "--pmid-list",
+        type=str,
+        default=None,
+        help="Text file, one PMID per line (default: pending/failed with fulltext)",
+    )
 
     sub.add_parser("build", help="Build KG, export GEXF/CSV, and HTML visualizations")
     sub.add_parser("viz", help="Regenerate HTML visualizations from existing DB")
@@ -640,6 +706,7 @@ def main() -> None:
         "import-if": cmd_import_if,
         "fetch-fulltext": cmd_fetch_fulltext,
         "extract": cmd_extract,
+        "reconcile": cmd_reconcile,
         "build": cmd_build,
         "viz": cmd_viz,
         "analyze": cmd_analyze,
