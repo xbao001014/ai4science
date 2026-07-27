@@ -34,6 +34,7 @@ Return exactly this shape:
 Rules:
 - Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, etc.) — they are not experimental datasets.
 - Do not mark a dataset public unless it is a well-known public research dataset named in the paper; when unsure use unknown.
+- Do not set `access` to `public` for dataset names that are not on the known public alias list (unlisted names must stay `unknown`).
 - merge: collapse aliases to one canonical dataset name already implied by Pass 1 or known public aliases.
 - bindings: one row per method–disease–dataset claim; dataset may be empty when no named set is stated.
 - limitations: canonical short phrase; merges lists section-level fragments to supersede.
