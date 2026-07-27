@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 
 from extractor.dataset_access import (  # noqa: E402
     is_literature_platform,
+    is_public_dataset_alias,
     normalize_dataset_name,
     resolve_dataset_access,
     stronger_access,
@@ -59,9 +60,17 @@ def test_literature_platform_blocklist():
     assert is_literature_platform("pubmed central")
     assert is_literature_platform("NCBI GEO")
     assert is_literature_platform("Google Scholar")
+    assert is_literature_platform("ScienceDirect")
     assert not is_literature_platform("camelyon16")
     assert not is_literature_platform("tcga")
 
+
+def test_public_dataset_alias_helper():
+    assert is_public_dataset_alias("TCGA-LUAD")
+    assert is_public_dataset_alias("cptac-crc")
+    assert is_public_dataset_alias("midog++")
+    assert not is_public_dataset_alias("pubmed")
+    assert not is_public_dataset_alias("random hospital slides")
 
 def test_llm_public_hint_unlisted_becomes_unknown():
     assert resolve_dataset_access("some rare bank", access_hint="public") == "unknown"

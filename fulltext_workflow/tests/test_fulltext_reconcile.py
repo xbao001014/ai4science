@@ -317,4 +317,112 @@ def test_apply_dataset_merge_supersedes_aliases(monkeypatch):
     assert {r["name"] for r in active} == {"camelyon16"}
     assert len(active) == 1
     assert {r["name"] for r in superseded} == {"camelyon 16", "camelyon16 dataset"}
-    assert all(r["superseded_by"] is None for r in superseded)
+    canon_id = upsert_entity("camelyon16", "Dataset")
+    assert all(r["superseded_by"] == canon_id for r in superseded)
+
+
+def test_drop_cannot_remove_public_alias(monkeypatch):
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "55667788"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Protect public alias"})
+    tcga_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        tcga_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "TCGA",
+                    "access": "unknown",
+                    "action": "drop",
+                    "reason": "llm mistake",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT e.name, r.status FROM relations r
+               JOIN entities e ON e.id=r.object_id
+               WHERE r.source_pmid=? AND r.relation='USES_DATASET' AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+    assert {r["name"] for r in active} == {"tcga"}
+
+
+def test_limitation_merge_reactivates_canonical_edge(monkeypatch):
+    """If Pass1 already had the canonical edge and merges supersede siblings,
+    Pass2 must leave an active canonical (reactivate if needed)."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "99887766"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Limitation reactivate"})
+    canon_id = upsert_entity("small sample size", "Limitation")
+    frag_id = upsert_entity("small n", "Limitation")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "REPORTS_LIMITATION",
+        "Limitation",
+        canon_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    insert_relation(
+        "Paper",
+        paper_id,
+        "REPORTS_LIMITATION",
+        "Limitation",
+        frag_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    # Simulate a buggy LLM that also lists the canonical in merges.
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [],
+            "bindings": [],
+            "limitations": [
+                {
+                    "canonical": "small sample size",
+                    "merges": ["small sample size", "small n"],
+                    "quote": "n is small",
+                }
+            ],
+        },
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT e.name, r.extraction_pass, r.status FROM relations r
+               JOIN entities e ON e.id=r.object_id
+               WHERE r.source_pmid=? AND r.relation='REPORTS_LIMITATION'
+                 AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+        superseded = conn.execute(
+            """SELECT e.name FROM relations r
+               JOIN entities e ON e.id=r.object_id
+               WHERE r.source_pmid=? AND r.relation='REPORTS_LIMITATION'
+                 AND r.status='superseded'""",
+            (pmid,),
+        ).fetchall()
+    assert len(active) == 1
+    assert active[0]["name"] == "small sample size"
+    assert active[0]["extraction_pass"] == "fulltext_reconcile"
+    assert {r["name"] for r in superseded} == {"small n"}

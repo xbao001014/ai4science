@@ -32,12 +32,13 @@ Return exactly this shape:
 }
 
 Rules:
-- Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, etc.) — they are not experimental datasets.
+- Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, ScienceDirect, Scopus, Web of Science, etc.) — they are not experimental datasets.
+- NEVER drop curated public benchmarks (TCGA, Camelyon16/17, CPTAC, BreakHis, BACH, PANDA, MIDOG, DigestPath, etc.). Use keep, or merge aliases into that canonical name.
 - Do not mark a dataset public unless it is a well-known public research dataset named in the paper; when unsure use unknown.
 - Do not set `access` to `public` for dataset names that are not on the known public alias list (unlisted names must stay `unknown`).
 - merge: collapse aliases to one canonical dataset name already implied by Pass 1 or known public aliases.
 - bindings: one row per method–disease–dataset claim; dataset may be empty when no named set is stated.
-- limitations: canonical short phrase; merges lists section-level fragments to supersede.
+- limitations: canonical short phrase; merges lists section-level fragments to supersede. Always leave the canonical as the surviving limitation (do not put only fragments with no survivor).
 - Omit empty arrays when nothing applies; use [] not null for lists.
 """
 
@@ -234,6 +235,7 @@ def _apply_dataset_actions(
     )
     from extractor.dataset_access import (
         is_literature_platform,
+        is_public_dataset_alias,
         normalize_dataset_name,
         resolve_dataset_access,
     )
@@ -253,17 +255,43 @@ def _apply_dataset_actions(
                     supersede_relation(rel["id"], None)
             continue
 
+        # Curated public benchmarks must survive Pass 2; treat LLM "drop" as keep.
+        if action == "drop" and is_public_dataset_alias(name):
+            action = "keep"
+
         if action == "drop":
             for rel in existing:
                 if rel["status"] != "active":
                     continue
                 if _dataset_name_matches(rel["object_name"], name):
+                    # Never supersede a curated public alias edge.
+                    if is_public_dataset_alias(rel["object_name"]):
+                        continue
                     supersede_relation(rel["id"], None)
 
         elif action == "keep":
             access = resolve_dataset_access(name, access_hint=access_hint)
             canon = normalize_dataset_name(name)
-            upsert_entity(canon, "Dataset", access_class=access)
+            entity_id = upsert_entity(canon, "Dataset", access_class=access)
+            has_active = any(
+                r["status"] == "active"
+                and (
+                    r["object_id"] == entity_id
+                    or normalize_dataset_name(r["object_name"]) == canon
+                )
+                for r in list_relations_for_pmid(pmid, "USES_DATASET")
+            )
+            if not has_active:
+                insert_relation(
+                    "Paper",
+                    paper_id,
+                    "USES_DATASET",
+                    "Dataset",
+                    entity_id,
+                    source_pmid=pmid,
+                    extraction_pass="fulltext_reconcile",
+                    status="active",
+                )
 
         elif action == "merge":
             canon = normalize_dataset_name(name)
@@ -272,8 +300,12 @@ def _apply_dataset_actions(
             for rel in existing:
                 if rel["status"] != "active":
                     continue
-                if _dataset_name_matches(rel["object_name"], name):
-                    supersede_relation(rel["id"], None)
+                if rel["object_id"] == entity_id:
+                    continue
+                if _dataset_name_matches(rel["object_name"], name) or (
+                    normalize_dataset_name(rel["object_name"]) == canon
+                ):
+                    supersede_relation(rel["id"], entity_id)
             insert_relation(
                 "Paper",
                 paper_id,
@@ -304,12 +336,21 @@ def _apply_limitation_merges(
     for lim in limitations:
         canonical_name = normalize_entity_name(lim["canonical"], "Limitation")
         canonical_id = upsert_entity(canonical_name, "Limitation")
-        for merge_name in lim.get("merges") or []:
+        merge_names = [
+            m
+            for m in (lim.get("merges") or [])
+            if not _limitation_name_matches(m, canonical_name)
+        ]
+        for merge_name in merge_names:
             for rel in existing:
                 if rel["status"] != "active":
                     continue
+                # Never supersede the canonical survivor itself.
+                if rel["object_id"] == canonical_id:
+                    continue
                 if _limitation_name_matches(rel["object_name"], merge_name):
                     supersede_relation(rel["id"], canonical_id)
+        # Always leave an active canonical edge (reactivate if needed).
         insert_relation(
             "Paper",
             paper_id,

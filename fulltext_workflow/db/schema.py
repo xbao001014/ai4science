@@ -815,14 +815,19 @@ def insert_relation(
 ) -> None:
     with get_conn() as conn:
         existing = conn.execute(
-            """SELECT id, extraction_granularity, evidence_quote, status
+            """SELECT id, extraction_granularity, evidence_quote, status, superseded_by
                FROM relations
                WHERE subject_type=? AND subject_id=? AND relation=?
                  AND object_type=? AND object_id=? AND source_pmid=?""",
             (subject_type, subject_id, relation, object_type, object_id, source_pmid),
         ).fetchone()
         if existing:
-            if existing["status"] == "superseded" and status == "active":
+            # Pass 2 may supersede a Pass 1 edge then re-assert the canonical.
+            if (
+                existing["status"] == "superseded"
+                and status == "active"
+                and extraction_pass != "fulltext_reconcile"
+            ):
                 return
             gran = existing["extraction_granularity"]
             _rank = {"fulltext": 3, "mineru_pdf": 2, "abstract": 1}
@@ -831,6 +836,12 @@ def insert_relation(
             quote = existing["evidence_quote"] or ""
             if evidence_quote and evidence_quote not in quote:
                 quote = f"{quote}; {evidence_quote}".strip("; ")
+            if status == "active" and extraction_pass == "fulltext_reconcile":
+                next_superseded_by = None
+            elif superseded_by is not None:
+                next_superseded_by = superseded_by
+            else:
+                next_superseded_by = existing["superseded_by"]
             conn.execute(
                 """UPDATE relations SET
                    metric_value=COALESCE(NULLIF(?, ''), metric_value),
@@ -840,7 +851,7 @@ def insert_relation(
                    extraction_granularity=?,
                    polarity=?,
                    status=?,
-                   superseded_by=COALESCE(?, superseded_by),
+                   superseded_by=?,
                    extraction_pass=?
                    WHERE id=?""",
                 (
@@ -851,7 +862,7 @@ def insert_relation(
                     extraction_granularity,
                     polarity,
                     status,
-                    superseded_by,
+                    next_superseded_by,
                     extraction_pass,
                     existing["id"],
                 ),

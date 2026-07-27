@@ -49,6 +49,17 @@ PUBLIC_DATASET_ALIASES: dict[str, str] = {
     "panda prostate": "panda",
     "camelyon16 dataset": "camelyon16",
     "camelyon17 dataset": "camelyon17",
+    "tcga-crc": "tcga",
+    "tcga crc": "tcga",
+    "tcga-esca": "tcga",
+    "tcga-gbmlgg": "tcga",
+    "tcga gbmlgg": "tcga",
+    "midog++": "midog",
+    "midog21": "midog",
+    "midog-family resources": "midog",
+    "cptac-crc": "cptac",
+    "cptac-gbm": "cptac",
+    "cptac gbm": "cptac",
 }
 
 LITERATURE_PLATFORM_BLOCKLIST: frozenset[str] = frozenset(
@@ -72,6 +83,16 @@ LITERATURE_PLATFORM_BLOCKLIST: frozenset[str] = frozenset(
         "crossref",
         "dimensions",
         "openalex",
+        "sciencedirect",
+        "science direct",
+        "wiley online library",
+        "wiley",
+        "springerlink",
+        "springer link",
+        "ieee xplore",
+        "ieee",
+        "jstor",
+        "researchgate",
     }
 )
 
@@ -96,6 +117,19 @@ def is_literature_platform(name: str) -> bool:
         return True
     for token in LITERATURE_PLATFORM_BLOCKLIST:
         if re.search(rf"(^|[^a-z0-9]){re.escape(token)}([^a-z0-9]|$)", key):
+            return True
+    return False
+
+
+def is_public_dataset_alias(name: str) -> bool:
+    """True when name maps to a curated public pathology/comp-path benchmark."""
+    key = _norm_key(name)
+    if is_literature_platform(key):
+        return False
+    if key in PUBLIC_DATASET_ALIASES:
+        return True
+    for canon in set(PUBLIC_DATASET_ALIASES.values()):
+        if re.search(rf"(^|[^a-z0-9]){re.escape(canon)}([^a-z0-9]|$)", key):
             return True
     return False
 
@@ -136,16 +170,8 @@ def resolve_dataset_access(
     key = _norm_key(name)
     if is_literature_platform(key):
         return "unknown"
-    if key in PUBLIC_DATASET_ALIASES or any(
-        key == canon or key.startswith(canon + " ") or canon in key
-        for canon in set(PUBLIC_DATASET_ALIASES.values())
-    ):
-        # Prefer exact alias / known canonical token in name
-        if key in PUBLIC_DATASET_ALIASES:
-            return "public"
-        for canon in set(PUBLIC_DATASET_ALIASES.values()):
-            if re.search(rf"(^|[^a-z0-9]){re.escape(canon)}([^a-z0-9]|$)", key):
-                return "public"
+    if is_public_dataset_alias(key):
+        return "public"
 
     blob = f"{key} {(evidence_quote or '').lower()}"
     if _PRIVATE_CUES.search(blob):
