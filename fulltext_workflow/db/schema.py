@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS papers (
     full_text_status        TEXT DEFAULT 'pending',
     full_text_fetched_at    TIMESTAMP,
     extraction_done         INTEGER DEFAULT 0,
+    reconcile_status        TEXT DEFAULT 'pending',
+    reconcile_at            TIMESTAMP,
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
@@ -135,6 +137,9 @@ CREATE TABLE IF NOT EXISTS relations (
     evidence_quote          TEXT,
     extraction_granularity  TEXT DEFAULT 'abstract',
     polarity                TEXT DEFAULT 'asserted',
+    status                  TEXT DEFAULT 'active',
+    superseded_by           INTEGER,
+    extraction_pass         TEXT DEFAULT 'section',
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_relations_subj ON relations(subject_type, subject_id);
@@ -280,6 +285,18 @@ CREATE TABLE IF NOT EXISTS ops_proposals (
     difficulty_breakdown_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
+
+CREATE TABLE IF NOT EXISTS paper_entity_bindings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_pmid         TEXT NOT NULL,
+    method_entity_id    INTEGER,
+    disease_entity_id   INTEGER,
+    dataset_entity_id   INTEGER,
+    confidence          REAL DEFAULT 1.0,
+    evidence_quote      TEXT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_peb_pmid ON paper_entity_bindings(source_pmid);
 """
 
 
@@ -295,9 +312,21 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     paper_cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
     journal_cols = {r[1] for r in conn.execute("PRAGMA table_info(journals)").fetchall()}
     entity_cols = {r[1] for r in conn.execute("PRAGMA table_info(entities)").fetchall()}
+    relation_cols = {r[1] for r in conn.execute("PRAGMA table_info(relations)").fetchall()}
 
     if "access_class" not in entity_cols:
         conn.execute("ALTER TABLE entities ADD COLUMN access_class TEXT")
+
+    for col, ddl in (
+        ("status", "ALTER TABLE relations ADD COLUMN status TEXT DEFAULT 'active'"),
+        ("superseded_by", "ALTER TABLE relations ADD COLUMN superseded_by INTEGER"),
+        (
+            "extraction_pass",
+            "ALTER TABLE relations ADD COLUMN extraction_pass TEXT DEFAULT 'section'",
+        ),
+    ):
+        if col not in relation_cols:
+            conn.execute(ddl)
 
     for col, ddl in (
         ("s2id", "ALTER TABLE papers ADD COLUMN s2id TEXT"),
@@ -305,6 +334,8 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         ("open_access", "ALTER TABLE papers ADD COLUMN open_access INTEGER DEFAULT 0"),
         ("citation_source", "ALTER TABLE papers ADD COLUMN citation_source TEXT"),
         ("date_precision", "ALTER TABLE papers ADD COLUMN date_precision TEXT"),
+        ("reconcile_status", "ALTER TABLE papers ADD COLUMN reconcile_status TEXT DEFAULT 'pending'"),
+        ("reconcile_at", "ALTER TABLE papers ADD COLUMN reconcile_at TIMESTAMP"),
     ):
         if col not in paper_cols:
             conn.execute(ddl)
@@ -431,6 +462,18 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             difficulty_breakdown_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
+
+        CREATE TABLE IF NOT EXISTS paper_entity_bindings (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_pmid         TEXT NOT NULL,
+            method_entity_id    INTEGER,
+            disease_entity_id   INTEGER,
+            dataset_entity_id   INTEGER,
+            confidence          REAL DEFAULT 1.0,
+            evidence_quote      TEXT,
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_peb_pmid ON paper_entity_bindings(source_pmid);
     """)
 
     prop_cols = {
@@ -766,15 +809,21 @@ def insert_relation(
     evidence_quote: str = "",
     extraction_granularity: str = "abstract",
     polarity: str = "asserted",
+    status: str = "active",
+    superseded_by: int | None = None,
+    extraction_pass: str = "section",
 ) -> None:
     with get_conn() as conn:
         existing = conn.execute(
-            """SELECT id, extraction_granularity, evidence_quote FROM relations
+            """SELECT id, extraction_granularity, evidence_quote, status
+               FROM relations
                WHERE subject_type=? AND subject_id=? AND relation=?
                  AND object_type=? AND object_id=? AND source_pmid=?""",
             (subject_type, subject_id, relation, object_type, object_id, source_pmid),
         ).fetchone()
         if existing:
+            if existing["status"] == "superseded" and status == "active":
+                return
             gran = existing["extraction_granularity"]
             _rank = {"fulltext": 3, "mineru_pdf": 2, "abstract": 1}
             if _rank.get(gran, 0) > _rank.get(extraction_granularity, 0):
@@ -789,7 +838,10 @@ def insert_relation(
                    evidence_section=COALESCE(NULLIF(?, ''), evidence_section),
                    evidence_quote=?,
                    extraction_granularity=?,
-                   polarity=?
+                   polarity=?,
+                   status=?,
+                   superseded_by=COALESCE(?, superseded_by),
+                   extraction_pass=?
                    WHERE id=?""",
                 (
                     metric_value,
@@ -798,6 +850,9 @@ def insert_relation(
                     quote,
                     extraction_granularity,
                     polarity,
+                    status,
+                    superseded_by,
+                    extraction_pass,
                     existing["id"],
                 ),
             )
@@ -807,8 +862,9 @@ def insert_relation(
             """INSERT INTO relations
                (subject_type, subject_id, relation, object_type, object_id,
                 metric_value, source_pmid, confidence, evidence_section,
-                evidence_quote, extraction_granularity, polarity)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                evidence_quote, extraction_granularity, polarity,
+                status, superseded_by, extraction_pass)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 subject_type,
                 subject_id,
@@ -822,8 +878,93 @@ def insert_relation(
                 evidence_quote or None,
                 extraction_granularity,
                 polarity,
+                status,
+                superseded_by,
+                extraction_pass,
             ),
         )
+
+
+def supersede_relation(relation_id: int, superseded_by: int | None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE relations SET status='superseded', superseded_by=?
+               WHERE id=?""",
+            (superseded_by, relation_id),
+        )
+
+
+def set_paper_reconcile_status(paper_id: int, status: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE papers SET reconcile_status=?, reconcile_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (status, paper_id),
+        )
+
+
+def clear_paper_kg_extractions(pmid: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM relations WHERE source_pmid=?", (pmid,))
+        conn.execute("DELETE FROM paper_entity_bindings WHERE source_pmid=?", (pmid,))
+        conn.execute(
+            """UPDATE papers SET extraction_done=0, reconcile_status='pending'
+               WHERE pmid=?""",
+            (pmid,),
+        )
+
+
+def upsert_paper_entity_binding(
+    source_pmid: str,
+    method_entity_id: int | None,
+    disease_entity_id: int | None,
+    dataset_entity_id: int | None,
+    confidence: float = 1.0,
+    evidence_quote: str = "",
+) -> int:
+    with get_conn() as conn:
+        existing = conn.execute(
+            """SELECT id FROM paper_entity_bindings
+               WHERE source_pmid=?
+                 AND COALESCE(method_entity_id, -1)=COALESCE(?, -1)
+                 AND COALESCE(disease_entity_id, -1)=COALESCE(?, -1)
+                 AND COALESCE(dataset_entity_id, -1)=COALESCE(?, -1)""",
+            (source_pmid, method_entity_id, disease_entity_id, dataset_entity_id),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE paper_entity_bindings SET
+                   confidence=?, evidence_quote=?
+                   WHERE id=?""",
+                (confidence, evidence_quote or None, existing["id"]),
+            )
+            return existing["id"]
+        conn.execute(
+            """INSERT INTO paper_entity_bindings
+               (source_pmid, method_entity_id, disease_entity_id, dataset_entity_id,
+                confidence, evidence_quote)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                source_pmid,
+                method_entity_id,
+                disease_entity_id,
+                dataset_entity_id,
+                confidence,
+                evidence_quote or None,
+            ),
+        )
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def get_papers_by_pmids(pmids: list[str]) -> list[sqlite3.Row]:
+    if not pmids:
+        return []
+    placeholders = ",".join("?" * len(pmids))
+    with get_conn() as conn:
+        return conn.execute(
+            f"SELECT * FROM papers WHERE pmid IN ({placeholders})",
+            tuple(pmids),
+        ).fetchall()
 
 
 def db_stats() -> dict[str, Any]:
