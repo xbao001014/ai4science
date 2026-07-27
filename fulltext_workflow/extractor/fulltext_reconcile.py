@@ -75,7 +75,17 @@ def assemble_reconcile_text(sections: list[dict], *, max_chars: int) -> str:
             continue
         budget = max_chars - used - sep
         if budget > 0:
-            parts.append(block[:budget])
+            if len(block) <= budget:
+                parts.append(block)
+            else:
+                ellipsis = "\n...\n"
+                if budget <= len(ellipsis):
+                    parts.append(block[:budget])
+                else:
+                    remain = budget - len(ellipsis)
+                    head_len = remain // 2
+                    tail_len = remain - head_len
+                    parts.append(block[:head_len] + ellipsis + block[-tail_len:])
         break
 
     return "\n\n".join(parts)
@@ -222,7 +232,11 @@ def _apply_dataset_actions(
         supersede_relation,
         upsert_entity,
     )
-    from extractor.dataset_access import normalize_dataset_name, resolve_dataset_access
+    from extractor.dataset_access import (
+        is_literature_platform,
+        normalize_dataset_name,
+        resolve_dataset_access,
+    )
 
     existing = list_relations_for_pmid(pmid, "USES_DATASET")
 
@@ -230,6 +244,14 @@ def _apply_dataset_actions(
         name = row["name"]
         action = row["action"]
         access_hint = row.get("access", "unknown")
+
+        if is_literature_platform(name):
+            for rel in existing:
+                if rel["status"] != "active":
+                    continue
+                if _dataset_name_matches(rel["object_name"], name):
+                    supersede_relation(rel["id"], None)
+            continue
 
         if action == "drop":
             for rel in existing:
@@ -304,7 +326,11 @@ def _apply_limitation_merges(
 
 def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
     from db.schema import upsert_entity, upsert_paper_entity_binding
-    from extractor.dataset_access import normalize_dataset_name, resolve_dataset_access
+    from extractor.dataset_access import (
+        is_literature_platform,
+        normalize_dataset_name,
+        resolve_dataset_access,
+    )
     from extractor.entity_normalize import normalize_entity_name
 
     for row in bindings:
@@ -316,7 +342,7 @@ def _apply_bindings(pmid: str, bindings: list[dict[str, str]]) -> None:
         disease_id = upsert_entity(disease, "Disease") if disease else None
         dataset_id = None
         dataset_name = (row.get("dataset") or "").strip()
-        if dataset_name:
+        if dataset_name and not is_literature_platform(dataset_name):
             canon = normalize_dataset_name(dataset_name)
             access = resolve_dataset_access(canon)
             dataset_id = upsert_entity(canon, "Dataset", access_class=access)

@@ -124,7 +124,14 @@ def resolve_dataset_access(
 ) -> AccessClass:
     """Resolve access_class for a dataset mention.
 
-    Order: public alias list → private cues (name/evidence) → LLM hint → unknown.
+    Order: literature-platform blocklist → public alias list → private cues
+    (name/evidence) → LLM hint → unknown.
+
+    Literature platforms (PubMed, GEO portal, etc.) always return ``unknown``;
+    callers should drop or supersede related edges rather than treat them as datasets.
+
+    Unlisted ``public`` hints from the LLM are not trusted and downgrade to
+    ``unknown``; only names on ``PUBLIC_DATASET_ALIASES`` resolve to ``public``.
     """
     key = _norm_key(name)
     if is_literature_platform(key):
