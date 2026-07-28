@@ -81,7 +81,13 @@ except ModuleNotFoundError:
 from gap_agent import stream_gap_debate_agent  # noqa: E402
 from idea_agent import stream_idea_agent, IDEA_TOOLS  # noqa: E402
 import config  # noqa: E402
-from db.schema import db_stats, get_all_landscape, init_db, landscape_count  # noqa: E402
+from db.schema import (  # noqa: E402
+    db_stats,
+    get_all_landscape,
+    init_db,
+    landscape_count,
+    list_active_improvement_suggestions,
+)
 from analysis.feasibility_tools import (  # noqa: E402
     FEASIBILITY_TOOLS,
     tool_attribute_distribution,
@@ -1003,6 +1009,46 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                     st.json(fr.evolution_log)
 
 
+def _render_paper_level_improvement_suggestions(data: list) -> None:
+    """Show active improvement suggestions for PMIDs listed with limitations."""
+    pmids: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        pmid = str(item.get("source_pmid") or item.get("pmid") or "").strip()
+        if not pmid or pmid in seen:
+            continue
+        seen.add(pmid)
+        pmids.append(pmid)
+        if len(pmids) >= 10:
+            break
+    if not pmids:
+        return
+
+    rows: list[dict[str, Any]] = []
+    for pmid in pmids:
+        for s in list_active_improvement_suggestions(pmid):
+            quote = str(s.get("evidence_quote") or "")
+            if len(quote) > 200:
+                quote = quote[:200] + "…"
+            rows.append(
+                {
+                    "PMID": s.get("source_pmid") or pmid,
+                    "limitation_name": s.get("limitation_name") or "",
+                    "action_type": s.get("action_type") or "",
+                    "suggestion": s.get("suggestion") or "",
+                    "grounding": s.get("grounding") or "",
+                    "evidence_quote": quote,
+                }
+            )
+    if not rows:
+        return
+    st.markdown("**改进建议（论文级）**")
+    st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
+    safe_table(pd.DataFrame(rows), height=min(400, 40 + len(rows) * 35))
+
+
 def render_tool_result(name: str, result: dict) -> None:
     if "error" in result:
         st.error(f"错误：{result['error']}")
@@ -1046,6 +1092,8 @@ def render_tool_result(name: str, result: dict) -> None:
         if name == "improvement_suggestions_by_topic" or "action_type" in first:
             st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
         safe_table(pd.DataFrame(result["data"]), height=min(400, 40 + len(result["data"]) * 35))
+        if name in ("author_stated_gaps", "author_limitations_for_topic"):
+            _render_paper_level_improvement_suggestions(result["data"])
         return
 
     if "gaps" in result:

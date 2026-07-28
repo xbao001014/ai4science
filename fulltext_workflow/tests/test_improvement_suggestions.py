@@ -162,6 +162,67 @@ def test_apply_reconcile_writes_suggestions(monkeypatch):
     assert rows[0]["limitation_entity_id"] is not None
 
 
+def test_empty_reconcile_clears_active_suggestions(monkeypatch):
+    """Re-reconcile with empty recommendations must clear prior actives."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "90000005"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Empty re-reconcile clear"})
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [],
+            "bindings": [],
+            "limitations": [
+                {
+                    "canonical": "lack of external validation",
+                    "merges": [],
+                    "quote": "no external validation",
+                }
+            ],
+            "recommendations": [
+                {
+                    "limitation": "lack of external validation",
+                    "action_type": "external_validation",
+                    "suggestion": "Validate on an independent cohort with locked preprocessing.",
+                    "evidence_quote": "future external validation is needed",
+                    "evidence_section": "future_work",
+                    "grounding": "synthesized",
+                    "confidence": 0.8,
+                }
+            ],
+        },
+    )
+    assert len(list_active_improvement_suggestions(pmid)) == 1
+
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [],
+            "bindings": [],
+            "limitations": [],
+            "recommendations": [],
+        },
+    )
+    assert list_active_improvement_suggestions(pmid) == []
+
+    with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM paper_improvement_suggestions WHERE source_pmid=?",
+            (pmid,),
+        ).fetchone()["c"]
+        superseded = conn.execute(
+            """SELECT COUNT(*) AS c FROM paper_improvement_suggestions
+               WHERE source_pmid=? AND status='superseded'""",
+            (pmid,),
+        ).fetchone()["c"]
+    assert total >= 1
+    assert superseded >= 1
+
+
 def test_parse_reconcile_payload_includes_recommendations():
     from extractor.fulltext_reconcile import parse_reconcile_payload
 
