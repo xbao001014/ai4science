@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from extractor.improvement_actions import parse_recommendation_rows
 from extractor.study_prompts.shared import RECONCILE_SHARED_CORE
 
 _SECTION_PRIORITY: tuple[str, ...] = (
@@ -180,6 +181,7 @@ def parse_reconcile_payload(raw: dict) -> dict:
         "limitations": _parse_limitation_rows(raw.get("limitations")),
         "surveyed_methods": _parse_name_quote_rows(raw.get("surveyed_methods")),
         "covered_diseases": _parse_name_quote_rows(raw.get("covered_diseases")),
+        "recommendations": parse_recommendation_rows(raw.get("recommendations")),
     }
 
 

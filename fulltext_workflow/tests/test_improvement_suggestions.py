@@ -77,3 +77,66 @@ def test_replace_suggestions_supersedes_prior(monkeypatch):
             (pmid,),
         ).fetchone()["c"]
     assert total == 2  # one superseded + one active
+
+
+def test_parse_recommendation_rows_filters_vague_and_bad_enum():
+    from extractor.improvement_actions import parse_recommendation_rows
+
+    rows = parse_recommendation_rows(
+        [
+            {
+                "limitation": "lack of external validation",
+                "action_type": "external_validation",
+                "suggestion": "Validate on an independent multi-center cohort.",
+                "evidence_quote": "lack of external validation",
+                "evidence_section": "limitations",
+                "grounding": "synthesized",
+                "confidence": 0.8,
+            },
+            {
+                "limitation": "small sample size",
+                "action_type": "expand_sample",
+                "suggestion": "More research is needed.",
+                "evidence_quote": "small sample",
+                "evidence_section": "discussion",
+                "grounding": "author_stated",
+                "confidence": 0.7,
+            },
+            {
+                "limitation": "x",
+                "action_type": "not_a_real_type",
+                "suggestion": "Do something concrete with locked splits.",
+                "evidence_quote": "q",
+                "evidence_section": "future_work",
+                "grounding": "synthesized",
+                "confidence": 0.6,
+            },
+        ]
+    )
+    assert len(rows) == 1
+    assert rows[0]["action_type"] == "external_validation"
+
+
+def test_parse_reconcile_payload_includes_recommendations():
+    from extractor.fulltext_reconcile import parse_reconcile_payload
+
+    p = parse_reconcile_payload(
+        {
+            "datasets": [],
+            "bindings": [],
+            "limitations": [],
+            "recommendations": [
+                {
+                    "limitation": "single-center design",
+                    "action_type": "multicenter",
+                    "suggestion": "Recruit a second center with the same staining protocol.",
+                    "evidence_quote": "single center",
+                    "evidence_section": "limitations",
+                    "grounding": "author_stated",
+                    "confidence": 0.75,
+                }
+            ],
+        }
+    )
+    assert len(p["recommendations"]) == 1
+    assert p["recommendations"][0]["action_type"] == "multicenter"
