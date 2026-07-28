@@ -117,6 +117,44 @@ def test_parse_recommendation_rows_filters_vague_and_bad_enum():
     assert rows[0]["action_type"] == "external_validation"
 
 
+def test_apply_reconcile_writes_suggestions(monkeypatch):
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "90000002"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Apply suggestions"})
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [],
+            "bindings": [],
+            "limitations": [
+                {
+                    "canonical": "lack of external validation",
+                    "merges": [],
+                    "quote": "no external validation",
+                }
+            ],
+            "recommendations": [
+                {
+                    "limitation": "lack of external validation",
+                    "action_type": "external_validation",
+                    "suggestion": "Validate on an independent cohort with locked preprocessing.",
+                    "evidence_quote": "future external validation is needed",
+                    "evidence_section": "future_work",
+                    "grounding": "synthesized",
+                    "confidence": 0.8,
+                }
+            ],
+        },
+    )
+    rows = list_active_improvement_suggestions(pmid)
+    assert len(rows) == 1
+    assert rows[0]["action_type"] == "external_validation"
+    assert rows[0]["limitation_entity_id"] is not None
+
+
 def test_parse_reconcile_payload_includes_recommendations():
     from extractor.fulltext_reconcile import parse_reconcile_payload
 

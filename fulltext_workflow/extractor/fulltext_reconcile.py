@@ -648,6 +648,29 @@ def _apply_bindings(
         )
 
 
+def _apply_recommendations(pmid: str, recommendations: list[dict[str, Any]]) -> None:
+    from db.schema import replace_paper_improvement_suggestions, upsert_entity
+    from extractor.entity_normalize import normalize_entity_name
+
+    rows: list[dict[str, Any]] = []
+    for rec in recommendations:
+        lim_name = normalize_entity_name(rec.get("limitation") or "", "Limitation")
+        lim_id = upsert_entity(lim_name, "Limitation") if lim_name else None
+        rows.append(
+            {
+                "limitation_entity_id": lim_id,
+                "action_type": rec["action_type"],
+                "suggestion": rec["suggestion"],
+                "evidence_quote": rec.get("evidence_quote") or "",
+                "evidence_section": rec.get("evidence_section") or "",
+                "grounding": rec["grounding"],
+                "confidence": rec.get("confidence", 0.5),
+            }
+        )
+    # Always replace so re-reconcile clears stale actives even when empty.
+    replace_paper_improvement_suggestions(pmid, rows)
+
+
 def apply_reconcile_payload(
     paper_id: int,
     pmid: str,
@@ -655,7 +678,7 @@ def apply_reconcile_payload(
     *,
     study_type: str | None = None,
 ) -> None:
-    """Persist Pass 2 reconcile decisions: datasets, survey/cover, limitations, bindings."""
+    """Persist Pass 2 reconcile decisions: datasets, survey/cover, limitations, recommendations, bindings."""
     normalized = parse_reconcile_payload(payload)
     _apply_dataset_actions(
         paper_id, pmid, normalized["datasets"], study_type=study_type
@@ -668,4 +691,5 @@ def apply_reconcile_payload(
         study_type=study_type,
     )
     _apply_limitation_merges(paper_id, pmid, normalized["limitations"])
+    _apply_recommendations(pmid, normalized["recommendations"])
     _apply_bindings(pmid, normalized["bindings"], study_type=study_type)
