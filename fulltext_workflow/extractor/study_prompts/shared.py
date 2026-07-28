@@ -238,7 +238,60 @@ SECTION_HINTS: dict[str, str] = {
     ),
 }
 
+# Review / meta: prefer SURVEYS_METHOD / COVERS_DISEASE; never nudge APPLIES_METHOD.
+REVIEW_META_SECTION_HINTS: dict[str, str] = {
+    "methods": (
+        "Survey/meta methods section: extract landscape methods as SURVEYS_METHOD and "
+        "diseases in scope as COVERS_DISEASE. Pathology modalities when stated. "
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD for discussed or tabulated methods. "
+        "Do NOT emit USES_DATASET / RELEASES_DATASET / PRETRAINS_ON."
+    ),
+    "results": (
+        "Survey/meta results: prefer COVERS_DISEASE / SURVEYS_METHOD and any numeric "
+        "synthesis metrics if stated. Do NOT emit APPLIES_METHOD or COMPARES_METHOD. "
+        "Do NOT emit dataset-class edges for constituent-study tables."
+    ),
+    "discussion": (
+        "Focus on field-level Limitation, COVERS_DISEASE, and surveyed scope. "
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD."
+    ),
+    "limitations": (
+        "Extract Limitation entities and REPORTS_LIMITATION relations only. "
+        "Use canonical limitation phrasing; one flaw per entity. "
+        "Field-level gaps stated by authors are allowed for review/meta."
+    ),
+    "future_work": (
+        "Extract hypothesized Limitation and Task entities; use polarity=hypothesized. "
+        "Do NOT emit APPLIES_METHOD, COMPARES_METHOD, or dataset-class edges."
+    ),
+    "introduction": (
+        "Focus on survey-scope Disease via COVERS_DISEASE and Task/Modality when stated. "
+        "Do NOT emit APPLIES_METHOD or COMPARES_METHOD. "
+        "Do not emit bare cancer/tumor umbrellas."
+    ),
+    "abstract": (
+        "Extract survey-scope Disease via COVERS_DISEASE and landscape Methods via "
+        "SURVEYS_METHOD. Do NOT emit APPLIES_METHOD or COMPARES_METHOD. "
+        "Do NOT emit USES_DATASET / RELEASES_DATASET / PRETRAINS_ON."
+    ),
+    "other": (
+        "Survey/meta: prefer COVERS_DISEASE and SURVEYS_METHOD; Disease at subtype level "
+        "when stated. Do NOT emit APPLIES_METHOD for discussed methods."
+    ),
+}
+
 DEFAULT_SECTION_HINT = SECTION_HINTS["other"]
+_REVIEW_META_TYPES = frozenset({"review", "meta_analysis"})
+
+
+def section_hint_for(section_type: str, study_type: str | None) -> str:
+    """Pick section overlay; review/meta use survey-oriented hints."""
+    st = (study_type or "other").lower()
+    if st in _REVIEW_META_TYPES:
+        return REVIEW_META_SECTION_HINTS.get(
+            section_type, REVIEW_META_SECTION_HINTS["other"]
+        )
+    return SECTION_HINTS.get(section_type, DEFAULT_SECTION_HINT)
 
 # Copied from fulltext_reconcile.RECONCILE_SYSTEM for Task 6 to consume.
 # Optional fields (role, surveyed_methods, covered_diseases) land in Task 6.

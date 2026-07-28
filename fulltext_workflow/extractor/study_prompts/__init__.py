@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from extractor.study_prompts.packs import PACKS, StudyTypePack
 from extractor.study_prompts.shared import (
-    DEFAULT_SECTION_HINT,
     RECONCILE_SHARED_CORE,
+    REVIEW_META_SECTION_HINTS,
     SECTION_HINTS,
     SECTION_SHARED_CORE,
+    section_hint_for,
 )
 
 __all__ = [
@@ -15,6 +16,8 @@ __all__ = [
     "SECTION_SHARED_CORE",
     "RECONCILE_SHARED_CORE",
     "SECTION_HINTS",
+    "REVIEW_META_SECTION_HINTS",
+    "section_hint_for",
     "build_section_system",
     "build_reconcile_system",
 ]
@@ -23,7 +26,7 @@ __all__ = [
 def build_section_system(section_type: str, study_type: str | None) -> str:
     st = (study_type or "other").lower()
     pack = PACKS.get(st, PACKS["other"])
-    hint = SECTION_HINTS.get(section_type, DEFAULT_SECTION_HINT)
+    hint = section_hint_for(section_type, st)
     return (
         f"{SECTION_SHARED_CORE}\n\n"
         f"Study type pack: {pack.study_type}\n"
