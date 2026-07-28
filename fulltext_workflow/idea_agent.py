@@ -71,7 +71,14 @@ def tool_methods_for_topic(keyword: str) -> dict:
         GROUP BY e_m.id
         ORDER BY paper_cnt DESC LIMIT {config.TOOL_TOP_N}
     """)
-    return {"description": f"AI methods in '{keyword}' research", "count": len(rows), "data": rows}
+    return {
+        "description": (
+            f"AI methods in '{keyword}' research (APPLIES_METHOD only; "
+            "surveyed methods use SURVEYS_METHOD, not included here)"
+        ),
+        "count": len(rows),
+        "data": rows,
+    }
 
 
 def tool_datasets_for_topic(keyword: str) -> dict:
@@ -205,7 +212,10 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
     }},
     {"type": "function", "function": {
         "name": "methods_for_topic",
-        "description": "List AI methods used in research matching the keyword.",
+        "description": (
+            "List AI methods used in research matching the keyword (APPLIES_METHOD only; "
+            "surveyed methods/diseases in reviews use SURVEYS_METHOD / COVERS_DISEASE)."
+        ),
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
@@ -213,7 +223,8 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
         "description": (
             "List datasets used in research matching the keyword, with access_class "
             "(public|private|unknown). Fangxin hospital data is assessed via feasibility tools, "
-            "not this list."
+            "not this list. Surveyed diseases use COVERS_DISEASE (not TARGETS_DISEASE); "
+            "RELEASES_DATASET (paper-contributed) is not the same as cited-only USES_DATASET."
         ),
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},

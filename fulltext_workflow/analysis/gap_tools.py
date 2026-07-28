@@ -371,6 +371,33 @@ def tool_limitation_impact_rank(focus: str | None = None) -> dict:
     return {"description": desc, "data": rows}
 
 
+def tool_study_type_relation_stats() -> dict:
+    rows = _q("""
+        SELECT r.relation AS relation, COUNT(*) AS edge_cnt,
+               COUNT(DISTINCT r.source_pmid) AS paper_cnt
+        FROM relations r
+        WHERE COALESCE(r.status, 'active') = 'active'
+          AND r.relation IN (
+            'SURVEYS_METHOD', 'COVERS_DISEASE',
+            'RELEASES_DATASET', 'PRETRAINS_ON'
+          )
+        GROUP BY r.relation
+    """)
+    by = {r["relation"]: r for r in rows}
+    data = []
+    for rel in (
+        "SURVEYS_METHOD",
+        "COVERS_DISEASE",
+        "RELEASES_DATASET",
+        "PRETRAINS_ON",
+    ):
+        data.append(by.get(rel, {"relation": rel, "edge_cnt": 0, "paper_cnt": 0}))
+    return {
+        "description": "Read-only counts for study-type-specific relations (QA)",
+        "data": data,
+    }
+
+
 def tool_hotspot_entities(focus: str | None = None) -> dict:
     fc = _focus_clause("e.name", focus)
     # Method heat uses APPLIES_METHOD only (exclude RELATED_TO umbrella co-mentions).

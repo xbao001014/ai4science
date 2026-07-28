@@ -34,6 +34,22 @@ STUDY_TYPE_COLORS: dict[str, str] = {
     "other": "#546E7A",
 }
 
+RELATION_COLORS: dict[str, str] = {
+    "APPLIES_METHOD": "#F0A500",
+    "TARGETS_DISEASE": "#E05C5C",
+    "OPERATES_ON": "#FF80AB",
+    "PERFORMS_TASK": "#00BCD4",
+    "USES_DATASET": "#80CBC4",
+    "ACHIEVES_METRIC": "#FFCC80",
+    "REPORTS_LIMITATION": "#795548",
+    "USES_MODALITY": "#9C27B0",
+    "RELATED_TO": "#BBBBBB",
+    "SURVEYS_METHOD": "#FFB74D",
+    "COVERS_DISEASE": "#EF5350",
+    "RELEASES_DATASET": "#26A69A",
+    "PRETRAINS_ON": "#00897B",
+}
+
 
 class KGBuilder:
     def __init__(self) -> None:
@@ -119,18 +135,20 @@ class KGBuilder:
             obj_nid = entity_id_map.get(rel["object_id"])
 
             if subj_nid and obj_nid and subj_nid in self.G and obj_nid in self.G:
-                self.G.add_edge(
-                    subj_nid,
-                    obj_nid,
-                    relation=rel["relation"],
-                    source_pmid=rel.get("source_pmid") or "",
-                    metric_value=rel.get("metric_value") or "",
-                    confidence=rel.get("confidence") or 1.0,
-                    evidence_section=rel.get("evidence_section") or "",
-                    evidence_quote=rel.get("evidence_quote") or "",
-                    extraction_granularity=rel.get("extraction_granularity") or "abstract",
-                    polarity=rel.get("polarity") or "asserted",
-                )
+                edge_attrs: dict = {
+                    "relation": rel["relation"],
+                    "source_pmid": rel.get("source_pmid") or "",
+                    "metric_value": rel.get("metric_value") or "",
+                    "confidence": rel.get("confidence") or 1.0,
+                    "evidence_section": rel.get("evidence_section") or "",
+                    "evidence_quote": rel.get("evidence_quote") or "",
+                    "extraction_granularity": rel.get("extraction_granularity") or "abstract",
+                    "polarity": rel.get("polarity") or "asserted",
+                }
+                color = RELATION_COLORS.get(rel["relation"])
+                if color:
+                    edge_attrs["color"] = color
+                self.G.add_edge(subj_nid, obj_nid, **edge_attrs)
 
         print(
             f"[KG] Graph built: {self.G.number_of_nodes()} nodes, "
