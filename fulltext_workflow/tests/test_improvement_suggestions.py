@@ -1,4 +1,11 @@
-"""Tests for paper_improvement_suggestions store and Pass 2 wiring."""
+"""Tests for paper_improvement_suggestions store and Pass 2 wiring.
+
+Pilot / manual success criteria (spec 2026-07-28-improvement-suggestions-design):
+- ≥80% active suggestions have non-empty evidence_quote (limitation/future_work sections)
+- Spot-check: no invented dataset/disease names in suggestions
+- Re-run Pass 2 on same PMID: no duplicate active rows for same dedup key
+- Topic aggregation returns ≥1 action bucket when ≥3 papers have suggestions
+"""
 from __future__ import annotations
 
 import sys
