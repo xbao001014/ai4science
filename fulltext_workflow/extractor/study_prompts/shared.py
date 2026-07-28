@@ -309,6 +309,17 @@ Return exactly this shape:
   "limitations": [
     {"canonical": "...", "merges": ["..."], "quote": "..."}
   ],
+  "recommendations": [
+    {
+      "limitation": "...",
+      "action_type": "external_validation|expand_sample|multicenter|prospective_design|multimodal|method_refinement|dataset_enrichment|other",
+      "suggestion": "one executable sentence",
+      "evidence_quote": "...",
+      "evidence_section": "discussion|limitations|future_work|...",
+      "grounding": "author_stated|synthesized",
+      "confidence": 0.0
+    }
+  ],
   "surveyed_methods": [{"name": "...", "quote": "..."}],
   "covered_diseases": [{"name": "...", "quote": "..."}]
 }
@@ -331,5 +342,12 @@ Rules:
 - merge: collapse aliases to one canonical dataset name already implied by Pass 1 or known public aliases.
 - bindings: one row per method–disease–dataset claim; dataset may be empty when no named set is stated.
 - limitations: canonical short phrase; merges lists section-level fragments to supersede. Always leave the canonical as the surviving limitation (do not put only fragments with no survivor).
+- recommendations: actionable follow-ups anchored on author limitations / future work.
+  Lightly synthesize HOW using methods/cohort/modality context already in the text.
+  Do NOT invent dataset names, diseases, metrics, or numeric targets absent from the paper.
+  Drop vague lines ("more research is needed") with no concrete action.
+  Prefer linking limitation to a canonical name from this pass's limitations list.
+  Soft max 8 rows; prefer distinct action_type values.
+  grounding=author_stated when mostly restating future work; synthesized when you flesh out how from context.
 - Omit empty arrays when nothing applies; use [] not null for lists.
 """

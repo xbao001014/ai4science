@@ -51,3 +51,12 @@ def test_foundation_pack_forbids_releases_dataset():
 def test_reconcile_foundation_mentions_pretrain():
     text = build_reconcile_system("foundation_model")
     assert "PRETRAINS_ON" in text or "pretrain" in text.lower()
+
+
+def test_reconcile_core_mentions_recommendations():
+    from extractor.study_prompts.shared import RECONCILE_SHARED_CORE
+
+    assert '"recommendations"' in RECONCILE_SHARED_CORE
+    assert "action_type" in RECONCILE_SHARED_CORE
+    assert "author_stated" in RECONCILE_SHARED_CORE
+    assert "synthesized" in RECONCILE_SHARED_CORE
