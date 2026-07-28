@@ -24,6 +24,10 @@ RelationLiteral = Literal[
     "RELATED_TO",
     "REPORTS_LIMITATION",
     "USES_MODALITY",
+    "SURVEYS_METHOD",
+    "COVERS_DISEASE",
+    "RELEASES_DATASET",
+    "PRETRAINS_ON",
 ]
 
 # Placeholder subject for Paper→X triples (replaced by real Paper at ingest).

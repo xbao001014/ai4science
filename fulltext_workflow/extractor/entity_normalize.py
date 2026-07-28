@@ -297,6 +297,10 @@ _RELATION_EXPECTED_OBJECT: dict[str, str] = {
     "ACHIEVES_METRIC": "Metric",
     "REPORTS_LIMITATION": "Limitation",
     "USES_MODALITY": "Modality",
+    "SURVEYS_METHOD": "Method",
+    "COVERS_DISEASE": "Disease",
+    "RELEASES_DATASET": "Dataset",
+    "PRETRAINS_ON": "Dataset",
 }
 
 _OBJECT_CANONICAL_RELATION: dict[str, str] = {
