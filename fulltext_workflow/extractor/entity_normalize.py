@@ -485,8 +485,14 @@ def postprocess_triples(
         if repaired is not None:
             normalized.append(repaired)
 
+    import config
+
     normalized = apply_policy(normalized, study_type)
-    dataset_mode = get_policy(study_type).dataset_mode
+    # Kill-switch: skip matrix dataset_mode; keep legacy review/meta drop only.
+    if config.STUDY_POLICY_ENABLED:
+        drop_datasets = get_policy(study_type).dataset_mode == "none"
+    else:
+        drop_datasets = (study_type or "").lower() in ("review", "meta_analysis")
 
     specific_methods = {
         _norm_key(t.object.name)
@@ -534,7 +540,7 @@ def postprocess_triples(
             triple.relation in DATASET_RELATIONS
             or obj_type == "Dataset"
         ):
-            if dataset_mode == "none":
+            if drop_datasets:
                 continue
             canon = normalize_dataset_name(obj_name)
             if is_literature_platform(obj_name) or is_literature_platform(canon):

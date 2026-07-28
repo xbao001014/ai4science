@@ -144,23 +144,21 @@ python scripts/pilot_reconcile_qa.py \
 
 Downstream reads use **`COALESCE(r.status, 'active') = 'active'`** unless checking superseded history.
 
-### Gate A — Review / meta: no active `USES_DATASET`
+### Gate A — Review / meta: no active dataset-class edges
 
-**Pass:** zero rows on pilot PMIDs.
+**Pass:** zero rows on pilot PMIDs (`USES_DATASET` / `RELEASES_DATASET` / `PRETRAINS_ON`).
 
 ```sql
-SELECT p.pmid, p.study_type, e.name AS dataset, r.evidence_quote
+SELECT p.pmid, p.study_type, r.relation, e.name AS dataset, r.evidence_quote
 FROM papers p
 JOIN relations r ON r.source_pmid = p.pmid
 JOIN entities e ON e.id = r.object_id
 WHERE p.study_type IN ('review', 'meta_analysis')
-  AND r.relation = 'USES_DATASET'
+  AND r.relation IN ('USES_DATASET', 'RELEASES_DATASET', 'PRETRAINS_ON')
   AND COALESCE(r.status, 'active') = 'active'
   AND p.pmid IN (/* pilot list */);
 -- Expected: 0 rows
 ```
-
-Also confirm no active `RELEASES_DATASET` / `PRETRAINS_ON` on review/meta (`dataset_mode=none`).
 
 ### Gate B — Review / meta: residual false `APPLIES_METHOD`
 

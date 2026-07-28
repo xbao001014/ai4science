@@ -228,6 +228,60 @@ def _relation_for_role(role: str) -> str:
     return _ROLE_TO_RELATION.get(role, "USES_DATASET")
 
 
+def _dataset_mode_is_none(study_type: str | None) -> bool:
+    """Clear-all-datasets path: matrix when enabled, else legacy review/meta."""
+    import config
+
+    if not config.STUDY_POLICY_ENABLED:
+        return (study_type or "").lower() in ("review", "meta_analysis")
+    from extractor.study_policy import get_policy
+
+    return get_policy(study_type).dataset_mode == "none"
+
+
+def _gated_relation_for_role(role: str, study_type: str | None) -> str:
+    """Map role→relation, gating RELEASES/PRETRAINS by enable_new / dataset_mode."""
+    import config
+
+    target = _relation_for_role(role)
+    if target == "USES_DATASET" or role == "drop":
+        return target
+    if not config.STUDY_POLICY_ENABLED:
+        # Kill-switch: skip enable_new matrix; keep role→relation mapping.
+        return target
+    from extractor.study_policy import get_policy
+
+    policy = get_policy(study_type)
+    if target == "RELEASES_DATASET":
+        if (
+            "RELEASES_DATASET" in policy.enable_new
+            or policy.dataset_mode == "release_ok"
+        ):
+            return target
+        return "USES_DATASET"
+    if target == "PRETRAINS_ON":
+        if "PRETRAINS_ON" in policy.enable_new or policy.dataset_mode == "pretrain_ok":
+            return target
+        return "USES_DATASET"
+    return target
+
+
+def _should_apply_survey_cover(study_type: str | None) -> bool:
+    import config
+
+    st = (study_type or "").lower()
+    if not config.STUDY_POLICY_ENABLED:
+        return st in ("review", "meta_analysis")
+    from extractor.study_policy import get_policy
+
+    if st in ("review", "meta_analysis"):
+        return True
+    policy = get_policy(study_type)
+    return bool(
+        {"SURVEYS_METHOD", "COVERS_DISEASE"} & policy.enable_new
+    )
+
+
 def summarize_pass1_entities(pmid: str) -> str:
     """Distinct active entity names by type from Pass 1 relations for a PMID."""
     from db.schema import get_conn
@@ -299,12 +353,10 @@ def _apply_dataset_actions(
         normalize_dataset_name,
         resolve_dataset_access,
     )
-    from extractor.study_policy import DATASET_RELATIONS, get_policy
-
-    policy = get_policy(study_type)
+    from extractor.study_policy import DATASET_RELATIONS
 
     # Reviews/meta (dataset_mode=none): clear all dataset-class edges except meta keep.
-    if policy.dataset_mode == "none":
+    if _dataset_mode_is_none(study_type):
         pass1_names = _pass1_dataset_names(pmid)
         exceptions = [
             r
@@ -381,7 +433,7 @@ def _apply_dataset_actions(
             if role == "drop":
                 role = "experimental"
 
-        target_rel = _relation_for_role(role)
+        target_rel = _gated_relation_for_role(role, study_type)
 
         if action == "drop":
             for rel in existing:
@@ -459,7 +511,11 @@ def _apply_survey_cover(
     pmid: str,
     surveyed: list[dict[str, str]],
     covered: list[dict[str, str]],
+    *,
+    study_type: str | None = None,
 ) -> None:
+    if not _should_apply_survey_cover(study_type):
+        return
     from db.schema import insert_relation, upsert_entity
     from extractor.entity_normalize import normalize_entity_name
 
@@ -607,6 +663,7 @@ def apply_reconcile_payload(
         pmid,
         normalized["surveyed_methods"],
         normalized["covered_diseases"],
+        study_type=study_type,
     )
     _apply_limitation_merges(paper_id, pmid, normalized["limitations"])
     _apply_bindings(pmid, normalized["bindings"], study_type=study_type)

@@ -343,6 +343,33 @@ def test_postprocess_drops_all_datasets_for_review_study_type():
     assert kept[0].object.name == "camelyon16"
 
 
+def test_postprocess_policy_off_still_legacy_drops_review_datasets(monkeypatch):
+    """STUDY_POLICY_ENABLED=False: skip matrix, but keep legacy review/meta dataset drop."""
+    monkeypatch.setattr("config.STUDY_POLICY_ENABLED", False)
+    t = Triple(
+        subject=Entity(name="paper", type="Method"),
+        relation="USES_DATASET",
+        object=Entity(name="camelyon16", type="Dataset"),
+        confidence=0.9,
+        evidence_quote="reviewed Camelyon16 studies",
+    )
+    assert postprocess_triples([t], "methods", study_type="review") == []
+    assert postprocess_triples([t], "methods", study_type="meta_analysis") == []
+    kept = postprocess_triples([t], "methods", study_type="ai_algorithm")
+    assert len(kept) == 1
+    # Matrix remap must not run when flag is off.
+    applies = Triple(
+        subject=Entity(name="paper", type="Method"),
+        relation="APPLIES_METHOD",
+        object=Entity(name="clam", type="Method"),
+        confidence=0.9,
+        evidence_quote="survey of clam",
+    )
+    out = postprocess_triples([applies], "methods", study_type="review")
+    assert len(out) == 1
+    assert out[0].relation == "APPLIES_METHOD"
+
+
 def test_postprocess_review_remaps_applies_method(monkeypatch):
     monkeypatch.setattr("config.STUDY_POLICY_ENABLED", True)
     t = _triple("APPLIES_METHOD", "Method", "clam", quote="survey of clam")

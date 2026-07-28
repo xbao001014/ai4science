@@ -74,7 +74,7 @@ def tool_methods_for_topic(keyword: str) -> dict:
     return {
         "description": (
             f"AI methods in '{keyword}' research (APPLIES_METHOD only; "
-            "surveyed methods use SURVEYS_METHOD, not included here)"
+            "SURVEYS_METHOD ≠ APPLIES_METHOD — surveyed methods not included)"
         ),
         "count": len(rows),
         "data": rows,
@@ -214,7 +214,8 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
         "name": "methods_for_topic",
         "description": (
             "List AI methods used in research matching the keyword (APPLIES_METHOD only; "
-            "surveyed methods/diseases in reviews use SURVEYS_METHOD / COVERS_DISEASE)."
+            "SURVEYS_METHOD ≠ APPLIES_METHOD — surveyed methods/diseases in reviews use "
+            "SURVEYS_METHOD / COVERS_DISEASE and are not included here)."
         ),
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},

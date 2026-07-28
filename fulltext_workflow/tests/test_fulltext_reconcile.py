@@ -529,7 +529,7 @@ def test_drop_cannot_remove_public_alias(monkeypatch):
 
 
 def test_release_keep_coexists_with_uses_dataset(monkeypatch):
-    """role=release keep adds RELEASES_DATASET without superseding USES_DATASET."""
+    """dataset_benchmark + role=release adds RELEASES_DATASET without superseding USES."""
     from extractor.fulltext_reconcile import apply_reconcile_payload
 
     _tmp_db(monkeypatch)
@@ -561,7 +561,7 @@ def test_release_keep_coexists_with_uses_dataset(monkeypatch):
             "bindings": [],
             "limitations": [],
         },
-        study_type="ai_algorithm",
+        study_type="dataset_benchmark",
     )
     with get_conn() as conn:
         uses = conn.execute(
@@ -579,7 +579,7 @@ def test_release_keep_coexists_with_uses_dataset(monkeypatch):
 
 
 def test_release_merge_coexists_with_uses_dataset(monkeypatch):
-    """role=release merge must not supersede a different DATASET_RELATION on same object."""
+    """dataset_benchmark role=release merge must not supersede USES on same object."""
     from extractor.fulltext_reconcile import apply_reconcile_payload
 
     _tmp_db(monkeypatch)
@@ -611,7 +611,7 @@ def test_release_merge_coexists_with_uses_dataset(monkeypatch):
             "bindings": [],
             "limitations": [],
         },
-        study_type="ai_algorithm",
+        study_type="dataset_benchmark",
     )
     with get_conn() as conn:
         uses_active = conn.execute(
@@ -630,6 +630,106 @@ def test_release_merge_coexists_with_uses_dataset(monkeypatch):
         ).fetchall()
     assert {r["name"] for r in uses_active} == {"camelyon 16"}
     assert {r["name"] for r in releases_active} == {"camelyon16"}
+
+
+def test_ai_algorithm_release_role_does_not_create_releases(monkeypatch):
+    """ai_algorithm enable_new is empty: role=release must not write RELEASES_DATASET."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889904"
+    paper_id = upsert_paper({"pmid": pmid, "title": "AI algo no release"})
+    ds_id = upsert_entity("camelyon16", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        ds_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "camelyon16",
+                    "access": "public",
+                    "action": "keep",
+                    "role": "release",
+                    "reason": "llm wrongly labeled release",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="ai_algorithm",
+    )
+    with get_conn() as conn:
+        releases = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='RELEASES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        uses = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+    assert releases == 0
+    assert uses == 1
+
+
+def test_pretrain_keep_coexists_on_foundation_model(monkeypatch):
+    """foundation_model + role=pretrain adds PRETRAINS_ON without superseding USES."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889905"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Pretrain coexistence"})
+    ds_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        ds_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "tcga",
+                    "access": "public",
+                    "action": "keep",
+                    "role": "pretrain",
+                    "reason": "pretraining corpus",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="foundation_model",
+    )
+    with get_conn() as conn:
+        uses = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        pretrains = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='PRETRAINS_ON' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+    assert uses == 1
+    assert pretrains == 1
 
 
 def test_meta_analysis_pooled_keep_preserves_uses(monkeypatch):
