@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from extractor.dataset_access import is_literature_platform, normalize_dataset_name
+from extractor.study_policy import DATASET_RELATIONS, apply_policy, get_policy
 from extractor.triple_models import Triple
 
 _GENERIC_METHODS = frozenset(
@@ -466,9 +467,6 @@ def postprocess_triples(
     study_type: str | None = None,
 ) -> list[Triple]:
     """Repair relations, filter low-value methods / coarse diseases / radiology modalities."""
-    # Reviews/meta-analyses survey others' data — do not ingest USES_DATASET.
-    drop_all_datasets = (study_type or "").lower() in ("review", "meta_analysis")
-
     normalized: list[Triple] = []
     for triple in triples:
         obj_name = triple.object.name
@@ -486,6 +484,9 @@ def postprocess_triples(
         )
         if repaired is not None:
             normalized.append(repaired)
+
+    normalized = apply_policy(normalized, study_type)
+    dataset_mode = get_policy(study_type).dataset_mode
 
     specific_methods = {
         _norm_key(t.object.name)
@@ -529,8 +530,11 @@ def postprocess_triples(
         if obj_type == "Modality" and is_radiology_modality(obj_name):
             continue
 
-        if obj_type == "Dataset" or triple.relation == "USES_DATASET":
-            if drop_all_datasets:
+        if (
+            triple.relation in DATASET_RELATIONS
+            or obj_type == "Dataset"
+        ):
+            if dataset_mode == "none":
                 continue
             canon = normalize_dataset_name(obj_name)
             if is_literature_platform(obj_name) or is_literature_platform(canon):

@@ -313,6 +313,21 @@ def test_postprocess_drops_pubmed_as_dataset():
     )
 
 
+def _triple(
+    relation: str,
+    obj_type: str,
+    name: str,
+    *,
+    quote: str = "test",
+) -> Triple:
+    return Triple(
+        subject=Entity(name="paper", type="Disease"),
+        relation=relation,
+        object=Entity(name=name, type=obj_type),
+        evidence_quote=quote,
+    )
+
+
 def test_postprocess_drops_all_datasets_for_review_study_type():
     t = Triple(
         subject=Entity(name="paper", type="Method"),
@@ -326,6 +341,21 @@ def test_postprocess_drops_all_datasets_for_review_study_type():
     kept = postprocess_triples([t], "methods", study_type="ai_algorithm")
     assert len(kept) == 1
     assert kept[0].object.name == "camelyon16"
+
+
+def test_postprocess_review_remaps_applies_method(monkeypatch):
+    monkeypatch.setattr("config.STUDY_POLICY_ENABLED", True)
+    t = _triple("APPLIES_METHOD", "Method", "clam", quote="survey of clam")
+    out = postprocess_triples([t], "methods", study_type="review")
+    assert len(out) == 1
+    assert out[0].relation == "SURVEYS_METHOD"
+
+
+def test_postprocess_ai_keeps_uses_dataset(monkeypatch):
+    monkeypatch.setattr("config.STUDY_POLICY_ENABLED", True)
+    t = _triple("USES_DATASET", "Dataset", "camelyon16", quote="trained on")
+    out = postprocess_triples([t], "methods", study_type="ai_algorithm")
+    assert any(x.relation == "USES_DATASET" for x in out)
 
 
 def test_repair_does_not_invent_compares_method():
