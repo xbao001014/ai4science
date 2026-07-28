@@ -297,6 +297,25 @@ CREATE TABLE IF NOT EXISTS paper_entity_bindings (
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_peb_pmid ON paper_entity_bindings(source_pmid);
+
+CREATE TABLE IF NOT EXISTS paper_improvement_suggestions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_pmid           TEXT NOT NULL,
+    limitation_entity_id  INTEGER,
+    action_type           TEXT NOT NULL,
+    suggestion            TEXT NOT NULL,
+    evidence_quote        TEXT,
+    evidence_section      TEXT,
+    grounding             TEXT NOT NULL,
+    confidence            REAL DEFAULT 0.5,
+    status                TEXT DEFAULT 'active',
+    extraction_pass       TEXT DEFAULT 'fulltext_reconcile',
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pis_pmid ON paper_improvement_suggestions(source_pmid);
+CREATE INDEX IF NOT EXISTS idx_pis_action ON paper_improvement_suggestions(action_type);
+CREATE INDEX IF NOT EXISTS idx_pis_lim ON paper_improvement_suggestions(limitation_entity_id);
+CREATE INDEX IF NOT EXISTS idx_pis_status ON paper_improvement_suggestions(status);
 """
 
 
@@ -474,6 +493,25 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_peb_pmid ON paper_entity_bindings(source_pmid);
+
+        CREATE TABLE IF NOT EXISTS paper_improvement_suggestions (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_pmid           TEXT NOT NULL,
+            limitation_entity_id  INTEGER,
+            action_type           TEXT NOT NULL,
+            suggestion            TEXT NOT NULL,
+            evidence_quote        TEXT,
+            evidence_section      TEXT,
+            grounding             TEXT NOT NULL,
+            confidence            REAL DEFAULT 0.5,
+            status                TEXT DEFAULT 'active',
+            extraction_pass       TEXT DEFAULT 'fulltext_reconcile',
+            created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_pis_pmid ON paper_improvement_suggestions(source_pmid);
+        CREATE INDEX IF NOT EXISTS idx_pis_action ON paper_improvement_suggestions(action_type);
+        CREATE INDEX IF NOT EXISTS idx_pis_lim ON paper_improvement_suggestions(limitation_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_pis_status ON paper_improvement_suggestions(status);
     """)
 
     prop_cols = {
@@ -1435,6 +1473,66 @@ def get_weekly_hotspot_snapshots(
             tuple(params),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def replace_paper_improvement_suggestions(pmid: str, rows: list[dict[str, Any]]) -> int:
+    """Supersede prior active rows for pmid, then insert new active rows. Returns insert count."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE paper_improvement_suggestions
+               SET status='superseded'
+               WHERE source_pmid=? AND COALESCE(status, 'active')='active'""",
+            (pmid,),
+        )
+        n = 0
+        for row in rows:
+            conn.execute(
+                """INSERT INTO paper_improvement_suggestions
+                   (source_pmid, limitation_entity_id, action_type, suggestion,
+                    evidence_quote, evidence_section, grounding, confidence,
+                    status, extraction_pass)
+                   VALUES (?,?,?,?,?,?,?,?, 'active', 'fulltext_reconcile')""",
+                (
+                    pmid,
+                    row.get("limitation_entity_id"),
+                    row["action_type"],
+                    row["suggestion"],
+                    row.get("evidence_quote") or "",
+                    row.get("evidence_section") or "",
+                    row["grounding"],
+                    float(row.get("confidence") if row.get("confidence") is not None else 0.5),
+                ),
+            )
+            n += 1
+        return n
+
+
+def list_active_improvement_suggestions(
+    pmid: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        if pmid:
+            rows = conn.execute(
+                """SELECT s.*, e.name AS limitation_name
+                   FROM paper_improvement_suggestions s
+                   LEFT JOIN entities e ON s.limitation_entity_id = e.id
+                   WHERE s.source_pmid=? AND COALESCE(s.status, 'active')='active'
+                   ORDER BY s.confidence DESC, s.id DESC
+                   LIMIT ?""",
+                (pmid, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT s.*, e.name AS limitation_name
+                   FROM paper_improvement_suggestions s
+                   LEFT JOIN entities e ON s.limitation_entity_id = e.id
+                   WHERE COALESCE(s.status, 'active')='active'
+                   ORDER BY s.confidence DESC, s.id DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def list_weekly_hotspot_weeks(limit: int = 12) -> list[str]:

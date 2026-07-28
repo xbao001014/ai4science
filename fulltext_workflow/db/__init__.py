@@ -10,8 +10,10 @@ from db.schema import (
     insert_sections,
     link_paper_author,
     link_paper_journal,
+    list_active_improvement_suggestions,
     mark_extraction_done,
     mark_fulltext_status,
+    replace_paper_improvement_suggestions,
     upsert_author,
     upsert_entity,
     upsert_journal,
@@ -35,4 +37,6 @@ __all__ = [
     "insert_sections",
     "delete_paper_sections",
     "mark_fulltext_status",
+    "replace_paper_improvement_suggestions",
+    "list_active_improvement_suggestions",
 ]
