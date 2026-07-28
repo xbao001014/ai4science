@@ -87,6 +87,7 @@ from db.schema import (  # noqa: E402
     init_db,
     landscape_count,
     list_active_improvement_suggestions,
+    list_active_improvement_suggestions_for_limitations,
 )
 from analysis.feasibility_tools import (  # noqa: E402
     FEASIBILITY_TOOLS,
@@ -1009,39 +1010,62 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                     st.json(fr.evolution_log)
 
 
-def _render_paper_level_improvement_suggestions(data: list) -> None:
-    """Show active improvement suggestions for PMIDs listed with limitations."""
+def _format_improvement_suggestion_rows(suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for s in suggestions:
+        quote = str(s.get("evidence_quote") or "")
+        if len(quote) > 200:
+            quote = quote[:200] + "…"
+        rows.append(
+            {
+                "PMID": s.get("source_pmid") or "",
+                "limitation_name": s.get("limitation_name") or "",
+                "action_type": s.get("action_type") or "",
+                "suggestion": s.get("suggestion") or "",
+                "grounding": s.get("grounding") or "",
+                "evidence_quote": quote,
+            }
+        )
+    return rows
+
+
+def _render_paper_level_improvement_suggestions(data: list, tool_name: str = "") -> None:
+    """Show active improvement suggestions linked to limitation tool results."""
     pmids: list[str] = []
-    seen: set[str] = set()
+    seen_pmid: set[str] = set()
+    limitation_names: list[str] = []
+    seen_lim: set[str] = set()
     for item in data:
         if not isinstance(item, dict):
             continue
         pmid = str(item.get("source_pmid") or item.get("pmid") or "").strip()
-        if not pmid or pmid in seen:
-            continue
-        seen.add(pmid)
-        pmids.append(pmid)
-        if len(pmids) >= 10:
-            break
-    if not pmids:
+        if pmid and pmid not in seen_pmid:
+            seen_pmid.add(pmid)
+            pmids.append(pmid)
+            if len(pmids) >= 10:
+                break
+        lim = str(item.get("limitation") or item.get("limitation_name") or "").strip()
+        if lim and lim not in seen_lim:
+            seen_lim.add(lim)
+            limitation_names.append(lim)
+
+    use_limitations = tool_name == "author_stated_gaps" or not pmids
+    if use_limitations:
+        if not limitation_names:
+            return
+        rows = _format_improvement_suggestion_rows(
+            list_active_improvement_suggestions_for_limitations(limitation_names)
+        )
+        if not rows:
+            return
+        st.markdown("**改进建议（挂接局限）**")
+        st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
+        safe_table(pd.DataFrame(rows), height=min(400, 40 + len(rows) * 35))
         return
 
     rows: list[dict[str, Any]] = []
     for pmid in pmids:
-        for s in list_active_improvement_suggestions(pmid):
-            quote = str(s.get("evidence_quote") or "")
-            if len(quote) > 200:
-                quote = quote[:200] + "…"
-            rows.append(
-                {
-                    "PMID": s.get("source_pmid") or pmid,
-                    "limitation_name": s.get("limitation_name") or "",
-                    "action_type": s.get("action_type") or "",
-                    "suggestion": s.get("suggestion") or "",
-                    "grounding": s.get("grounding") or "",
-                    "evidence_quote": quote,
-                }
-            )
+        rows.extend(_format_improvement_suggestion_rows(list_active_improvement_suggestions(pmid)))
     if not rows:
         return
     st.markdown("**改进建议（论文级）**")
@@ -1093,7 +1117,7 @@ def render_tool_result(name: str, result: dict) -> None:
             st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
         safe_table(pd.DataFrame(result["data"]), height=min(400, 40 + len(result["data"]) * 35))
         if name in ("author_stated_gaps", "author_limitations_for_topic"):
-            _render_paper_level_improvement_suggestions(result["data"])
+            _render_paper_level_improvement_suggestions(result["data"], name)
         return
 
     if "gaps" in result:

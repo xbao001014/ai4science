@@ -11,6 +11,7 @@ from db.schema import (
     link_paper_author,
     link_paper_journal,
     list_active_improvement_suggestions,
+    list_active_improvement_suggestions_for_limitations,
     mark_extraction_done,
     mark_fulltext_status,
     replace_paper_improvement_suggestions,
@@ -39,4 +40,5 @@ __all__ = [
     "mark_fulltext_status",
     "replace_paper_improvement_suggestions",
     "list_active_improvement_suggestions",
+    "list_active_improvement_suggestions_for_limitations",
 ]

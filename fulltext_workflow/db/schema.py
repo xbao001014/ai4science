@@ -1535,6 +1535,29 @@ def list_active_improvement_suggestions(
         return [dict(r) for r in rows]
 
 
+def list_active_improvement_suggestions_for_limitations(
+    names: list[str],
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    cleaned = [str(n).strip() for n in names if n and str(n).strip()]
+    if not cleaned:
+        return []
+    placeholders = ",".join("?" * len(cleaned))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT s.source_pmid, e.name AS limitation_name,
+                       s.action_type, s.suggestion, s.grounding, s.evidence_quote
+                FROM paper_improvement_suggestions s
+                LEFT JOIN entities e ON s.limitation_entity_id = e.id
+                WHERE COALESCE(s.status, 'active')='active'
+                  AND e.name IN ({placeholders})
+                ORDER BY s.confidence DESC, s.id DESC
+                LIMIT ?""",
+            (*cleaned, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def list_weekly_hotspot_weeks(limit: int = 12) -> list[str]:
     with get_conn() as conn:
         rows = conn.execute(

@@ -21,6 +21,7 @@ from db.schema import (  # noqa: E402
     get_conn,
     init_db,
     list_active_improvement_suggestions,
+    list_active_improvement_suggestions_for_limitations,
     replace_paper_improvement_suggestions,
     upsert_entity,
     upsert_paper,
@@ -318,3 +319,29 @@ def test_idea_tool_improvement_suggestions(monkeypatch):
     out = tool_improvement_suggestions_for_topic("lung adenocarcinoma")
     assert out["count"] >= 1
     assert out["data"][0]["action_type"] == "expand_sample"
+
+
+def test_list_suggestions_for_limitation_names(monkeypatch):
+    _tmp_db(monkeypatch)
+    pmid = "90000006"
+    upsert_paper({"pmid": pmid, "title": "Limitation lookup"})
+    lim_id = upsert_entity("lack of external validation", "Limitation")
+    replace_paper_improvement_suggestions(
+        pmid,
+        [
+            {
+                "limitation_entity_id": lim_id,
+                "action_type": "external_validation",
+                "suggestion": "Validate on an independent cohort.",
+                "evidence_quote": "external validation needed",
+                "grounding": "synthesized",
+                "confidence": 0.9,
+            }
+        ],
+    )
+    rows = list_active_improvement_suggestions_for_limitations(
+        ["lack of external validation", "unknown limitation"]
+    )
+    assert len(rows) == 1
+    assert rows[0]["limitation_name"] == "lack of external validation"
+    assert rows[0]["source_pmid"] == pmid
