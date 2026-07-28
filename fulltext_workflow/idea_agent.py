@@ -151,6 +151,31 @@ def tool_author_limitations_for_topic(keyword: str) -> dict:
     return {"description": f"Author-stated limitations for '{keyword}'", "count": len(rows), "data": rows}
 
 
+def tool_improvement_suggestions_for_topic(keyword: str) -> dict:
+    pmid_fc = topic_keyword_pmid_in_clause("s.source_pmid", keyword)
+    rows = _q(f"""
+        SELECT e.name AS limitation,
+               s.action_type,
+               s.suggestion,
+               s.evidence_quote,
+               s.evidence_section,
+               s.grounding,
+               s.confidence,
+               s.source_pmid
+        FROM paper_improvement_suggestions s
+        LEFT JOIN entities e ON s.limitation_entity_id = e.id
+        WHERE COALESCE(s.status, 'active')='active'
+          {pmid_fc}
+        ORDER BY s.confidence DESC
+        LIMIT {config.TOOL_TOP_N}
+    """)
+    return {
+        "description": f"Actionable improvement suggestions for '{keyword}'",
+        "count": len(rows),
+        "data": rows,
+    }
+
+
 def tool_modality_coverage_for_topic(keyword: str) -> dict:
     pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
     rows = _q(f"""
@@ -190,6 +215,7 @@ _SQL_IDEA_TOOLS: dict[str, Any] = {
     "datasets_for_topic": tool_datasets_for_topic,
     "metrics_for_topic": tool_metrics_for_topic,
     "author_limitations_for_topic": tool_author_limitations_for_topic,
+    "improvement_suggestions_for_topic": tool_improvement_suggestions_for_topic,
     "modality_coverage_for_topic": tool_modality_coverage_for_topic,
     "recent_papers_for_topic": tool_recent_papers_for_topic,
 }
@@ -237,6 +263,14 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
     {"type": "function", "function": {
         "name": "author_limitations_for_topic",
         "description": "Author-stated limitations with evidence_section and evidence_quote.",
+        "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
+    }},
+    {"type": "function", "function": {
+        "name": "improvement_suggestions_for_topic",
+        "description": (
+            "Structured follow-up suggestions linked to limitations: action_type, suggestion, "
+            "evidence_quote. Prefer over raw limitations when planning next steps."
+        ),
         "parameters": {"type": "object", "properties": {"keyword": _KEYWORD_SCHEMA}, "required": ["keyword"]},
     }},
     {"type": "function", "function": {
@@ -407,7 +441,9 @@ Language:
 
 Tool-use rules:
 - Call SQL tools + graph_* tools + Fangxin feasibility tools (at least 5 tools, including 1 graph_*).
-- Prefer metrics_for_topic (with evidence_quote) and author_limitations_for_topic.
+- Prefer metrics_for_topic (with evidence_quote) and improvement_suggestions_for_topic
+  for actionable next steps; use author_limitations_for_topic as the problem statement
+  when suggestions are sparse.
 - **Must** call public_dataset_assess (V-03) once to list recommended public datasets for the gap.
 - Call datasets_for_topic when discussing external data; respect access_class \
 (public|private|unknown). Prefer V-03 recommended_public when labeling public datasets.

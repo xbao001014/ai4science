@@ -218,3 +218,35 @@ def test_topic_action_aggregation(monkeypatch):
     all_out = tool_improvement_suggestions_by_topic(None)
     assert all_out["count"] >= 1
     assert any(r["action_type"] == "external_validation" for r in all_out["data"])
+
+
+def test_idea_tool_improvement_suggestions(monkeypatch):
+    from idea_agent import tool_improvement_suggestions_for_topic
+
+    _tmp_db(monkeypatch)
+    pmid = "90000004"
+    upsert_paper(
+        {
+            "pmid": pmid,
+            "title": "Lung adenocarcinoma WSI classification",
+            "abstract": "lung adenocarcinoma pathology AI",
+        }
+    )
+    lim_id = upsert_entity("small sample size", "Limitation")
+    replace_paper_improvement_suggestions(
+        pmid,
+        [
+            {
+                "limitation_entity_id": lim_id,
+                "action_type": "expand_sample",
+                "suggestion": "Enlarge the training cohort with additional annotated WSIs.",
+                "evidence_quote": "only 87 patients",
+                "evidence_section": "limitations",
+                "grounding": "synthesized",
+                "confidence": 0.88,
+            }
+        ],
+    )
+    out = tool_improvement_suggestions_for_topic("lung adenocarcinoma")
+    assert out["count"] >= 1
+    assert out["data"][0]["action_type"] == "expand_sample"
