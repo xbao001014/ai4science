@@ -109,6 +109,13 @@ HOTSPOT_PRIOR_WINDOW_DAYS: int = int(os.getenv("HOTSPOT_PRIOR_WINDOW_DAYS", "14"
 HOTSPOT_MIN_RECENT_PAPERS: int = int(os.getenv("HOTSPOT_MIN_RECENT_PAPERS", "2"))
 HOTSPOT_TOP_N: int = int(os.getenv("HOTSPOT_TOP_N", "20"))
 
+# Study-type policy matrix (deny/remap/dataset_mode); Task 3 wires into postprocess
+STUDY_POLICY_ENABLED: bool = os.getenv("STUDY_POLICY_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # Weekly ops memory (gap soft-dedup + persist)
 OPS_MEMORY_ENABLED: bool = os.getenv("OPS_MEMORY_ENABLED", "1").strip().lower() not in (
     "0", "false", "no", "off",
