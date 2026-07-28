@@ -98,7 +98,11 @@ def _save_triple(
         else:
             obj_name = triple.object.name
             access_class = None
-            if triple.object.type == "Dataset" or triple.relation == "USES_DATASET":
+            if triple.object.type == "Dataset" or triple.relation in (
+                "USES_DATASET",
+                "RELEASES_DATASET",
+                "PRETRAINS_ON",
+            ):
                 obj_name = normalize_dataset_name(obj_name)
                 access_class = resolve_dataset_access(
                     obj_name,

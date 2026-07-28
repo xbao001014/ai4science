@@ -364,6 +364,81 @@ def test_review_study_type_clears_all_datasets(monkeypatch):
     assert superseded == 1
 
 
+def test_parse_dataset_role_and_survey_fields():
+    from extractor.fulltext_reconcile import parse_reconcile_payload
+
+    raw = {
+        "datasets": [
+            {
+                "name": "camelyon16",
+                "access": "public",
+                "action": "keep",
+                "role": "release",
+                "reason": "we release",
+            }
+        ],
+        "surveyed_methods": [{"name": "clam", "quote": "CLAM is widely used"}],
+        "covered_diseases": [{"name": "breast cancer", "quote": "we cover breast cancer"}],
+        "bindings": [],
+        "limitations": [],
+    }
+    p = parse_reconcile_payload(raw)
+    assert p["datasets"][0]["role"] == "release"
+    assert p["surveyed_methods"][0]["name"] == "clam"
+
+
+def test_review_apply_clears_datasets_and_writes_survey(monkeypatch):
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "66778900"
+    paper_id = upsert_paper({"pmid": pmid, "title": "A systematic review with survey"})
+    tcga_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        tcga_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {"name": "tcga", "access": "public", "action": "keep", "reason": "survey"}
+            ],
+            "surveyed_methods": [{"name": "clam", "quote": "CLAM is widely used"}],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="review",
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        superseded = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='superseded'""",
+            (pmid,),
+        ).fetchone()[0]
+        surveys = conn.execute(
+            """SELECT e.name FROM relations r
+               JOIN entities e ON e.id = r.object_id
+               WHERE r.source_pmid=? AND r.relation='SURVEYS_METHOD'
+                 AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+    assert active == 0
+    assert superseded == 1
+    assert {r["name"] for r in surveys} == {"clam"}
+
+
 def test_pass2_keep_cannot_invent_survey_dataset(monkeypatch):
     from extractor.fulltext_reconcile import apply_reconcile_payload
 

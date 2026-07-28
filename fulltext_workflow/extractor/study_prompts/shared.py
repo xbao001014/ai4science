@@ -293,28 +293,31 @@ def section_hint_for(section_type: str, study_type: str | None) -> str:
         )
     return SECTION_HINTS.get(section_type, DEFAULT_SECTION_HINT)
 
-# Copied from fulltext_reconcile.RECONCILE_SYSTEM for Task 6 to consume.
-# Optional fields (role, surveyed_methods, covered_diseases) land in Task 6.
+# Shared Pass 2 reconcile core. Study-type packs append via build_reconcile_system.
+# Optional fields: role, surveyed_methods, covered_diseases.
 RECONCILE_SHARED_CORE = """\
 You are a biomedical knowledge-graph reconciler. Read the Pass 1 entity summary and full paper text, then output JSON only (no markdown, no commentary).
 
 Return exactly this shape:
 {
   "datasets": [
-    {"name": "...", "access": "public|restricted|unknown", "action": "keep|merge|drop", "reason": "..."}
+    {"name": "...", "access": "public|restricted|unknown", "action": "keep|merge|drop", "role": "experimental|release|pretrain|drop", "reason": "..."}
   ],
   "bindings": [
     {"method": "...", "disease": "...", "dataset": "...", "quote": "..."}
   ],
   "limitations": [
     {"canonical": "...", "merges": ["..."], "quote": "..."}
-  ]
+  ],
+  "surveyed_methods": [{"name": "...", "quote": "..."}],
+  "covered_diseases": [{"name": "...", "quote": "..."}]
 }
 
 Optional fields (when study-type pack requests them; omit if unused):
 - datasets[].role: experimental | release | pretrain | drop
-- surveyed_methods: [{"name": "...", "quote": "..."}]
-- covered_diseases: [{"name": "...", "quote": "..."}]
+  (experimental→USES_DATASET, release→RELEASES_DATASET, pretrain→PRETRAINS_ON, drop→drop action)
+- surveyed_methods: [{"name": "...", "quote": "..."}] → SURVEYS_METHOD
+- covered_diseases: [{"name": "...", "quote": "..."}] → COVERS_DISEASE
 
 Rules:
 - Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, ScienceDirect, Scopus, Web of Science, etc.) — they are not experimental datasets.

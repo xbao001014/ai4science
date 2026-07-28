@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from extractor.study_prompts.shared import RECONCILE_SHARED_CORE
+
 _SECTION_PRIORITY: tuple[str, ...] = (
     "methods",
     "results",
@@ -15,35 +17,16 @@ _SECTION_PRIORITY: tuple[str, ...] = (
 )
 _PRIORITY_RANK = {name: idx for idx, name in enumerate(_SECTION_PRIORITY)}
 _VALID_DATASET_ACTIONS = frozenset({"keep", "merge", "drop"})
-
-RECONCILE_SYSTEM = """You are a biomedical knowledge-graph reconciler. Read the Pass 1 entity summary and full paper text, then output JSON only (no markdown, no commentary).
-
-Return exactly this shape:
-{
-  "datasets": [
-    {"name": "...", "access": "public|restricted|unknown", "action": "keep|merge|drop", "reason": "..."}
-  ],
-  "bindings": [
-    {"method": "...", "disease": "...", "dataset": "...", "quote": "..."}
-  ],
-  "limitations": [
-    {"canonical": "...", "merges": ["..."], "quote": "..."}
-  ]
+_VALID_DATASET_ROLES = frozenset({"experimental", "release", "pretrain", "drop"})
+_ROLE_TO_RELATION = {
+    "experimental": "USES_DATASET",
+    "release": "RELEASES_DATASET",
+    "pretrain": "PRETRAINS_ON",
 }
+_META_KEEP_REASON_SUBSTRINGS = ("self-analysis", "pooled analysis by the authors")
 
-Rules:
-- Drop literature platforms and bibliographic indexes (PubMed, GEO as a portal, PMC, ScienceDirect, Scopus, Web of Science, etc.) — they are not experimental datasets.
-- USES_DATASET must reflect datasets THIS study experimentally used (train/val/test/evaluate). Never keep datasets only listed in a review table, related-work survey, or background citation.
-- For review / meta-analysis papers: drop ALL datasets unless the authors clearly ran their own analysis on a named cohort (prefer empty datasets).
-- NEVER drop curated public benchmarks (TCGA, Camelyon16/17, CPTAC, BreakHis, BACH, PANDA, MIDOG, DigestPath, etc.) when this study actually used them. Use keep, or merge aliases into that canonical name.
-- Do not invent new dataset names that were not already in the Pass 1 entity summary, except merging aliases of existing ones.
-- Do not mark a dataset public unless it is a well-known public research dataset named in the paper; when unsure use unknown.
-- Do not set `access` to `public` for dataset names that are not on the known public alias list (unlisted names must stay `unknown`).
-- merge: collapse aliases to one canonical dataset name already implied by Pass 1 or known public aliases.
-- bindings: one row per method–disease–dataset claim; dataset may be empty when no named set is stated.
-- limitations: canonical short phrase; merges lists section-level fragments to supersede. Always leave the canonical as the surviving limitation (do not put only fragments with no survivor).
-- Omit empty arrays when nothing applies; use [] not null for lists.
-"""
+# Alias to shared core (study-type packs append via build_reconcile_system).
+RECONCILE_SYSTEM = RECONCILE_SHARED_CORE
 
 
 def _section_rank(section_type: str) -> int:
@@ -108,12 +91,34 @@ def _parse_dataset_rows(rows: Any) -> list[dict[str, str]]:
         action = str(row.get("action") or "").strip().lower()
         if action not in _VALID_DATASET_ACTIONS:
             continue
+        role_raw = str(row.get("role") or "").strip().lower()
+        role = role_raw if role_raw in _VALID_DATASET_ROLES else "experimental"
         out.append(
             {
                 "name": name,
                 "access": str(row.get("access") or "unknown").strip().lower() or "unknown",
                 "action": action,
+                "role": role,
                 "reason": str(row.get("reason") or "").strip(),
+            }
+        )
+    return out
+
+
+def _parse_name_quote_rows(rows: Any) -> list[dict[str, str]]:
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "quote": str(row.get("quote") or "").strip(),
             }
         )
     return out
@@ -173,6 +178,8 @@ def parse_reconcile_payload(raw: dict) -> dict:
         "datasets": _parse_dataset_rows(raw.get("datasets")),
         "bindings": _parse_binding_rows(raw.get("bindings")),
         "limitations": _parse_limitation_rows(raw.get("limitations")),
+        "surveyed_methods": _parse_name_quote_rows(raw.get("surveyed_methods")),
+        "covered_diseases": _parse_name_quote_rows(raw.get("covered_diseases")),
     }
 
 
@@ -180,25 +187,45 @@ def call_reconcile_llm(
     text: str, entity_summary: str, *, study_type: str | None = None
 ) -> dict:
     from extractor.llm_client import llm_call_structured
+    from extractor.study_prompts import build_reconcile_system
 
     st = study_type or "unknown"
     user = (
         f"STUDY TYPE: {st}\n"
         f"ENTITY SUMMARY (Pass1):\n{entity_summary}\n\nFULLTEXT:\n{text}"
     )
-    return parse_reconcile_payload(llm_call_structured(RECONCILE_SYSTEM, user))
+    return parse_reconcile_payload(
+        llm_call_structured(build_reconcile_system(study_type), user)
+    )
 
 
 def _pass1_dataset_names(pmid: str) -> set[str]:
     from db.schema import list_relations_for_pmid
     from extractor.dataset_access import normalize_dataset_name
+    from extractor.study_policy import DATASET_RELATIONS
 
     names: set[str] = set()
-    for rel in list_relations_for_pmid(pmid, "USES_DATASET"):
-        if rel["status"] != "active":
-            continue
-        names.add(normalize_dataset_name(rel["object_name"]))
+    for rel_name in DATASET_RELATIONS:
+        for rel in list_relations_for_pmid(pmid, rel_name):
+            if rel["status"] != "active":
+                continue
+            names.add(normalize_dataset_name(rel["object_name"]))
     return names
+
+
+def _is_meta_keep_exception(row: dict[str, str], study_type: str | None) -> bool:
+    if (study_type or "").lower() != "meta_analysis":
+        return False
+    if row.get("action") != "keep":
+        return False
+    if (row.get("role") or "experimental") != "experimental":
+        return False
+    reason = (row.get("reason") or "").lower()
+    return any(s in reason for s in _META_KEEP_REASON_SUBSTRINGS)
+
+
+def _relation_for_role(role: str) -> str:
+    return _ROLE_TO_RELATION.get(role, "USES_DATASET")
 
 
 def summarize_pass1_entities(pmid: str) -> str:
@@ -243,6 +270,16 @@ def _limitation_name_matches(object_name: str, merge_name: str) -> bool:
     )
 
 
+def _list_all_dataset_relations(pmid: str) -> list:
+    from db.schema import list_relations_for_pmid
+    from extractor.study_policy import DATASET_RELATIONS
+
+    rows: list = []
+    for rel_name in DATASET_RELATIONS:
+        rows.extend(list_relations_for_pmid(pmid, rel_name))
+    return rows
+
+
 def _apply_dataset_actions(
     paper_id: int,
     pmid: str,
@@ -262,22 +299,73 @@ def _apply_dataset_actions(
         normalize_dataset_name,
         resolve_dataset_access,
     )
+    from extractor.study_policy import DATASET_RELATIONS, get_policy
 
-    # Reviews/meta-analyses survey others' data — clear USES_DATASET.
-    if (study_type or "").lower() in ("review", "meta_analysis"):
-        for rel in list_relations_for_pmid(pmid, "USES_DATASET"):
-            if rel["status"] == "active":
+    policy = get_policy(study_type)
+
+    # Reviews/meta (dataset_mode=none): clear all dataset-class edges except meta keep.
+    if policy.dataset_mode == "none":
+        pass1_names = _pass1_dataset_names(pmid)
+        exceptions = [
+            r
+            for r in datasets
+            if _is_meta_keep_exception(r, study_type)
+            and not is_literature_platform(r["name"])
+            and normalize_dataset_name(r["name"]) in pass1_names
+        ]
+        exception_canons = {
+            normalize_dataset_name(r["name"]) for r in exceptions
+        }
+        for rel_name in DATASET_RELATIONS:
+            for rel in list_relations_for_pmid(pmid, rel_name):
+                if rel["status"] != "active":
+                    continue
+                if (
+                    rel_name == "USES_DATASET"
+                    and normalize_dataset_name(rel["object_name"]) in exception_canons
+                ):
+                    continue
                 supersede_relation(rel["id"], None)
+        for row in exceptions:
+            canon = normalize_dataset_name(row["name"])
+            access = resolve_dataset_access(
+                row["name"], access_hint=row.get("access", "unknown")
+            )
+            entity_id = upsert_entity(canon, "Dataset", access_class=access)
+            has_active = any(
+                r["status"] == "active"
+                and r["relation"] == "USES_DATASET"
+                and (
+                    r["object_id"] == entity_id
+                    or normalize_dataset_name(r["object_name"]) == canon
+                )
+                for r in list_relations_for_pmid(pmid, "USES_DATASET")
+            )
+            if not has_active:
+                insert_relation(
+                    "Paper",
+                    paper_id,
+                    "USES_DATASET",
+                    "Dataset",
+                    entity_id,
+                    source_pmid=pmid,
+                    extraction_pass="fulltext_reconcile",
+                    status="active",
+                )
         return
 
-    existing = list_relations_for_pmid(pmid, "USES_DATASET")
+    existing = _list_all_dataset_relations(pmid)
     pass1_names = _pass1_dataset_names(pmid)
 
     for row in datasets:
         name = row["name"]
         action = row["action"]
+        role = row.get("role") or "experimental"
         access_hint = row.get("access", "unknown")
         canon = normalize_dataset_name(name)
+
+        if role == "drop":
+            action = "drop"
 
         if is_literature_platform(name):
             for rel in existing:
@@ -290,6 +378,10 @@ def _apply_dataset_actions(
         # Curated public benchmarks must survive Pass 2; treat LLM "drop" as keep.
         if action == "drop" and is_public_dataset_alias(name):
             action = "keep"
+            if role == "drop":
+                role = "experimental"
+
+        target_rel = _relation_for_role(role)
 
         if action == "drop":
             for rel in existing:
@@ -309,17 +401,18 @@ def _apply_dataset_actions(
             entity_id = upsert_entity(canon, "Dataset", access_class=access)
             has_active = any(
                 r["status"] == "active"
+                and r["relation"] == target_rel
                 and (
                     r["object_id"] == entity_id
                     or normalize_dataset_name(r["object_name"]) == canon
                 )
-                for r in list_relations_for_pmid(pmid, "USES_DATASET")
+                for r in list_relations_for_pmid(pmid, target_rel)
             )
             if not has_active:
                 insert_relation(
                     "Paper",
                     paper_id,
-                    "USES_DATASET",
+                    target_rel,
                     "Dataset",
                     entity_id,
                     source_pmid=pmid,
@@ -339,7 +432,7 @@ def _apply_dataset_actions(
             for rel in existing:
                 if rel["status"] != "active":
                     continue
-                if rel["object_id"] == entity_id:
+                if rel["object_id"] == entity_id and rel["relation"] == target_rel:
                     continue
                 if _dataset_name_matches(rel["object_name"], name) or (
                     normalize_dataset_name(rel["object_name"]) == canon
@@ -348,13 +441,58 @@ def _apply_dataset_actions(
             insert_relation(
                 "Paper",
                 paper_id,
-                "USES_DATASET",
+                target_rel,
                 "Dataset",
                 entity_id,
                 source_pmid=pmid,
                 extraction_pass="fulltext_reconcile",
                 status="active",
             )
+
+
+def _apply_survey_cover(
+    paper_id: int,
+    pmid: str,
+    surveyed: list[dict[str, str]],
+    covered: list[dict[str, str]],
+) -> None:
+    from db.schema import insert_relation, upsert_entity
+    from extractor.entity_normalize import normalize_entity_name
+
+    for row in surveyed:
+        name = normalize_entity_name(row["name"], "Method")
+        if not name:
+            continue
+        entity_id = upsert_entity(name, "Method")
+        insert_relation(
+            "Paper",
+            paper_id,
+            "SURVEYS_METHOD",
+            "Method",
+            entity_id,
+            source_pmid=pmid,
+            evidence_quote=row.get("quote") or "",
+            evidence_section="fulltext_reconcile",
+            extraction_pass="fulltext_reconcile",
+            status="active",
+        )
+    for row in covered:
+        name = normalize_entity_name(row["name"], "Disease")
+        if not name:
+            continue
+        entity_id = upsert_entity(name, "Disease")
+        insert_relation(
+            "Paper",
+            paper_id,
+            "COVERS_DISEASE",
+            "Disease",
+            entity_id,
+            source_pmid=pmid,
+            evidence_quote=row.get("quote") or "",
+            evidence_section="fulltext_reconcile",
+            extraction_pass="fulltext_reconcile",
+            status="active",
+        )
 
 
 def _apply_limitation_merges(
@@ -455,10 +593,16 @@ def apply_reconcile_payload(
     *,
     study_type: str | None = None,
 ) -> None:
-    """Persist Pass 2 reconcile decisions: datasets, limitations, bindings."""
+    """Persist Pass 2 reconcile decisions: datasets, survey/cover, limitations, bindings."""
     normalized = parse_reconcile_payload(payload)
     _apply_dataset_actions(
         paper_id, pmid, normalized["datasets"], study_type=study_type
+    )
+    _apply_survey_cover(
+        paper_id,
+        pmid,
+        normalized["surveyed_methods"],
+        normalized["covered_diseases"],
     )
     _apply_limitation_merges(paper_id, pmid, normalized["limitations"])
     _apply_bindings(pmid, normalized["bindings"], study_type=study_type)
