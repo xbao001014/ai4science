@@ -141,6 +141,10 @@ ROLE_COLOR = {
 TOOL_META: dict[str, dict] = {
     "corpus_focus_coverage": {"label": "焦点语料覆盖", "category": "语料诊断"},
     "author_stated_gaps": {"label": "作者自述空白", "category": "全文证据"},
+    "improvement_suggestions_by_topic": {
+        "label": "改进方向 × 动作",
+        "category": "全文证据",
+    },
     "limitation_impact_rank": {"label": "局限 × 影响", "category": "影响加权"},
     "limitation_temporal_profile": {
         "label": "局限时序画像",
@@ -189,6 +193,7 @@ IDEA_TOOL_META: dict[str, str] = {
     "datasets_for_topic": "数据集清单",
     "metrics_for_topic": "带证据的指标",
     "author_limitations_for_topic": "作者局限",
+    "improvement_suggestions_for_topic": "改进建议",
     "modality_coverage_for_topic": "模态覆盖",
     "recent_papers_for_topic": "近期论文",
     "graph_entity_pagerank": "实体 PageRank",
@@ -1037,6 +1042,9 @@ def render_tool_result(name: str, result: dict) -> None:
             return
 
     if "data" in result and isinstance(result["data"], list) and result["data"]:
+        first = result["data"][0] if isinstance(result["data"][0], dict) else {}
+        if name == "improvement_suggestions_by_topic" or "action_type" in first:
+            st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
         safe_table(pd.DataFrame(result["data"]), height=min(400, 40 + len(result["data"]) * 35))
         return
 
@@ -1601,6 +1609,17 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
             st.info("本窗口内无热点×空白交叉。")
     with tab_l:
         safe_table(pd.DataFrame(payload.get("new_limitations", [])))
+        focus = normalize_focus(focus_hint) or ""
+        try:
+            from analysis.gap_tools import tool_improvement_suggestions_by_topic
+
+            buckets = tool_improvement_suggestions_by_topic(focus or None)
+            if buckets.get("data"):
+                st.markdown("**主题 × 改进动作**")
+                st.caption("synthesized = 结合全文轻度综合；author_stated = 贴近作者原述")
+                safe_table(pd.DataFrame(buckets["data"]))
+        except Exception:
+            pass
 
     if st.session_state.get("hotspot_brief"):
         st.divider()
