@@ -60,6 +60,64 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
     return {"description": desc, "data": rows}
 
 
+def tool_improvement_suggestions_by_topic(focus: str | None = None) -> dict:
+    """Aggregate active improvement suggestions by action_type for a topic focus."""
+    from analysis.focus_filter import topic_keyword_pmid_in_clause
+
+    pmid_filter = ""
+    if focus and str(focus).strip():
+        pmid_filter = topic_keyword_pmid_in_clause("s.source_pmid", str(focus).strip())
+
+    limit = int(config.TOOL_TOP_N)
+    sql = f"""
+        SELECT s.action_type AS action_type,
+               COUNT(DISTINCT s.source_pmid) AS paper_cnt,
+               AVG(s.confidence) AS avg_confidence,
+               GROUP_CONCAT(DISTINCT s.source_pmid) AS sample_pmids
+        FROM paper_improvement_suggestions s
+        WHERE COALESCE(s.status, 'active')='active'
+          {pmid_filter}
+        GROUP BY s.action_type
+        ORDER BY paper_cnt DESC, avg_confidence DESC
+        LIMIT {limit}
+    """
+
+    with get_conn() as conn:
+        buckets = [dict(r) for r in conn.execute(sql).fetchall()]
+
+    # Attach a representative suggestion per action_type (highest confidence).
+    data = []
+    for b in buckets:
+        action = b["action_type"]
+        with get_conn() as conn:
+            rep = conn.execute(
+                f"""
+                SELECT s.suggestion, e.name AS limitation, s.source_pmid, s.grounding
+                FROM paper_improvement_suggestions s
+                LEFT JOIN entities e ON s.limitation_entity_id = e.id
+                WHERE COALESCE(s.status, 'active')='active'
+                  AND s.action_type=?
+                  {pmid_filter}
+                ORDER BY s.confidence DESC, s.id DESC
+                LIMIT 1
+                """,
+                (action,),
+            ).fetchone()
+        row = dict(b)
+        if rep:
+            row["suggestion"] = rep["suggestion"]
+            row["limitation"] = rep["limitation"]
+            row["grounding"] = rep["grounding"]
+            pmids = (row.get("sample_pmids") or "").split(",")
+            row["sample_pmids"] = ",".join(pmids[:5])
+        data.append(row)
+
+    desc = "Improvement suggestions by action_type"
+    if focus:
+        desc += f" for '{focus}'"
+    return {"description": desc, "count": len(data), "data": data}
+
+
 def tool_disease_task_coverage(focus: str | None = None) -> dict:
     fc = _focus_clause("e_d.name", focus)
     rows = _q(f"""
@@ -505,6 +563,7 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
 SQL_TOOLS: dict[str, Callable[..., dict]] = {
     "corpus_focus_coverage": tool_corpus_focus_coverage,
     "author_stated_gaps": tool_author_stated_gaps,
+    "improvement_suggestions_by_topic": tool_improvement_suggestions_by_topic,
     "limitation_impact_rank": tool_limitation_impact_rank,
     "limitation_temporal_profile": tool_limitation_temporal_profile,
     "combo_gap_temporal": tool_combo_gap_temporal,
@@ -550,6 +609,23 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "focus": {"type": "string", "description": "Optional keyword filter"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "improvement_suggestions_by_topic",
+            "description": (
+                "Aggregate active improvement suggestions by action_type for a topic focus. "
+                "Returns paper_cnt, representative suggestion/limitation, sample_pmids, avg_confidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": "string", "description": "Optional topic/disease keyword"},
                 },
                 "required": [],
             },

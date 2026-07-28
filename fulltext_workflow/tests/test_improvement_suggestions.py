@@ -178,3 +178,43 @@ def test_parse_reconcile_payload_includes_recommendations():
     )
     assert len(p["recommendations"]) == 1
     assert p["recommendations"][0]["action_type"] == "multicenter"
+
+
+def test_topic_action_aggregation(monkeypatch):
+    from analysis.gap_tools import tool_improvement_suggestions_by_topic
+
+    _tmp_db(monkeypatch)
+    pmid = "90000003"
+    upsert_paper(
+        {
+            "pmid": pmid,
+            "title": "Breast cancer WSI grading with CNN",
+            "abstract": "breast cancer digital pathology",
+        }
+    )
+    lim_id = upsert_entity("lack of external validation", "Limitation")
+    replace_paper_improvement_suggestions(
+        pmid,
+        [
+            {
+                "limitation_entity_id": lim_id,
+                "action_type": "external_validation",
+                "suggestion": "Validate on an independent breast WSI cohort.",
+                "evidence_quote": "no external validation",
+                "evidence_section": "limitations",
+                "grounding": "synthesized",
+                "confidence": 0.9,
+            }
+        ],
+    )
+    out = tool_improvement_suggestions_by_topic("breast cancer")
+    assert out["count"] >= 1
+    row = out["data"][0]
+    assert row["action_type"] == "external_validation"
+    assert row["paper_cnt"] >= 1
+    assert pmid in (row.get("sample_pmids") or "")
+
+    # focus=None returns all active aggregations
+    all_out = tool_improvement_suggestions_by_topic(None)
+    assert all_out["count"] >= 1
+    assert any(r["action_type"] == "external_validation" for r in all_out["data"])
