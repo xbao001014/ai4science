@@ -429,10 +429,14 @@ def _apply_dataset_actions(
                 continue
             access = resolve_dataset_access(canon, access_hint=access_hint)
             entity_id = upsert_entity(canon, "Dataset", access_class=access)
+            # Only collapse same-relation alias edges; keep other DATASET_RELATIONS
+            # (e.g. USES_DATASET coexists with RELEASES_DATASET / PRETRAINS_ON).
             for rel in existing:
                 if rel["status"] != "active":
                     continue
-                if rel["object_id"] == entity_id and rel["relation"] == target_rel:
+                if rel["relation"] != target_rel:
+                    continue
+                if rel["object_id"] == entity_id:
                     continue
                 if _dataset_name_matches(rel["object_name"], name) or (
                     normalize_dataset_name(rel["object_name"]) == canon

@@ -528,6 +528,206 @@ def test_drop_cannot_remove_public_alias(monkeypatch):
     assert {r["name"] for r in active} == {"tcga"}
 
 
+def test_release_keep_coexists_with_uses_dataset(monkeypatch):
+    """role=release keep adds RELEASES_DATASET without superseding USES_DATASET."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889900"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Release coexistence"})
+    ds_id = upsert_entity("camelyon16", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        ds_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "camelyon16",
+                    "access": "public",
+                    "action": "keep",
+                    "role": "release",
+                    "reason": "we release this dataset",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="ai_algorithm",
+    )
+    with get_conn() as conn:
+        uses = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        releases = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='RELEASES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+    assert uses == 1
+    assert releases == 1
+
+
+def test_release_merge_coexists_with_uses_dataset(monkeypatch):
+    """role=release merge must not supersede a different DATASET_RELATION on same object."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889901"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Release merge coexistence"})
+    alias_id = upsert_entity("camelyon 16", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        alias_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "camelyon16",
+                    "access": "public",
+                    "action": "merge",
+                    "role": "release",
+                    "reason": "alias collapse into release",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="ai_algorithm",
+    )
+    with get_conn() as conn:
+        uses_active = conn.execute(
+            """SELECT e.name FROM relations r
+               JOIN entities e ON e.id = r.object_id
+               WHERE r.source_pmid=? AND r.relation='USES_DATASET'
+                 AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+        releases_active = conn.execute(
+            """SELECT e.name FROM relations r
+               JOIN entities e ON e.id = r.object_id
+               WHERE r.source_pmid=? AND r.relation='RELEASES_DATASET'
+                 AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+    assert {r["name"] for r in uses_active} == {"camelyon 16"}
+    assert {r["name"] for r in releases_active} == {"camelyon16"}
+
+
+def test_meta_analysis_pooled_keep_preserves_uses(monkeypatch):
+    """meta_analysis keep + experimental + pooled-analysis reason keeps USES under mode=none."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889902"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Meta pooled keep"})
+    ds_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        ds_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "tcga",
+                    "access": "public",
+                    "action": "keep",
+                    "role": "experimental",
+                    "reason": "pooled analysis by the authors of primary cohorts",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="meta_analysis",
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT e.name FROM relations r
+               JOIN entities e ON e.id = r.object_id
+               WHERE r.source_pmid=? AND r.relation='USES_DATASET'
+                 AND r.status='active'""",
+            (pmid,),
+        ).fetchall()
+    assert {r["name"] for r in active} == {"tcga"}
+
+
+def test_review_without_meta_exception_clears_datasets(monkeypatch):
+    """review keep without meta pooled/self-analysis exception still clears datasets."""
+    from extractor.fulltext_reconcile import apply_reconcile_payload
+
+    _tmp_db(monkeypatch)
+    pmid = "77889903"
+    paper_id = upsert_paper({"pmid": pmid, "title": "Review clears datasets"})
+    ds_id = upsert_entity("tcga", "Dataset", access_class="public")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "USES_DATASET",
+        "Dataset",
+        ds_id,
+        source_pmid=pmid,
+        extraction_pass="section",
+    )
+    apply_reconcile_payload(
+        paper_id,
+        pmid,
+        {
+            "datasets": [
+                {
+                    "name": "tcga",
+                    "access": "public",
+                    "action": "keep",
+                    "role": "experimental",
+                    "reason": "pooled analysis by the authors",
+                }
+            ],
+            "bindings": [],
+            "limitations": [],
+        },
+        study_type="review",
+    )
+    with get_conn() as conn:
+        active = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='active'""",
+            (pmid,),
+        ).fetchone()[0]
+        superseded = conn.execute(
+            """SELECT COUNT(*) FROM relations
+               WHERE source_pmid=? AND relation='USES_DATASET' AND status='superseded'""",
+            (pmid,),
+        ).fetchone()[0]
+    assert active == 0
+    assert superseded == 1
+
+
 def test_limitation_merge_reactivates_canonical_edge(monkeypatch):
     """If Pass1 already had the canonical edge and merges supersede siblings,
     Pass2 must leave an active canonical (reactivate if needed)."""
