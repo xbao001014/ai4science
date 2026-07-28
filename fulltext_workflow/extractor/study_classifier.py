@@ -29,15 +29,23 @@ class StudyTypeResult(BaseModel):
 _STUDY_TYPE_SYSTEM = """\
 You are an expert biomedical literature analyst specializing in pathology AI \
 and computational pathology (digital pathology, WSI, histopathology, cytopathology).
-Classify the given paper into exactly ONE study type:
-- ai_algorithm: Novel AI/deep learning algorithm development
-- clinical_study: Clinical validation or patient outcome study
-- review: Narrative or systematic review (not meta-analysis)
-- meta_analysis: Quantitative meta-analysis
-- dataset_benchmark: Dataset construction or benchmarking
-- foundation_model: Large pre-trained or self-supervised model
-- multimodal: Multiple data modalities (WSI/histology + genomics/text/clinical)
-- other: Does not fit above
+Classify the given paper into exactly ONE study type using scholar-reading lenses \
+(contribution focus, not title keywords alone):
+- ai_algorithm: Algorithmic contribution — proposes or evaluates a method with \
+task, baselines, experimental data, and metrics (typical ML paper)
+- clinical_study: Clinical validation — cohort/disease, endpoints/outcomes, AI used \
+in the study protocol, clinical limitations (not pure algorithm novelty)
+- review: Narrative or systematic survey — coverage of disease/method landscape \
+and field gaps; no single primary experiment (not meta-analysis)
+- meta_analysis: Quantitative synthesis — inclusion criteria, pooled endpoints, \
+heterogeneity; same survey family as review with pooled estimates
+- dataset_benchmark: Dataset release or benchmark — contributes released data, \
+annotation/protocol, benchmark tasks, and baseline comparisons (protocol + release)
+- foundation_model: Foundation/pretrained model — pretrain corpus, model contribution, \
+and broad downstream transfer tasks (pretrain + transfer, not a small fine-tune only)
+- multimodal: Multimodal fusion study — multiple modalities (WSI/histology + \
+genomics/text/clinical), fusion method, per-modality data
+- other: Only clearly stated study facts fit none of the above; prefer when genre is unclear
 
 Respond with JSON: {"study_type": "ai_algorithm"}
 """
@@ -47,7 +55,7 @@ Title: {title}
 PubMed Publication Types: {pub_types}
 Abstract: {abstract}
 
-Classify the study type.
+Classify the study type using the scholar-focus bullets above.
 """
 
 
