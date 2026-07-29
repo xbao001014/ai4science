@@ -179,7 +179,7 @@ TOOL_META: dict[str, dict] = {
     "attribute_distribution": {"label": "V1.1 属性分布", "category": "数据可行性"},
     "molecular_positivity": {"label": "V1.1 分子阳性率", "category": "数据可行性"},
     "text_disease_matches": {"label": "V1.1 文本匹配", "category": "数据可行性"},
-    "emerging_gap_opportunities": {"label": "每周热点×空白", "category": "每周热点"},
+    "emerging_gap_opportunities": {"label": "可迁移候选", "category": "每周热点"},
 }
 
 CATEGORY_COLOR = {
@@ -1622,7 +1622,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     )
     m2.metric("排除(年精度)", payload.get("papers_excluded_low_precision", 0))
     m3.metric("热门方法", (payload.get("emerging_methods") or [{}])[0].get("name", "—"))
-    m4.metric("空白机会", len(payload.get("emerging_gap_opportunities") or []))
+    m4.metric("可迁移候选", len(payload.get("emerging_gap_opportunities") or []))
 
     wow = payload.get("week_over_week") or {}
     if wow.get("has_baseline"):
@@ -1664,7 +1664,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "方法",
         "疾病",
         "热门组合",
-        "空白机会",
+        "可迁移候选",
         "局限",
     ])
     with tab_m:
@@ -1675,10 +1675,31 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         safe_table(pd.DataFrame(payload.get("hot_combos", [])))
     with tab_o:
         opps = payload.get("emerging_gap_opportunities", [])
+        st.caption(
+            "需合格 Task 桥（bridge_task / bridge_quality=ok）；"
+            "无桥接的文献覆盖空洞不计入，列表为空优于假阳性。"
+        )
         if opps:
-            safe_table(pd.DataFrame(opps))
+            opp_cols = [
+                "method",
+                "disease",
+                "bridge_task",
+                "bridge_quality",
+                "bridge_mode",
+                "literature_gap",
+                "literature_paper_cnt",
+                "support_diseases",
+                "recent_hot_cnt",
+                "velocity",
+                "emerging_score",
+                "opportunity_score",
+            ]
+            df_opps = pd.DataFrame(opps)
+            ordered = [c for c in opp_cols if c in df_opps.columns]
+            extra = [c for c in df_opps.columns if c not in ordered]
+            safe_table(df_opps[ordered + extra])
         else:
-            st.info("本窗口内无热点×空白交叉。")
+            st.info("本窗口内无可迁移候选（需升温方法×稀疏组合且存在 ok Task 桥）。")
     with tab_l:
         safe_table(pd.DataFrame(payload.get("new_limitations", [])))
         focus = normalize_focus(focus_hint) or ""

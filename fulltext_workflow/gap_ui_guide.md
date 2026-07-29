@@ -13,7 +13,7 @@
 | 能力 | 说明 |
 |------|------|
 | 三角色辩论 | Opportunity Scout → Evidence Reviewer → Final Synthesizer |
-| 周热点 | 发表窗口热点榜、Week-over-Week、交叉机会、LLM 简报 |
+| 周热点 | 发表窗口热点榜、Week-over-Week、可迁移候选、LLM 简报 |
 | 可视化 | Plotly：辩论漏斗、工具 treemap、method×disease、lit×data |
 | 证据追溯 | PMID、证据章节、引用片段、语料 focus 匹配文献 |
 | 空白报告 | Markdown Gap Report，可下载；默认写入 ops memory |
@@ -156,7 +156,7 @@ Extracted 为 0 时先跑抽取流水线。
 | Coverage / Combination | Disease-Task Coverage、Method × Disease Combo |
 | Graph Analysis | PageRank、Community Gaps、Disease-Method Reach |
 | Data Feasibility | D-01/D-02、V-01/V-02、Lit × Data Matrix、V1.1 系列 |
-| Weekly Hotspot | Weekly Hot × Gap（emerging_gap_opportunities） |
+| Weekly Hotspot | 可迁移候选（emerging_gap_opportunities，Task 桥接） |
 
 ---
 
@@ -171,7 +171,7 @@ Extracted 为 0 时先跑抽取流水线。
 | **Save snapshot report** | 写入 `output/weekly_hotspot_{week_id}.md` 并持久化快照 |
 | **Generate LLM brief** | 用 `LLM_MODEL_AGENT` 生成中文趋势简报 |
 
-子页大致包括：Methods / Diseases / Combos / Emerging × Gap / Limitations，以及 WoW（New / Cooled / Rank changes）。至少两次 `Save snapshot` 后 WoW 才有意义。
+子页大致包括：Methods / Diseases / Combos / **可迁移候选** / Limitations，以及 WoW（New / Cooled / Rank changes）。**可迁移候选**需合格 Task 桥（`bridge_task`、`bridge_quality=ok`）；无桥则列表为空。至少两次 `Save snapshot` 后 WoW 才有意义。
 
 也可在 CLI：`main.py hotspot-report` / `hotspot-brief`。
 

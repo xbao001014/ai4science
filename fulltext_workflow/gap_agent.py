@@ -107,7 +107,7 @@ focus_subset.papers from global.papers.
 - Pair with author_stated_gaps / limitation_impact_rank (author limitations + citation impact).
 - Use combo_gap_temporal to find method×disease combos with later follow-up.
 - Use hotspot_entities and recent_highcite_papers for high-impact frontier directions.
-- Use emerging_gap_opportunities for “recent heating × literature gap” crossings (weekly hotspots).
+- Use emerging_gap_opportunities for task-bridged transfer candidates (weekly heating × sparse combo × ok Task bridge); not Cartesian coverage holes.
 - Every quantitative claim must cite exact tool values (including first_year, recent_ratio, \
 resolution_signal, avg_cite, impact_score).
 - If focus_subset.papers < 30, do not claim persistent temporal trends or cite full-corpus scale; \

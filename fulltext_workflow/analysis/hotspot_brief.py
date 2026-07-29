@@ -22,8 +22,9 @@ Write a concise weekly trend brief in Chinese (简体中文) for lab directors a
 
 Rules:
 - Use ONLY facts from the provided JSON; do not invent PMIDs or statistics.
-- Structure: (1) 本周概览 2-3 sentences (2) 升温方向 bullet list (3) 周环比变化 if any (4) 值得跟进的交叉机会 top 3-5 (5) 一句风险提示.
-- Mention exact numbers (recent_cnt, velocity, opportunity_score) from the data.
+- Structure: (1) 本周概览 2-3 sentences (2) 升温方向 bullet list (3) 周环比变化 if any (4) 值得跟进的可迁移候选 top 3-5 (5) 一句风险提示.
+- emerging_gap_opportunities = task-bridged transfer candidates (bridge_task, bridge_mode); do NOT treat unbridged coverage holes as opportunities.
+- Mention exact numbers (recent_cnt, velocity, opportunity_score, bridge_task) from the data.
 - No emoji. Professional tone. ~400-600 Chinese characters total.
 """
 
