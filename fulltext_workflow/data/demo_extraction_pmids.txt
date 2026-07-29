@@ -1,0 +1,4 @@
+# Fulltext ↔ extraction demo trio (study_type slots)
+42351909   # ai_algorithm
+42200024   # review
+42306089   # dataset_benchmark (update papers.study_type if still ai_algorithm)

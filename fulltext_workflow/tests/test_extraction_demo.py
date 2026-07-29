@@ -235,3 +235,18 @@ def test_render_html_embeds_papers_and_controls(monkeypatch):
     assert 'id="extraction-pane"' in html
     assert "matchEvidenceQuote" in html
     assert "证据未精确匹配" in html
+
+
+def test_cli_main_writes_html(monkeypatch, tmp_path):
+    import importlib.util
+
+    _tmp_db(monkeypatch)
+    _seed_paper("900001")
+    path = _ROOT / "scripts" / "export_extraction_demo.py"
+    spec = importlib.util.spec_from_file_location("export_extraction_demo", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    out = tmp_path / "demo.html"
+    assert mod.main(["--pmids", "900001", "--out", str(out)]) == 0
+    assert "DEMO_PAPERS" in out.read_text(encoding="utf-8")
