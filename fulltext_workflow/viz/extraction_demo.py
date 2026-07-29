@@ -137,7 +137,8 @@ def _load_one_paper(conn: Any, pmid: str) -> dict[str, Any]:
            JOIN entities e ON e.id = r.object_id
            WHERE r.subject_type = 'Paper'
              AND r.subject_id = ?
-             AND (r.status = 'active' OR r.status IS NULL)""",
+             AND (r.status = 'active' OR r.status IS NULL)
+           ORDER BY r.id""",
         (paper_id,),
     ).fetchall()
     if not extraction_rows:
@@ -218,6 +219,8 @@ def render_extraction_demo_html(papers: list[dict[str, Any]]) -> str:
   .tab-bar { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 14px; }
   .tab { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
   .tab.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+  .tab-title { display: block; max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
+  .tab-pmid { display: block; margin-top: 2px; font-size: 11px; opacity: .75; }
   .panes { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 16px; }
   .pane { min-height: 66vh; max-height: 72vh; overflow: auto; background: #fff; border: 1px solid #dbe3ee; border-radius: 8px; }
   .pane-header { position: sticky; top: 0; z-index: 2; margin: 0; padding: 13px 16px; background: #f1f5f9; border-bottom: 1px solid #dbe3ee; font-size: 16px; }
@@ -292,12 +295,20 @@ function sectionTitle(section) {
   return section.title || section.section_type || "未命名章节";
 }
 
+function shortTitle(title) {
+  const text = String(title || "未命名论文");
+  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+}
+
 function renderPaper(index) {
   currentIndex = index;
   const paper = window.DEMO_PAPERS[index];
   const tabs = document.getElementById("paper-tabs");
   tabs.innerHTML = window.DEMO_PAPERS.map((item, itemIndex) =>
-    `<button class="tab ${itemIndex === index ? "active" : ""}" type="button">${escapeHtml(item.pmid)}</button>`
+    `<button class="tab ${itemIndex === index ? "active" : ""}" type="button">
+      <span class="tab-title">${escapeHtml(item.study_type_label_zh)} · ${escapeHtml(shortTitle(item.title))}</span>
+      <span class="tab-pmid">PMID: ${escapeHtml(item.pmid)}</span>
+    </button>`
   ).join("");
   Array.from(tabs.children).forEach((tab, tabIndex) =>
     tab.addEventListener("click", () => renderPaper(tabIndex))
@@ -309,6 +320,7 @@ function renderPaper(index) {
     `<article class="section" id="section-${sectionIndex}"><h3 class="section-heading">${escapeHtml(sectionTitle(section))}</h3>
       <div class="section-content">${escapeHtml(section.content)}</div></article>`
   ).join("");
+  document.getElementById("fulltext-pane").scrollTop = 0;
 
   const extractionContent = document.getElementById("extraction-content");
   extractionContent.innerHTML = paper.extractions.map((item, itemIndex) =>
@@ -316,6 +328,11 @@ function renderPaper(index) {
       <div class="relation">${escapeHtml(item.relation_label_zh)}</div>
       <div class="object">${escapeHtml(item.object_name)} <span class="muted">(${escapeHtml(item.object_type)})</span></div>
       <div class="evidence">证据：${escapeHtml(item.evidence_quote || "未提供")}</div>
+      ${item.metric_value != null && item.metric_value !== "" ? `<div class="muted">指标：${escapeHtml(item.metric_value)}</div>` : ""}
+      <div class="muted">证据章节：${escapeHtml(item.evidence_section || "未提供")}</div>
+      <div class="muted">抽取粒度：${escapeHtml(item.extraction_granularity || "未提供")}</div>
+      ${item.confidence != null ? `<div class="muted">置信度：${escapeHtml(item.confidence)}</div>` : ""}
+      <div class="muted">PMID: ${escapeHtml(paper.pmid)}</div>
     </article>`
   ).join("") || `<p class="muted" style="padding: 12px">没有可展示的抽取结果。</p>`;
   extractionContent.querySelectorAll(".extraction-card").forEach((card) =>
@@ -335,13 +352,29 @@ function highlightEvidence(extractionIndex) {
   const card = cards[extractionIndex];
   card.classList.add("selected");
 
-  const sectionIndex = paper.sections.findIndex(
-    (section) => section.section_type === extraction.evidence_section
+  document.querySelectorAll(".section-content .hl").forEach((mark) => {
+    const content = mark.parentElement;
+    content.textContent = content.textContent;
+  });
+  const matchingSections = paper.sections
+    .map((section, index) => ({ section, index }))
+    .filter(({ section }) => section.section_type === extraction.evidence_section);
+  const matchedSection = matchingSections.find(({ section }) =>
+    matchEvidenceQuote(section.content, extraction.evidence_quote)
   );
-  const section = paper.sections[sectionIndex];
-  const match = section && matchEvidenceQuote(section.content, extraction.evidence_quote);
-  if (!section || !match) {
+  const selectedSection = matchedSection || matchingSections[0];
+  const sectionIndex = selectedSection && selectedSection.index;
+  const section = selectedSection && selectedSection.section;
+  const match = matchedSection && matchEvidenceQuote(section.content, extraction.evidence_quote);
+  const sectionElement = sectionIndex != null && document.getElementById(`section-${sectionIndex}`);
+
+  if (!section) {
     card.insertAdjacentHTML("beforeend", '<span class="badge">证据未精确匹配</span>');
+    return;
+  }
+  if (!match) {
+    card.insertAdjacentHTML("beforeend", '<span class="badge">证据未精确匹配</span>');
+    sectionElement.scrollIntoView({ block: "center", behavior: "smooth" });
     return;
   }
 
@@ -349,8 +382,7 @@ function highlightEvidence(extractionIndex) {
   content.innerHTML = escapeHtml(section.content.slice(0, match[0])) +
     `<mark class="hl">${escapeHtml(section.content.slice(match[0], match[1]))}</mark>` +
     escapeHtml(section.content.slice(match[1]));
-  const pane = document.getElementById("fulltext-pane");
-  pane.scrollTo({ top: document.getElementById(`section-${sectionIndex}`).offsetTop - 48, behavior: "smooth" });
+  content.querySelector(".hl").scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 if (window.DEMO_PAPERS.length) {

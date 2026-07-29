@@ -250,3 +250,36 @@ def test_cli_main_writes_html(monkeypatch, tmp_path):
     out = tmp_path / "demo.html"
     assert mod.main(["--pmids", "900001", "--out", str(out)]) == 0
     assert "DEMO_PAPERS" in out.read_text(encoding="utf-8")
+
+
+def test_cli_main_returns_one_for_missing_pmid(monkeypatch, tmp_path):
+    import importlib.util
+
+    _tmp_db(monkeypatch)
+    path = _ROOT / "scripts" / "export_extraction_demo.py"
+    spec = importlib.util.spec_from_file_location("export_extraction_demo", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    assert mod.main(["--pmids", "999999", "--out", str(tmp_path / "demo.html")]) == 1
+
+
+def test_cli_main_returns_one_for_missing_pmid_file(monkeypatch, tmp_path):
+    import importlib.util
+
+    _tmp_db(monkeypatch)
+    path = _ROOT / "scripts" / "export_extraction_demo.py"
+    spec = importlib.util.spec_from_file_location("export_extraction_demo", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    assert mod.main(
+        [
+            "--pmid-file",
+            str(tmp_path / "missing-pmids.txt"),
+            "--out",
+            str(tmp_path / "demo.html"),
+        ]
+    ) == 1

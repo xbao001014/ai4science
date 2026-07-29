@@ -30,12 +30,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.pmids.strip():
-        pmids = [p.strip() for p in args.pmids.split(",") if p.strip()]
-    else:
-        pmids = parse_pmid_list(Path(args.pmid_file).read_text(encoding="utf-8"))
-
     try:
+        if args.pmids.strip():
+            pmids = [p.strip() for p in args.pmids.split(",") if p.strip()]
+        else:
+            try:
+                pmids = parse_pmid_list(Path(args.pmid_file).read_text(encoding="utf-8"))
+            except OSError as e:
+                raise DemoExportError(f"Cannot read PMID file {args.pmid_file}: {e}") from e
         papers = load_demo_papers(pmids, db_path=args.db or None)
         html = render_extraction_demo_html(papers)
     except DemoExportError as e:

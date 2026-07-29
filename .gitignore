@@ -82,6 +82,7 @@ jcr.csv
 *.pdf
 fulltext_workflow/data/*
 !fulltext_workflow/data/.gitkeep
+!fulltext_workflow/data/demo_extraction_pmids.txt
 fulltext_workflow/raw/
 fulltext_workflow/output/
 fulltext_workflow/compare_test/pdfs/
