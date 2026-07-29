@@ -160,3 +160,62 @@ def test_load_demo_papers_fail_fast_no_extractions(monkeypatch):
     )
     with pytest.raises(DemoExportError, match="900002"):
         load_demo_papers(["900002"])
+
+
+def test_load_demo_papers_fail_fast_no_sections(monkeypatch):
+    from viz.extraction_demo import DemoExportError, load_demo_papers
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper({"pmid": "900003", "title": "No sections"})
+    mark_fulltext_status(pid, "available")
+    mark_extraction_done(pid, "ai_algorithm")
+    with pytest.raises(DemoExportError, match="no document sections"):
+        load_demo_papers(["900003"])
+
+
+def test_load_demo_papers_fail_fast_bad_fulltext_status(monkeypatch):
+    from viz.extraction_demo import DemoExportError, load_demo_papers
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper({"pmid": "900004", "title": "Pending fulltext"})
+    mark_fulltext_status(pid, "pending")
+    mark_extraction_done(pid, "ai_algorithm")
+    insert_sections(
+        pid,
+        [{"section_type": "abstract", "content": "Abstract only.", "order_idx": 0}],
+    )
+    with pytest.raises(DemoExportError, match="full_text_status"):
+        load_demo_papers(["900004"])
+
+
+def test_load_demo_papers_fail_fast_extraction_not_done(monkeypatch):
+    from viz.extraction_demo import DemoExportError, load_demo_papers
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper({"pmid": "900005", "title": "Not extracted"})
+    mark_fulltext_status(pid, "available")
+    insert_sections(
+        pid,
+        [{"section_type": "abstract", "content": "Abstract only.", "order_idx": 0}],
+    )
+    with pytest.raises(DemoExportError, match="extraction not done"):
+        load_demo_papers(["900005"])
+
+
+def test_load_demo_papers_db_path_restores_config(monkeypatch):
+    from viz.extraction_demo import load_demo_papers
+
+    default_path = _tmp_db(monkeypatch)
+    alt = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    alt.close()
+    alt_path = Path(alt.name)
+    monkeypatch.setattr(config, "DB_PATH", alt_path)
+    init_db()
+    _seed_paper("900010")
+    monkeypatch.setattr(config, "DB_PATH", default_path)
+
+    assert config.DB_PATH == default_path
+    papers = load_demo_papers(["900010"], db_path=alt_path)
+    assert config.DB_PATH == default_path
+    assert len(papers) == 1
+    assert papers[0]["pmid"] == "900010"
