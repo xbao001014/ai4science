@@ -219,3 +219,19 @@ def test_load_demo_papers_db_path_restores_config(monkeypatch):
     assert config.DB_PATH == default_path
     assert len(papers) == 1
     assert papers[0]["pmid"] == "900010"
+
+
+def test_render_html_embeds_papers_and_controls(monkeypatch):
+    from viz.extraction_demo import load_demo_papers, render_extraction_demo_html
+
+    _tmp_db(monkeypatch)
+    _seed_paper("900001", "ai_algorithm")
+    _seed_paper("900003", "review")
+    html = render_extraction_demo_html(load_demo_papers(["900001", "900003"]))
+    assert "<!DOCTYPE html>" in html
+    assert "window.DEMO_PAPERS" in html
+    assert "900001" in html and "900003" in html
+    assert 'id="fulltext-pane"' in html
+    assert 'id="extraction-pane"' in html
+    assert "matchEvidenceQuote" in html
+    assert "证据未精确匹配" in html

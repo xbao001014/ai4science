@@ -1,6 +1,7 @@
 """Fulltext ↔ extraction demo: payload loader, evidence match, HTML render (Task 2)."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -200,5 +201,164 @@ def load_demo_papers(
 
 
 def render_extraction_demo_html(papers: list[dict[str, Any]]) -> str:
-    """Render self-contained HTML demo (implemented in Task 2)."""
-    raise NotImplementedError
+    """Render a self-contained, offline fulltext-to-extraction demo."""
+    papers_json = json.dumps(papers, ensure_ascii=False).replace("<", r"\u003c")
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>全文与抽取结果对照</title>
+<style>
+  :root { color: #1f2937; background: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .app { max-width: 1440px; margin: 0 auto; padding: 20px; }
+  h1 { margin: 0 0 14px; font-size: 22px; }
+  .tab-bar { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 14px; }
+  .tab { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+  .tab.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+  .panes { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 16px; }
+  .pane { min-height: 66vh; max-height: 72vh; overflow: auto; background: #fff; border: 1px solid #dbe3ee; border-radius: 8px; }
+  .pane-header { position: sticky; top: 0; z-index: 2; margin: 0; padding: 13px 16px; background: #f1f5f9; border-bottom: 1px solid #dbe3ee; font-size: 16px; }
+  .paper-meta { padding: 14px 16px; border-bottom: 1px solid #e2e8f0; }
+  .paper-meta h2 { margin: 0 0 6px; font-size: 17px; }
+  .muted { color: #64748b; font-size: 13px; }
+  .section { padding: 0 16px 14px; }
+  .section-heading { position: sticky; top: 48px; z-index: 1; margin: 0 -16px 9px; padding: 10px 16px 7px; background: #fff; border-bottom: 1px solid #eef2f7; font-size: 15px; }
+  .section-content { white-space: pre-wrap; line-height: 1.7; }
+  .extraction-card { margin: 10px 12px; padding: 12px; border: 1px solid #dbe3ee; border-radius: 7px; cursor: pointer; }
+  .extraction-card:hover, .extraction-card.selected { border-color: #2563eb; background: #eff6ff; }
+  .relation { color: #1d4ed8; font-size: 13px; font-weight: 600; }
+  .object { margin: 5px 0; font-weight: 600; }
+  .evidence { color: #475569; font-size: 13px; line-height: 1.45; }
+  .badge { display: inline-block; margin-top: 7px; padding: 3px 6px; color: #9a3412; background: #ffedd5; border-radius: 4px; font-size: 12px; }
+  .hl { background: #fde68a; color: inherit; padding: 0 1px; }
+  footer { padding: 14px 2px 0; color: #64748b; font-size: 13px; }
+  @media (max-width: 820px) { .app { padding: 12px; } .panes { grid-template-columns: 1fr; } .pane { min-height: 45vh; } }
+</style>
+</head>
+<body>
+<main class="app">
+  <h1>全文与结构化抽取对照</h1>
+  <nav id="paper-tabs" class="tab-bar" aria-label="论文选择"></nav>
+  <div class="panes">
+    <section id="fulltext-pane" class="pane" aria-label="全文内容">
+      <h2 class="pane-header">全文内容</h2>
+      <div id="fulltext-content"></div>
+    </section>
+    <section id="extraction-pane" class="pane" aria-label="抽取元素">
+      <h2 class="pane-header">抽取元素</h2>
+      <div id="extraction-content"></div>
+    </section>
+  </div>
+  <footer>点击右侧条目可定位左侧证据</footer>
+</main>
+<script>
+window.DEMO_PAPERS = __PAPERS_JSON__;
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function matchEvidenceQuote(sectionText, quote) {
+  if (!sectionText || !quote) return null;
+  let i = sectionText.indexOf(quote);
+  if (i >= 0) return [i, i + quote.length];
+  const collapse = (s) => s.replace(/\\s+/g, " ").trim();
+  const cq = collapse(quote);
+  if (cq) {
+    const parts = cq.split(" ").filter(Boolean).map(
+      (p) => p.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")
+    );
+    if (parts.length) {
+      let re = new RegExp(parts.join("\\\\s+"));
+      let m = re.exec(sectionText);
+      if (m) return [m.index, m.index + m[0].length];
+      re = new RegExp(parts.join("\\\\s+"), "i");
+      m = re.exec(sectionText);
+      if (m) return [m.index, m.index + m[0].length];
+    }
+  }
+  i = sectionText.toLowerCase().indexOf(quote.toLowerCase());
+  if (i >= 0) return [i, i + quote.length];
+  return null;
+}
+
+let currentIndex = 0;
+
+function sectionTitle(section) {
+  return section.title || section.section_type || "未命名章节";
+}
+
+function renderPaper(index) {
+  currentIndex = index;
+  const paper = window.DEMO_PAPERS[index];
+  const tabs = document.getElementById("paper-tabs");
+  tabs.innerHTML = window.DEMO_PAPERS.map((item, itemIndex) =>
+    `<button class="tab ${itemIndex === index ? "active" : ""}" type="button">${escapeHtml(item.pmid)}</button>`
+  ).join("");
+  Array.from(tabs.children).forEach((tab, tabIndex) =>
+    tab.addEventListener("click", () => renderPaper(tabIndex))
+  );
+
+  const metadata = `<div class="paper-meta"><h2>${escapeHtml(paper.title)}</h2>
+    <div class="muted">PMID: ${escapeHtml(paper.pmid)} · ${escapeHtml(paper.study_type_label_zh)} · ${escapeHtml(paper.year || "")}</div></div>`;
+  document.getElementById("fulltext-content").innerHTML = metadata + paper.sections.map((section, sectionIndex) =>
+    `<article class="section" id="section-${sectionIndex}"><h3 class="section-heading">${escapeHtml(sectionTitle(section))}</h3>
+      <div class="section-content">${escapeHtml(section.content)}</div></article>`
+  ).join("");
+
+  const extractionContent = document.getElementById("extraction-content");
+  extractionContent.innerHTML = paper.extractions.map((item, itemIndex) =>
+    `<article class="extraction-card" data-index="${itemIndex}">
+      <div class="relation">${escapeHtml(item.relation_label_zh)}</div>
+      <div class="object">${escapeHtml(item.object_name)} <span class="muted">(${escapeHtml(item.object_type)})</span></div>
+      <div class="evidence">证据：${escapeHtml(item.evidence_quote || "未提供")}</div>
+    </article>`
+  ).join("") || `<p class="muted" style="padding: 12px">没有可展示的抽取结果。</p>`;
+  extractionContent.querySelectorAll(".extraction-card").forEach((card) =>
+    card.addEventListener("click", () => highlightEvidence(Number(card.dataset.index)))
+  );
+}
+
+function highlightEvidence(extractionIndex) {
+  const paper = window.DEMO_PAPERS[currentIndex];
+  const extraction = paper.extractions[extractionIndex];
+  const cards = document.querySelectorAll(".extraction-card");
+  cards.forEach((card) => {
+    card.classList.remove("selected");
+    const badge = card.querySelector(".badge");
+    if (badge) badge.remove();
+  });
+  const card = cards[extractionIndex];
+  card.classList.add("selected");
+
+  const sectionIndex = paper.sections.findIndex(
+    (section) => section.section_type === extraction.evidence_section
+  );
+  const section = paper.sections[sectionIndex];
+  const match = section && matchEvidenceQuote(section.content, extraction.evidence_quote);
+  if (!section || !match) {
+    card.insertAdjacentHTML("beforeend", '<span class="badge">证据未精确匹配</span>');
+    return;
+  }
+
+  const content = document.querySelector(`#section-${sectionIndex} .section-content`);
+  content.innerHTML = escapeHtml(section.content.slice(0, match[0])) +
+    `<mark class="hl">${escapeHtml(section.content.slice(match[0], match[1]))}</mark>` +
+    escapeHtml(section.content.slice(match[1]));
+  const pane = document.getElementById("fulltext-pane");
+  pane.scrollTo({ top: document.getElementById(`section-${sectionIndex}`).offsetTop - 48, behavior: "smooth" });
+}
+
+if (window.DEMO_PAPERS.length) {
+  renderPaper(0);
+} else {
+  document.getElementById("fulltext-content").innerHTML = '<p class="muted" style="padding: 12px">没有可展示的论文。</p>';
+}
+</script>
+</body>
+</html>
+""".replace("__PAPERS_JSON__", papers_json)
