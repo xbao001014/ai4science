@@ -334,6 +334,37 @@ _LIMITATION_ALIASES: dict[str, str] = {
     "lack of interpretability": "lack of interpretability",
 }
 
+_GENERIC_TASKS = frozenset(
+    {
+        "classification",
+        "segmentation",
+        "detection",
+        "prediction",
+        "diagnosis",
+        "prognosis",
+        "analysis",
+        "identification",
+        "grading",
+        "staging",
+    }
+)
+
+_TASK_NARRATIVE_MARKERS = (
+    "workshop",
+    "report",
+    "improving ",
+    "developing ",
+    "integrating ",
+)
+
+_TASK_SYNONYMS: dict[str, str] = {
+    "prognostic prediction": "prognosis prediction",
+    "prognosis prediction": "prognosis prediction",
+    "pathological classification": "pathology classification",
+}
+
+_TASK_MAX_LEN = 80
+
 
 def _norm_key(name: str) -> str:
     return re.sub(r"\s+", " ", name.strip().lower())
@@ -418,12 +449,31 @@ def is_radiology_modality(name: str) -> bool:
     return any(p.search(key) for p in _RADIOLOGY_MODALITY_PATTERNS)
 
 
+def is_generic_task(name: str) -> bool:
+    return _norm_key(name) in _GENERIC_TASKS
+
+
+def is_narrative_task(name: str) -> bool:
+    key = _norm_key(name)
+    if any(m in key for m in _TASK_NARRATIVE_MARKERS):
+        return True
+    if len(key) > _TASK_MAX_LEN:
+        return True
+    return False
+
+
+def is_reject_task(name: str) -> bool:
+    return is_generic_task(name) or is_narrative_task(name)
+
+
 def normalize_entity_name(name: str, entity_type: str) -> str:
     key = _norm_key(name)
     if entity_type == "Limitation":
         return _LIMITATION_ALIASES.get(key, key)
     if entity_type == "Modality":
         return _MODALITY_ALIASES.get(key, key)
+    if entity_type == "Task":
+        return _TASK_SYNONYMS.get(key, key)
     return key
 
 
@@ -471,7 +521,7 @@ def postprocess_triples(
     for triple in triples:
         obj_name = triple.object.name
         obj_type = triple.object.type
-        if obj_type in ("Method", "Limitation", "Disease", "Modality"):
+        if obj_type in ("Method", "Limitation", "Disease", "Modality", "Task"):
             obj_name = normalize_entity_name(obj_name, obj_type)
         subj = triple.subject
         if triple.relation == "RELATED_TO" and subj.type == "Method":
@@ -534,6 +584,9 @@ def postprocess_triples(
             continue
 
         if obj_type == "Modality" and is_radiology_modality(obj_name):
+            continue
+
+        if obj_type == "Task" and is_reject_task(obj_name):
             continue
 
         if (

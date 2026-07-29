@@ -12,9 +12,12 @@ from extractor.entity_normalize import (  # noqa: E402
     has_more_specific_disease,
     is_generic_disease,
     is_generic_method,
+    is_generic_task,
     is_low_value_method,
+    is_narrative_task,
     is_organ_level_disease,
     is_radiology_modality,
+    is_reject_task,
     normalize_entity_name,
     postprocess_triples,
     repair_triple_relation,
@@ -396,3 +399,56 @@ def test_repair_does_not_invent_compares_method():
     fixed = repair_triple_relation(t)
     assert fixed is not None
     assert fixed.relation == "APPLIES_METHOD"
+
+
+def _task_triple(name: str) -> Triple:
+    return Triple(
+        subject=Entity(name="paper", type="Disease"),
+        relation="PERFORMS_TASK",
+        object=Entity(name=name, type="Task"),
+        evidence_quote="test",
+    )
+
+
+def test_task_synonym_prognosis():
+    assert normalize_entity_name("prognostic prediction", "Task") == "prognosis prediction"
+    assert normalize_entity_name("prognosis prediction", "Task") == "prognosis prediction"
+
+
+def test_task_synonym_pathology_classification():
+    assert (
+        normalize_entity_name("pathological classification", "Task")
+        == "pathology classification"
+    )
+
+
+def test_generic_task_detected():
+    assert is_generic_task("classification")
+    assert is_generic_task("Segmentation")
+    assert not is_generic_task("tumor subtype classification")
+
+
+def test_narrative_task_detected():
+    assert is_narrative_task("workshop report on digital pathology imaging")
+    assert is_narrative_task("improving diversity in study cohorts")
+    assert not is_narrative_task("survival prediction")
+
+
+def test_postprocess_drops_reject_tasks():
+    kept = postprocess_triples(
+        [
+            _task_triple("classification"),
+            _task_triple("tumor subtype classification"),
+            _task_triple("workshop report on digital pathology"),
+        ],
+        "methods",
+    )
+    names = {t.object.name for t in kept if t.object.type == "Task"}
+    assert "classification" not in names
+    assert "workshop report on digital pathology" not in names
+    assert "tumor subtype classification" in names
+
+
+def test_postprocess_applies_task_synonym():
+    kept = postprocess_triples([_task_triple("prognostic prediction")], "methods")
+    assert kept[0].object.name == "prognosis prediction"
