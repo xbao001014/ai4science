@@ -60,3 +60,11 @@ def test_reconcile_core_mentions_recommendations():
     assert "action_type" in RECONCILE_SHARED_CORE
     assert "author_stated" in RECONCILE_SHARED_CORE
     assert "synthesized" in RECONCILE_SHARED_CORE
+
+
+def test_shared_prompt_has_task_naming_policy():
+    from extractor.study_prompts.shared import SECTION_SHARED_CORE
+
+    assert "Task naming policy" in SECTION_SHARED_CORE
+    assert "tumor segmentation" in SECTION_SHARED_CORE
+    assert "BAD:" in SECTION_SHARED_CORE

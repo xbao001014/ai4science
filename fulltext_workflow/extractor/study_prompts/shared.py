@@ -78,6 +78,15 @@ Entity disambiguation:
   - Disease = finest clinical entity stated in text (organ + histology subtype + molecular/clinical class when explicit)
   - Do NOT use umbrella terms as Method when a specific technique is named
 
+Task naming policy (CRITICAL) — clinical/ML objective noun phrases only:
+  - Task = this paper's study objective as a concise noun phrase
+  - GOOD: "tumor segmentation", "survival prediction", "biomarker prediction",
+    "msi status prediction", "tumor subtype classification"
+  - BAD bare umbrellas: classification, segmentation, detection, prediction, diagnosis
+  - BAD non-tasks: workshop/report titles; "improving cohort diversity";
+    engineering roadmap sentences; Method backbone names reused as Task
+  - Use PERFORMS_TASK → Task; never APPLIES_METHOD with object type Task
+
 Modality naming policy (CRITICAL) — pathology data modalities only:
   - Extract pathology / digital-pathology data types used in the study:
     WSI, H&E histopathology, IHC, cytology / Pap smear, immunofluorescence,
