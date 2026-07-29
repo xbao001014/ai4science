@@ -334,7 +334,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 | 标签 | 内容 |
 |------|------|
 | Debate Process | 三角色辩论过程与工具调用 |
-| Weekly Hotspot | 周热点榜 / WoW / emerging × gap / LLM 简报 |
+| Weekly Hotspot | 周热点榜 / WoW / 可迁移候选（Task 桥接）/ LLM 简报 |
 | Visualization | Gap / 实体可视化 |
 | Evidence & Literature | 证据与文献列表 |
 | Gap Report | 可下载辩论报告 |
@@ -555,9 +555,9 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 
 相关工具与 UI：
 
-- **emerging_gap_opportunities**：`opportunity_score = emerging_score + literature_gap 分档`
-- **hotspot-brief**：热点 JSON → 中文周报摘要
-- **gap_ui → Weekly Hotspot**：方法/病种/组合/交叉机会 + WoW + 一键简报
+- **emerging_gap_opportunities**（可迁移候选）：升温 method × 稀疏 disease 组合，且需 **ok Task 桥**（`bridge_task`、`bridge_mode`）；**非**热门实体笛卡尔积交叉。`opportunity_score = emerging_score + literature_gap 分档 + bridge_bonus`（同篇桥接加分高于跨篇）。当前 Task 质量不足时列表为空属预期——待 Task 抽取质量提升或全库重抽后再看。
+- **hotspot-brief**：热点 JSON → 中文周报摘要（可迁移候选语义同上）
+- **gap_ui → Weekly Hotspot**：方法/病种/组合/**可迁移候选** + WoW + 一键简报
 
 ### 7.3 Ops memory（周常软去重）
 

@@ -738,9 +738,10 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "emerging_gap_opportunities",
             "description": (
-                "Weekly heating method×disease crossed with literature gap "
-                "(opportunity_score = emerging_score + gap tier). "
-                "Use for recent follow-up directions."
+                "Task-bridged transferable candidates: sparse method×disease combos "
+                "with an ok Task bridge (not Cartesian coverage holes). "
+                "opportunity_score = emerging_score + literature gap tier + bridge bonus. "
+                "Empty list is expected until Task extraction quality improves."
             ),
             "parameters": {
                 "type": "object",
