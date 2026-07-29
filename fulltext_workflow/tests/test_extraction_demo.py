@@ -116,6 +116,42 @@ def test_match_evidence_quote_whitespace_and_case():
     assert match_evidence_quote(text, "missing quote xyz") is None
 
 
+def test_match_evidence_quote_semicolon_and_ellipsis():
+    from viz.extraction_demo import match_evidence_quote
+
+    text = (
+        "We used the SIPaKMeD-pretrained model on Camelyon16. "
+        "Later we replaced ImageNet pretraining with SIPaKMeD pretraining."
+    )
+    hit = match_evidence_quote(
+        text,
+        "SIPaKMeD-pretrained model; replacing ImageNet pretraining with SIPaKMeD pretraining",
+    )
+    assert hit is not None
+    assert "SIPaKMeD" in text[hit[0] : hit[1]]
+
+    text2 = "HPV lesion classification is hard. The HPV histopathology task needs care."
+    hit2 = match_evidence_quote(
+        text2, "HPV lesion classification ... HPV histopathology task"
+    )
+    assert hit2 is not None
+
+
+def test_match_evidence_quote_unicode_dash():
+    from viz.extraction_demo import match_evidence_quote
+
+    text = "deep learning-driven dermoscopic analysis"
+    quote = "deep learning\u2013driven dermoscopic analysis"
+    assert match_evidence_quote(text, quote) is not None
+
+
+def test_candidate_section_types_reconcile_fallback():
+    from viz.extraction_demo import candidate_section_types
+
+    assert candidate_section_types("methods")[0] == "methods"
+    assert "discussion" in candidate_section_types("fulltext_reconcile")
+    assert candidate_section_types("")[0] == "discussion"
+
 def test_load_demo_papers_payload_shape(monkeypatch):
     from viz.extraction_demo import load_demo_papers
 

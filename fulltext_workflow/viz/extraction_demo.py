@@ -69,8 +69,41 @@ def parse_pmid_list(text: str) -> list[str]:
     return pmids
 
 
-def match_evidence_quote(section_text: str, quote: str) -> tuple[int, int] | None:
-    """Locate *quote* in *section_text*: exact → whitespace-flexible → case-insensitive."""
+_DASH_RE = re.compile(r"[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]")
+
+
+def candidate_section_types(evidence_section: str) -> list[str]:
+    """Section types to search for an evidence quote.
+
+    Pass-2 rows may use ``fulltext_reconcile`` (not a real section). Fall back to
+    common narrative sections while keeping the labeled type first when valid.
+    """
+    labeled = (evidence_section or "").strip()
+    fallback = [
+        "discussion",
+        "limitations",
+        "future_work",
+        "results",
+        "methods",
+        "other",
+        "abstract",
+        "introduction",
+    ]
+    if not labeled or labeled == "fulltext_reconcile":
+        return fallback
+    # Prefer the labeled type, then nearby narrative sections.
+    rest = [t for t in fallback if t != labeled]
+    return [labeled, *rest]
+
+
+def _normalize_for_match(text: str) -> str:
+    text = _DASH_RE.sub("-", text)
+    text = text.replace("\u00a0", " ").replace("\ufeff", "")
+    return text
+
+
+def _match_literal(section_text: str, quote: str) -> tuple[int, int] | None:
+    """Exact → whitespace-flexible → case-insensitive (single contiguous quote)."""
     if not quote or not section_text:
         return None
 
@@ -91,7 +124,92 @@ def match_evidence_quote(section_text: str, quote: str) -> tuple[int, int] | Non
     m = re.search(re.escape(quote), section_text, re.IGNORECASE)
     if m:
         return (m.start(), m.end())
+
+    # Dash / NBSP normalized retry (1:1 char swaps keep indices valid).
+    norm_sec = _normalize_for_match(section_text)
+    norm_q = _normalize_for_match(quote)
+    if norm_q != quote or norm_sec != section_text:
+        hit = _match_literal_raw(norm_sec, norm_q)
+        if hit and len(norm_sec) == len(section_text):
+            return hit
+        if hit:
+            tokens = norm_q.split()
+            if tokens:
+                pat = r"\s+".join(re.escape(t) for t in tokens)
+                m = re.search(pat, section_text, re.IGNORECASE)
+                if m:
+                    return (m.start(), m.end())
     return None
+
+
+def _match_literal_raw(section_text: str, quote: str) -> tuple[int, int] | None:
+    idx = section_text.find(quote)
+    if idx >= 0:
+        return (idx, idx + len(quote))
+    parts = quote.split()
+    if parts:
+        pattern = r"\s+".join(re.escape(p) for p in parts)
+        m = re.search(pattern, section_text, re.IGNORECASE)
+        if m:
+            return (m.start(), m.end())
+    m = re.search(re.escape(quote), section_text, re.IGNORECASE)
+    if m:
+        return (m.start(), m.end())
+    return None
+
+
+def match_evidence_quote(section_text: str, quote: str) -> tuple[int, int] | None:
+    """Locate *quote* in *section_text*.
+
+    Order: contiguous literal match → longest ``;`` fragment → ``...``/``…``
+    ellipsis parts (prefer span covering first+last hit).
+    """
+    if not quote or not section_text:
+        return None
+
+    hit = _match_literal(section_text, quote)
+    if hit:
+        return hit
+
+    # Multi-span evidence often joined with "; "
+    fragments = [f.strip() for f in re.split(r"\s*;\s*", quote) if f.strip()]
+    if len(fragments) > 1:
+        best: tuple[int, int] | None = None
+        for frag in fragments:
+            # Also strip ellipsis inside a fragment before literal match.
+            frag_hit = _match_ellipsis_or_literal(section_text, frag)
+            if frag_hit and (best is None or (frag_hit[1] - frag_hit[0]) > (best[1] - best[0])):
+                best = frag_hit
+        if best:
+            return best
+
+    return _match_ellipsis_or_literal(section_text, quote)
+
+
+def _match_ellipsis_or_literal(section_text: str, quote: str) -> tuple[int, int] | None:
+    hit = _match_literal(section_text, quote)
+    if hit:
+        return hit
+    parts = [p.strip() for p in re.split(r"\s*(?:\.\.\.|…)\s*", quote) if p.strip()]
+    if len(parts) < 2:
+        return None
+    spans: list[tuple[int, int]] = []
+    for part in parts:
+        if len(part) < 8:
+            continue
+        part_hit = _match_literal(section_text, part)
+        if part_hit:
+            spans.append(part_hit)
+    if not spans:
+        return None
+    if len(spans) == 1:
+        return spans[0]
+    start = min(s[0] for s in spans)
+    end = max(s[1] for s in spans)
+    # Avoid highlighting huge ranges when parts are far apart.
+    if end - start > 800:
+        return max(spans, key=lambda s: s[1] - s[0])
+    return (start, end)
 
 
 def _object_type_sort_key(object_type: str) -> tuple[int, str]:
@@ -265,28 +383,90 @@ function escapeHtml(value) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function matchEvidenceQuote(sectionText, quote) {
+function candidateSectionTypes(evidenceSection) {
+  const labeled = String(evidenceSection || "").trim();
+  const fallback = [
+    "discussion", "limitations", "future_work", "results",
+    "methods", "other", "abstract", "introduction"
+  ];
+  if (!labeled || labeled === "fulltext_reconcile") return fallback;
+  return [labeled, ...fallback.filter((t) => t !== labeled)];
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+}
+
+function normalizeForMatch(text) {
+  return String(text)
+    .replace(/[\\u2010-\\u2015\\u2212\\uFE58\\uFE63\\uFF0D]/g, "-")
+    .replace(/\\u00A0/g, " ")
+    .replace(/\\uFEFF/g, "");
+}
+
+function matchLiteral(sectionText, quote) {
   if (!sectionText || !quote) return null;
   let i = sectionText.indexOf(quote);
   if (i >= 0) return [i, i + quote.length];
-  const collapse = (s) => s.replace(/\\s+/g, " ").trim();
-  const cq = collapse(quote);
-  if (cq) {
-    const parts = cq.split(" ").filter(Boolean).map(
-      (p) => p.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")
-    );
-    if (parts.length) {
-      let re = new RegExp(parts.join("\\\\s+"));
-      let m = re.exec(sectionText);
-      if (m) return [m.index, m.index + m[0].length];
-      re = new RegExp(parts.join("\\\\s+"), "i");
-      m = re.exec(sectionText);
-      if (m) return [m.index, m.index + m[0].length];
-    }
+  const parts = quote.split(/\\s+/).filter(Boolean).map(escapeRegExp);
+  if (parts.length) {
+    let re = new RegExp(parts.join("\\\\s+"));
+    let m = re.exec(sectionText);
+    if (m) return [m.index, m.index + m[0].length];
+    re = new RegExp(parts.join("\\\\s+"), "i");
+    m = re.exec(sectionText);
+    if (m) return [m.index, m.index + m[0].length];
   }
   i = sectionText.toLowerCase().indexOf(quote.toLowerCase());
   if (i >= 0) return [i, i + quote.length];
+  const normSec = normalizeForMatch(sectionText);
+  const normQ = normalizeForMatch(quote);
+  if (normQ !== quote || normSec !== sectionText) {
+    const tokens = normQ.split(/\\s+/).filter(Boolean).map(escapeRegExp);
+    if (tokens.length) {
+      const re = new RegExp(tokens.join("\\\\s+"), "i");
+      const m = re.exec(sectionText);
+      if (m) return [m.index, m.index + m[0].length];
+    }
+  }
   return null;
+}
+
+function matchEllipsisOrLiteral(sectionText, quote) {
+  const direct = matchLiteral(sectionText, quote);
+  if (direct) return direct;
+  const parts = quote.split(/\\s*(?:\\.\\.\\.|…)\\s*/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const spans = [];
+  for (const part of parts) {
+    if (part.length < 8) continue;
+    const hit = matchLiteral(sectionText, part);
+    if (hit) spans.push(hit);
+  }
+  if (!spans.length) return null;
+  if (spans.length === 1) return spans[0];
+  const start = Math.min(...spans.map((s) => s[0]));
+  const end = Math.max(...spans.map((s) => s[1]));
+  if (end - start > 800) {
+    return spans.reduce((best, s) => (s[1] - s[0] > best[1] - best[0] ? s : best));
+  }
+  return [start, end];
+}
+
+function matchEvidenceQuote(sectionText, quote) {
+  if (!sectionText || !quote) return null;
+  const direct = matchLiteral(sectionText, quote);
+  if (direct) return direct;
+  const fragments = quote.split(/\\s*;\\s*/).map((f) => f.trim()).filter(Boolean);
+  if (fragments.length > 1) {
+    let best = null;
+    for (const frag of fragments) {
+      const hit = matchEllipsisOrLiteral(sectionText, frag);
+      if (hit && (!best || (hit[1] - hit[0]) > (best[1] - best[0]))) best = hit;
+    }
+    if (best) return best;
+  }
+  return matchEllipsisOrLiteral(sectionText, quote);
 }
 
 let currentIndex = 0;
@@ -356,9 +536,18 @@ function highlightEvidence(extractionIndex) {
     const content = mark.parentElement;
     content.textContent = content.textContent;
   });
+  const typeSet = new Set(candidateSectionTypes(extraction.evidence_section));
   const matchingSections = paper.sections
     .map((section, index) => ({ section, index }))
-    .filter(({ section }) => section.section_type === extraction.evidence_section);
+    .filter(({ section }) => typeSet.has(section.section_type));
+  // Prefer labeled type first (already ordered via candidateSectionTypes + section order).
+  const labeled = String(extraction.evidence_section || "").trim();
+  matchingSections.sort((a, b) => {
+    const aLabeled = a.section.section_type === labeled ? 0 : 1;
+    const bLabeled = b.section.section_type === labeled ? 0 : 1;
+    if (aLabeled !== bLabeled) return aLabeled - bLabeled;
+    return a.index - b.index;
+  });
   const matchedSection = matchingSections.find(({ section }) =>
     matchEvidenceQuote(section.content, extraction.evidence_quote)
   );

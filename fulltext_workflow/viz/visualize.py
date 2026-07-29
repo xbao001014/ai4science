@@ -15,20 +15,11 @@ from typing import Optional
 import networkx as nx
 
 import config
-from graph.kg_builder import NODE_COLORS, STUDY_TYPE_COLORS
+from graph.kg_builder import NODE_COLORS, RELATION_COLORS, STUDY_TYPE_COLORS
 
 ENTITY_TYPES = set(config.ENTITY_TYPES)
-RELATION_EDGE_COLORS = {
-    "APPLIES_METHOD": "#F0A500",
-    "TARGETS_DISEASE": "#E05C5C",
-    "OPERATES_ON": "#FF80AB",
-    "PERFORMS_TASK": "#00BCD4",
-    "USES_DATASET": "#80CBC4",
-    "ACHIEVES_METRIC": "#FFCC80",
-    "REPORTS_LIMITATION": "#795548",
-    "USES_MODALITY": "#9C27B0",
-    "RELATED_TO": "#BBBBBB",
-}
+# Keep alias for call sites; single source with kg_builder (includes study-type relations).
+RELATION_EDGE_COLORS = RELATION_COLORS
 
 
 def build_entity_cooccurrence_graph(G: nx.MultiDiGraph) -> nx.Graph:
