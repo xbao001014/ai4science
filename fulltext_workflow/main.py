@@ -369,6 +369,34 @@ def cmd_hotspot_brief(args: argparse.Namespace) -> None:
     print(f"  opportunities={len(payload.get('emerging_gap_opportunities', []))}")
 
 
+def cmd_task_quality_audit(args: argparse.Namespace) -> None:
+    import os
+    from datetime import datetime
+
+    from analysis.task_quality import run_task_quality_audit
+    from db.schema import init_db
+
+    init_db()
+    limit = args.limit if args.limit is not None else 20
+    report = run_task_quality_audit(limit_examples=limit)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    out = args.output or os.path.join(
+        config.OUTPUT_DIR,
+        f"task_quality_audit_{datetime.now().strftime('%Y%m%d')}.md",
+    )
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(report)
+    # stdout summary counts
+    print(f"[Task-Quality-Audit] Saved to {out}")
+    for line in report.splitlines():
+        if line.startswith("| reject |") or line.startswith("| weak |") or line.startswith("| ok |"):
+            print(f"  {line.strip()}")
+        if line.startswith("**Total Task entities:**"):
+            print(f"  {line.strip()}")
+        if line.startswith("- Papers with PERFORMS_TASK:"):
+            print(f"  {line.strip()}")
+
+
 def cmd_run_all(args: argparse.Namespace) -> None:
     print("=" * 60)
     print(f"  Full-Text Workflow — {config.search_scope_label()}")
@@ -579,6 +607,23 @@ def main() -> None:
     )
     p_brief.add_argument("--no-persist", action="store_true")
 
+    p_task_audit = sub.add_parser(
+        "task-quality-audit",
+        help="Read-only Task entity quality audit (markdown report)",
+    )
+    p_task_audit.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output path (default: output/task_quality_audit_{YYYYMMDD}.md)",
+    )
+    p_task_audit.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Max examples per tier in the report (default: 20)",
+    )
+
     p_debate = sub.add_parser("gap-debate", help="LLM debate multi-agent gap analysis")
     p_debate.add_argument("--focus", "-f", default=None)
     p_debate.add_argument("--top", "-n", type=int, default=6)
@@ -728,6 +773,7 @@ def main() -> None:
         "compute-weekly-hotspots": cmd_compute_weekly_hotspots,
         "hotspot-report": cmd_hotspot_report,
         "hotspot-brief": cmd_hotspot_brief,
+        "task-quality-audit": cmd_task_quality_audit,
         "gap-debate": cmd_gap_debate,
         "bootstrap-landscape": cmd_bootstrap_landscape,
         "idea-pipeline": cmd_idea_pipeline,

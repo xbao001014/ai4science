@@ -101,6 +101,7 @@ On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults
 & $py main.py hotspot-report --no-persist
 & $py main.py hotspot-brief               # LLM 简报
 & $py main.py compute-weekly-hotspots     # 仅打印摘要
+& $py main.py task-quality-audit          # Task 实体质量审计（只读）
 ```
 
 ### Gap / 方案 / 数据景观
