@@ -20,6 +20,12 @@ from db.schema import (
 # Main boards require at least month-level PubMed dates (折中).
 _ELIGIBLE_PRECISION = ("day", "month")
 
+# Task bridges are stronger when a paper demonstrates the full method-disease-task
+# combination, rather than only linking the method and disease through task evidence
+# in different papers.
+_BRIDGE_BONUS_SAME = 2.0
+_BRIDGE_BONUS_CROSS = 1.0
+
 
 def _q(sql: str, params: tuple = ()) -> list[dict]:
     with get_conn() as conn:
@@ -559,71 +565,139 @@ def compute_emerging_gap_opportunities(
     limit: int | None = None,
     payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Cross weekly heating combos with literature gap status (hot ∩ unexplored)."""
-    from analysis.gap_tools import tool_method_disease_combo_gap
+    """Find sparse, task-bridged method-to-disease transfer candidates."""
+    from analysis.focus_filter import focus_sql_clause, normalize_focus
+    from analysis.task_quality import classify_task_quality
+    from extractor.entity_normalize import normalize_entity_name
 
     data = payload or compute_weekly_hotspots(
         window_days=window_days,
         prior_days=prior_days,
     )
-    gaps_result = tool_method_disease_combo_gap(focus=focus)
-    gap_index = {
-        (g["method"], g["disease"]): g
-        for g in gaps_result.get("gaps", [])
+    method_stats = {
+        str(row["name"]): row
+        for row in data.get("emerging_methods", [])[:20]
     }
-    hot_methods = {r["name"] for r in data.get("emerging_methods", [])[:20]}
-    hot_diseases = {r["name"] for r in data.get("heating_diseases", [])[:20]}
-    seen: set[tuple[str, str]] = set()
-    rows: list[dict[str, Any]] = []
+    hot_methods = set(method_stats)
+    hot_diseases = {
+        str(row["name"]) for row in data.get("heating_diseases", [])[:20]
+    }
+    if not hot_methods:
+        return []
 
-    def _append(
-        method: str,
-        disease: str,
-        *,
-        lit_gap: str,
-        paper_cnt: int,
-        combo: dict[str, Any],
-    ) -> None:
-        key = (method, disease)
-        if key in seen:
-            return
-        seen.add(key)
-        hot_score = float(combo.get("emerging_score") or 0)
-        lit_pts = literature_gap_points(lit_gap) if lit_gap in ("unexplored", "minimal") else 1
-        rows.append({
-            "method": method,
-            "disease": disease,
-            "literature_gap": lit_gap,
-            "literature_paper_cnt": paper_cnt,
-            "recent_hot_cnt": combo.get("recent_cnt", 0),
-            "velocity": combo.get("velocity"),
-            "gap_phase": combo.get("gap_phase"),
-            "emerging_score": hot_score,
-            "opportunity_score": round(hot_score + lit_pts, 2),
-        })
-
-    for combo in data.get("hot_combos", []):
-        method, disease = combo["method"], combo["disease"]
-        gap_row = gap_index.get((method, disease))
-        lit_gap = gap_row["gap"] if gap_row else "active"
-        paper_cnt = int(gap_row.get("paper_cnt", 0) if gap_row else combo.get("recent_cnt", 0))
-        heating = combo.get("gap_phase") in ("heating", "nascent")
-        if lit_gap in ("unexplored", "minimal") or heating:
-            _append(method, disease, lit_gap=lit_gap, paper_cnt=paper_cnt, combo=combo)
-
-    for gap_row in gaps_result.get("gaps", []):
-        if gap_row.get("gap") not in ("unexplored", "minimal"):
-            continue
-        method, disease = gap_row["method"], gap_row["disease"]
-        if method not in hot_methods and disease not in hot_diseases:
-            continue
-        _append(
-            method,
-            disease,
-            lit_gap=gap_row["gap"],
-            paper_cnt=int(gap_row.get("paper_cnt", 0)),
-            combo={"emerging_score": 0, "recent_cnt": 0, "velocity": 0, "gap_phase": "nascent"},
+    active_edges = _q(
+        """
+        SELECT r.source_pmid, r.relation, e.name, e.type
+        FROM relations r
+        JOIN entities e ON r.object_id = e.id
+        WHERE COALESCE(r.status, 'active') = 'active'
+          AND (
+              (r.relation = 'APPLIES_METHOD' AND e.type = 'Method')
+              OR (r.relation = 'TARGETS_DISEASE' AND e.type = 'Disease')
+              OR (r.relation = 'PERFORMS_TASK' AND e.type = 'Task')
+          )
+        """
+    )
+    by_pmid: dict[str, dict[str, set[str]]] = {}
+    for edge in active_edges:
+        bucket = by_pmid.setdefault(
+            str(edge["source_pmid"]),
+            {"Method": set(), "Disease": set(), "Task": set()},
         )
+        name = str(edge["name"])
+        if edge["type"] == "Task":
+            name = normalize_entity_name(name, "Task")
+        bucket[str(edge["type"])].add(name)
+
+    method_diseases: dict[str, set[str]] = {}
+    method_tasks: dict[str, dict[str, set[str]]] = {}
+    disease_tasks: dict[str, dict[str, set[str]]] = {}
+    pair_pmids: dict[tuple[str, str], set[str]] = {}
+    same_paper_tasks: dict[tuple[str, str, str], set[str]] = {}
+    for pmid, entities in by_pmid.items():
+        methods = entities["Method"]
+        diseases = entities["Disease"]
+        ok_tasks = {
+            task for task in entities["Task"]
+            if classify_task_quality(task) == "ok"
+        }
+        for method in methods:
+            method_diseases.setdefault(method, set()).update(diseases)
+            task_pmids = method_tasks.setdefault(method, {})
+            for task in ok_tasks:
+                task_pmids.setdefault(task, set()).add(pmid)
+            for disease in diseases:
+                pair_pmids.setdefault((method, disease), set()).add(pmid)
+                for task in ok_tasks:
+                    same_paper_tasks.setdefault((method, disease, task), set()).add(pmid)
+        for disease in diseases:
+            task_pmids = disease_tasks.setdefault(disease, {})
+            for task in ok_tasks:
+                task_pmids.setdefault(task, set()).add(pmid)
+
+    if normalize_focus(focus):
+        focus_diseases = _q(
+            "SELECT name FROM entities e WHERE e.type = 'Disease'"
+            + focus_sql_clause("e.name", focus)
+        )
+        hot_diseases.update(str(row["name"]) for row in focus_diseases)
+
+    rows: list[dict[str, Any]] = []
+    for method in hot_methods:
+        support = method_diseases.get(method, set())
+        if not support:
+            continue
+        for disease in hot_diseases:
+            paper_cnt = len(pair_pmids.get((method, disease), set()))
+            if paper_cnt > 2:
+                continue
+            support_diseases = sorted(support - {disease})
+            if not support_diseases:
+                continue
+            shared_tasks = set(method_tasks.get(method, {})) & set(
+                disease_tasks.get(disease, {})
+            )
+            if not shared_tasks:
+                continue
+
+            def task_rank(task: str) -> tuple[int, int, str]:
+                same = bool(same_paper_tasks.get((method, disease, task)))
+                support_count = (
+                    len(method_tasks[method][task]) + len(disease_tasks[disease][task])
+                )
+                return (int(same), support_count, task)
+
+            bridge_task = max(shared_tasks, key=task_rank)
+            bridge_mode = (
+                "same_paper"
+                if same_paper_tasks.get((method, disease, bridge_task))
+                else "cross_paper"
+            )
+            bridge_bonus = (
+                _BRIDGE_BONUS_SAME
+                if bridge_mode == "same_paper"
+                else _BRIDGE_BONUS_CROSS
+            )
+            literature_gap = "unexplored" if paper_cnt == 0 else "minimal"
+            stats = method_stats[method]
+            hot_score = float(stats.get("emerging_score") or 0)
+            rows.append({
+                "method": method,
+                "disease": disease,
+                "literature_gap": literature_gap,
+                "literature_paper_cnt": paper_cnt,
+                "bridge_task": bridge_task,
+                "bridge_quality": "ok",
+                "bridge_mode": bridge_mode,
+                "support_diseases": ", ".join(support_diseases[:5]),
+                "recent_hot_cnt": stats.get("recent_cnt", 0),
+                "velocity": stats.get("velocity"),
+                "emerging_score": hot_score,
+                "opportunity_score": round(
+                    hot_score + literature_gap_points(literature_gap) + bridge_bonus,
+                    2,
+                ),
+            })
 
     rows.sort(key=lambda r: r["opportunity_score"], reverse=True)
     top_n = limit if limit is not None else min(20, config.HOTSPOT_TOP_N)
@@ -633,8 +707,8 @@ def compute_emerging_gap_opportunities(
 def tool_emerging_gap_opportunities(focus: str | None = None) -> dict[str, Any]:
     rows = compute_emerging_gap_opportunities(focus=focus)
     desc = (
-        "Weekly heating method×disease crossed with literature gap "
-        "(opportunity_score = emerging_score + gap tier)"
+        "Sparse method×disease transfer candidates requiring an ok Task bridge "
+        "(opportunity_score = emerging_score + literature gap tier + bridge bonus)"
     )
     if focus:
         desc += f" (focus: {focus})"
@@ -760,14 +834,19 @@ def generate_hotspot_report(
     ])
     if data.get("emerging_gap_opportunities"):
         lines.extend([
-            "## Emerging Gap Opportunities (hot × literature gap)",
+            "## Transferable Candidates (task-bridged)",
             "",
             _format_table(
                 data["emerging_gap_opportunities"],
                 [
                     "method",
                     "disease",
+                    "bridge_task",
+                    "bridge_quality",
+                    "bridge_mode",
                     "literature_gap",
+                    "literature_paper_cnt",
+                    "support_diseases",
                     "recent_hot_cnt",
                     "velocity",
                     "emerging_score",
