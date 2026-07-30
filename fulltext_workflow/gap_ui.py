@@ -165,6 +165,7 @@ TOOL_META: dict[str, dict] = {
     "disease_task_coverage": {"label": "疾病-任务覆盖", "category": "覆盖空白"},
     "method_disease_combo_gap": {"label": "方法×疾病组合空白", "category": "组合空白"},
     "metric_evidence_quality": {"label": "指标证据质量", "category": "全文证据"},
+    "study_type_relation_stats": {"label": "研究类型关系计数", "category": "全文证据"},
     "graph_entity_pagerank": {"label": "实体 PageRank vs 论文", "category": "图分析"},
     "graph_community_gaps": {"label": "社区检测空白", "category": "图分析"},
     "graph_disease_method_reach": {"label": "疾病-方法可达性", "category": "图分析"},
@@ -1693,6 +1694,10 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
                 "velocity",
                 "emerging_score",
                 "opportunity_score",
+                "binding_paper_cnt",
+                "public_dataset_cnt",
+                "public_dataset_names",
+                "actionability_hint",
             ]
             df_opps = pd.DataFrame(opps)
             ordered = [c for c in opp_cols if c in df_opps.columns]
@@ -2304,32 +2309,36 @@ elif st.session_state["events"]:
         proposal = st.session_state.get("proposal", "")
         if proposal:
             st.divider()
-            _difficulty_colors = {
-                "green": "#2e7d32",
-                "amber": "#ed6c02",
-                "red": "#c62828",
+            # Soft chips: dark text on tinted bg (readable in light/dark Streamlit themes)
+            _difficulty_chip_styles = {
+                "green": "background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7;",
+                "amber": "background:#fff3e0;color:#e65100;border:1px solid #ffcc80;",
+                "red": "background:#ffebee;color:#b71c1c;border:1px solid #ef9a9a;",
             }
-            _difficulty_color = _difficulty_colors.get(
+            _difficulty_chip = _difficulty_chip_styles.get(
                 st.session_state.get("proposal_difficulty_color") or "green",
-                "#2e7d32",
+                _difficulty_chip_styles["green"],
             )
             _target_difficulty = difficulty_display_target(st.session_state)
             _assessed_difficulty = st.session_state.get(
                 "proposal_assessed_difficulty"
             )
             if _target_difficulty and _assessed_difficulty:
+                _chip = (
+                    "display:inline-block;padding:4px 10px;border-radius:999px;"
+                    "font-size:0.9rem;font-weight:500;"
+                )
                 st.markdown(
                     '<div style="display:flex;gap:8px;align-items:center;'
-                    'margin:8px 0;">'
-                    '<span style="padding:4px 10px;border-radius:999px;'
-                    'background:#eee;">'
+                    'flex-wrap:wrap;margin:8px 0;">'
+                    f'<span style="{_chip}background:#f5f5f5;color:#212121;'
+                    'border:1px solid #bdbdbd;">'
                     f"目标：<b>{_DIFFICULTY_LABELS.get(_target_difficulty, _target_difficulty)}</b></span>"
-                    '<span style="padding:4px 10px;border-radius:999px;'
-                    f'background:{_difficulty_color};color:#fff;">'
+                    f'<span style="{_chip}{_difficulty_chip}">'
                     f"评估：<b>{_DIFFICULTY_LABELS.get(_assessed_difficulty, _assessed_difficulty)}</b></span>"
                     + (
-                        '<span style="padding:4px 10px;border-radius:999px;'
-                        'background:#9e9e9e;color:#fff;">Q 覆盖偏低</span>'
+                        f'<span style="{_chip}background:#eceff1;color:#37474f;'
+                        'border:1px solid #b0bec5;">Q 覆盖偏低</span>'
                         if st.session_state.get("proposal_q_coverage_low")
                         else ""
                     )

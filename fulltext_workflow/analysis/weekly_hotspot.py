@@ -566,6 +566,7 @@ def compute_emerging_gap_opportunities(
     payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Find sparse, task-bridged method-to-disease transfer candidates."""
+    from analysis.binding_enrichment import actionability_bump, enrich_method_disease_rows
     from analysis.focus_filter import focus_sql_clause, normalize_focus
     from analysis.task_quality import classify_task_quality
     from extractor.entity_normalize import normalize_entity_name
@@ -699,6 +700,16 @@ def compute_emerging_gap_opportunities(
                 ),
             })
 
+    rows = enrich_method_disease_rows(rows)
+    for row in rows:
+        row["opportunity_score"] = round(
+            float(row["opportunity_score"])
+            + actionability_bump(
+                int(row.get("binding_paper_cnt") or 0),
+                int(row.get("public_dataset_cnt") or 0),
+            ),
+            2,
+        )
     rows.sort(key=lambda r: r["opportunity_score"], reverse=True)
     top_n = limit if limit is not None else min(20, config.HOTSPOT_TOP_N)
     return rows[:top_n]
@@ -708,7 +719,8 @@ def tool_emerging_gap_opportunities(focus: str | None = None) -> dict[str, Any]:
     rows = compute_emerging_gap_opportunities(focus=focus)
     desc = (
         "Sparse method×disease transfer candidates requiring an ok Task bridge "
-        "(opportunity_score = emerging_score + literature gap tier + bridge bonus)"
+        "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
+        "+ optional binding actionability bump)"
     )
     if focus:
         desc += f" (focus: {focus})"

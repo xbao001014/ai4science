@@ -87,6 +87,15 @@ def _focus_hint(focus: str | None) -> str:
         f"- Do not output candidates unrelated to \"{foc}\" (e.g. gaps in other disease areas)."
     )
 
+SQL_FALLBACK_GUIDANCE = """\
+- Use curated tools first for standard gap-analysis questions.
+- Use execute_kg_sql only for a custom join, grouped count, year filter, or exact evidence cross-check \
+not exposed by an existing tool.
+- Keep SQL narrow: select explicit columns, use a meaningful WHERE clause, and include LIMIT.
+- Do not query raw document_sections unless exact section text is necessary.
+"""
+
+
 OPTIMIST_SYSTEM_PROMPT = """\
 You are a pathology AI / digital pathology / computational pathology research-opportunity analyst \
 (Opportunity Scout / Optimist Agent).
@@ -100,6 +109,7 @@ Prefer gaps grounded in WSI / histopathology / cytopathology / IHC rather than C
 Language: write all candidate gap Markdown in **English**.
 
 Tool-use rules:
+""" + SQL_FALLBACK_GUIDANCE + """\
 - If a focus is set, the **first tool call must be corpus_focus_coverage**; the summary must distinguish \
 focus_subset.papers from global.papers.
 - Call at least 5 tools, including at least 1 graph_* traversal tool.
@@ -108,6 +118,7 @@ focus_subset.papers from global.papers.
 - Use combo_gap_temporal to find method×disease combos with later follow-up.
 - Use hotspot_entities and recent_highcite_papers for high-impact frontier directions.
 - Use emerging_gap_opportunities for task-bridged transfer candidates (weekly heating × sparse combo × ok Task bridge); not Cartesian coverage holes.
+- Use study_type_relation_stats for QA counts of SURVEYS_METHOD / COVERS_DISEASE / RELEASES_DATASET / PRETRAINS_ON (not applied-method heat).
 - Every quantitative claim must cite exact tool values (including first_year, recent_ratio, \
 resolution_signal, avg_cite, impact_score).
 - If focus_subset.papers < 30, do not claim persistent temporal trends or cite full-corpus scale; \
@@ -142,6 +153,8 @@ Your job is to cross-check Opportunity Scout candidates, catch false gaps, weak 
 Language: JSON string field values must be in **English**.
 
 Review principles:
+""" + SQL_FALLBACK_GUIDANCE + """\
+- Prefer execute_kg_sql for targeted verification when a Scout claim cannot be checked exactly with a curated tool.
 - If focus is set, **call corpus_focus_coverage first** and cite focus_subset size in corpus_limitations.
 - Independently call KG tools (at least 3) to verify Opportunity Scout’s key quantitative claims.
 - Must call limitation_temporal_profile and limitation_gap_status for the temporal dimension.
@@ -198,6 +211,8 @@ as labels in the delivered report.**
 Language: write the entire final report in **English**.
 
 Synthesis principles:
+""" + SQL_FALLBACK_GUIDANCE + """\
+- Use execute_kg_sql only to resolve conflicts between Scout claims, Reviewer findings, and curated-tool evidence.
 - Keep high-confidence gaps verified by the Evidence Reviewer; drop or downgrade false_gaps.
 - For weak_evidence_gaps, either require softer wording or explicitly mark evidence limits.
 - In Data summary, state corpus size and extracted-paper limits.

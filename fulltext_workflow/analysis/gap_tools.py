@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Any, Callable
 
 import config
@@ -294,6 +295,9 @@ def tool_method_disease_combo_gap(focus: str | None = None) -> dict:
     desc = "Hot method x hot disease combination gaps"
     if focus:
         desc += f" (focus: {focus})"
+    from analysis.binding_enrichment import enrich_method_disease_rows
+
+    gaps = enrich_method_disease_rows(gaps)
     return {"description": desc, "gaps": gaps[:40]}
 
 
@@ -551,6 +555,17 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
                 2,
             ),
         })
+    from analysis.binding_enrichment import actionability_bump, enrich_method_disease_rows
+
+    rows = enrich_method_disease_rows(rows)
+    for row in rows:
+        row["gap_priority_score"] = round(
+            float(row["gap_priority_score"]) + actionability_bump(
+                int(row.get("binding_paper_cnt") or 0),
+                int(row.get("public_dataset_cnt") or 0),
+            ),
+            2,
+        )
     rows.sort(key=lambda r: r["gap_priority_score"], reverse=True)
     return {
         "description": "Method×disease gaps weighted by supporting-paper citations/IF",
@@ -558,9 +573,159 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
     }
 
 
+# ── Free-form SQL tool (code-gen style) ───────────────────────────────────────
+
+_ALLOWED_SQL_PREFIXES = ("SELECT", "WITH", "EXPLAIN")
+_SQL_MAX_ROWS = 100
+_WRITE_SQL_KEYWORDS = frozenset(
+    {"ALTER", "ATTACH", "CREATE", "DELETE", "DETACH", "DROP", "INSERT", "REINDEX",
+     "REPLACE", "UPDATE", "VACUUM"}
+)
+
+# Compact schema card for tool description + schema-error recovery.
+_KG_SQL_SCHEMA_HINT = (
+    "Key columns (do NOT invent names): "
+    "papers(id, pmid, title, abstract, year, study_type, citation_count, full_text_status); "
+    "entities(id, name, type, access_class); "
+    "relations(id, subject_type, subject_id, relation, object_type, object_id, "
+    "source_pmid, evidence_section, evidence_quote, status); "
+    "paper_entity_bindings(id, source_pmid, method_entity_id, disease_entity_id, "
+    "dataset_entity_id); "
+    "limitation_temporal(limitation_id, limitation_name, paper_cnt, temporal_status, "
+    "avg_cite, impact_tier); "
+    "document_sections(id, paper_id, section_type, content). "
+    "There is no papers.paper_id or entities.entity_id — use papers.id / papers.pmid "
+    "and entities.id. Join bindings via source_pmid and entity id columns. "
+    "method_disease_combo_gap is a tool name, not a SQL table."
+)
+
+
+def _sql_code(sql: str, *, blank_identifiers: bool = False) -> str:
+    """Return SQL with comments, strings, and optionally identifiers blanked."""
+    code = list(sql)
+    index = 0
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index)
+            end = len(sql) if end == -1 else end
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            end = len(sql) if end == -1 else end + 2
+        elif sql[index] == "'":
+            end = index + 1
+            while end < len(sql):
+                if sql[end] == "'":
+                    if end + 1 < len(sql) and sql[end + 1] == "'":
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                else:
+                    end += 1
+        elif sql[index] in {'"', "`", "["}:
+            quote = sql[index]
+            close = "]" if quote == "[" else quote
+            end = index + 1
+            while end < len(sql):
+                if sql[end] == close:
+                    if close != "]" and end + 1 < len(sql) and sql[end + 1] == close:
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            if not blank_identifiers:
+                index = end
+                continue
+        else:
+            index += 1
+            continue
+        code[index:end] = " " * (end - index)
+        index = end
+    return "".join(code)
+
+
+def _sql_tokens(sql: str) -> list[str]:
+    return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _sql_code(sql).lower())
+
+
+def _outer_sql_code(sql: str, *, blank_identifiers: bool = False) -> str:
+    """Return SQL code with content inside parentheses blanked."""
+    code = list(_sql_code(sql, blank_identifiers=blank_identifiers))
+    depth = 0
+    for index, char in enumerate(code):
+        if char == "(":
+            depth += 1
+        if depth:
+            code[index] = " "
+        if char == ")" and depth:
+            depth -= 1
+    return "".join(code)
+
+
+def _query_needs_limit(sql: str, table: str) -> bool:
+    tokens = _sql_tokens(sql)
+    keyword_tokens = re.findall(
+        r"[A-Za-z_][A-Za-z0-9_]*",
+        _outer_sql_code(sql, blank_identifiers=True).lower(),
+    )
+    return table.lower() in tokens and "limit" not in keyword_tokens
+
+
+def tool_execute_kg_sql(sql: str, focus: str | None = None) -> dict:
+    """Execute a read-only SQL query against the KG database.
+
+    The agent can write arbitrary SELECT queries to explore the schema freely,
+    enabling deeper investigation than pre-built tools allow.
+    Tables: papers, entities, relations, document_sections, authors,
+    paper_authors, journals, limitation_temporal, limitation_resolution_signals,
+    weekly_hotspot_snapshots, paper_entity_bindings, paper_improvement_suggestions,
+    feasibility_assessments, ops_runs, ops_gap_items, ops_proposals.
+    """
+    sql_stripped = sql.strip().rstrip(";").strip()
+    tokens = _sql_tokens(sql_stripped)
+    first_word = tokens[0].upper() if tokens else ""
+    if first_word not in _ALLOWED_SQL_PREFIXES:
+        return {"error": f"Only SELECT/WITH/EXPLAIN allowed, got: {first_word}"}
+    if _WRITE_SQL_KEYWORDS.intersection(token.upper() for token in tokens):
+        return {"error": "Only read-only SELECT/WITH/EXPLAIN queries are allowed."}
+    if _query_needs_limit(sql_stripped, "document_sections"):
+        return {
+            "error": (
+                "Queries touching document_sections must include LIMIT "
+                "to avoid dumping raw section text."
+            ),
+            "sql": sql_stripped,
+        }
+
+    # Inject focus filter hint if caller provides focus but SQL lacks it
+    # (agent should handle this itself, but we log a hint)
+    try:
+        with get_conn() as conn:
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(sql_stripped).fetchmany(_SQL_MAX_ROWS + 1)
+            truncated = len(rows) > _SQL_MAX_ROWS
+            if truncated:
+                rows = rows[:_SQL_MAX_ROWS]
+            data = [dict(r) for r in rows]
+        result: dict = {"row_count": len(data), "data": data}
+        if truncated:
+            result["truncated"] = True
+            result["hint"] = f"Results capped at {_SQL_MAX_ROWS} rows. Add LIMIT or narrow WHERE."
+        return result
+    except Exception as exc:
+        err = str(exc)
+        payload: dict = {"error": err, "sql": sql_stripped}
+        low = err.lower()
+        if "no such column" in low or "no such table" in low:
+            payload["hint"] = _KG_SQL_SCHEMA_HINT
+        return payload
+
+
 # ── Tool registry for LLM agents ─────────────────────────────────────────────
 
 SQL_TOOLS: dict[str, Callable[..., dict]] = {
+    "execute_kg_sql": tool_execute_kg_sql,
     "corpus_focus_coverage": tool_corpus_focus_coverage,
     "author_stated_gaps": tool_author_stated_gaps,
     "improvement_suggestions_by_topic": tool_improvement_suggestions_by_topic,
@@ -577,9 +742,45 @@ SQL_TOOLS: dict[str, Callable[..., dict]] = {
     "disease_task_coverage": tool_disease_task_coverage,
     "method_disease_combo_gap": tool_method_disease_combo_gap,
     "metric_evidence_quality": tool_metric_evidence_quality,
+    "study_type_relation_stats": tool_study_type_relation_stats,
 }
 
 TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_kg_sql",
+            "description": (
+                "Execute a read-only SQL SELECT query against the KG SQLite database. "
+                "Use when pre-built tools cannot answer your question or you need custom "
+                "joins, aggregations, year filters, or exact verification. "
+                f"{_KG_SQL_SCHEMA_HINT} "
+                "Returns up to 100 rows. Prefer this for exploratory/validation queries."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": (
+                            "A SELECT or WITH SQL statement using real columns only. "
+                            "Example: SELECT e.name, COUNT(*) AS cnt FROM relations r "
+                            "JOIN entities e ON e.id=r.object_id "
+                            "JOIN papers p ON p.pmid=r.source_pmid "
+                            "WHERE e.type='Limitation' AND COALESCE(r.status,'active')='active' "
+                            "AND LOWER(p.title) LIKE '%breast%' GROUP BY e.name "
+                            "ORDER BY cnt DESC LIMIT 20"
+                        ),
+                    },
+                    "focus": {
+                        "type": "string",
+                        "description": "Optional focus context (not auto-injected into SQL).",
+                    },
+                },
+                "required": ["sql"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -738,10 +939,9 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "emerging_gap_opportunities",
             "description": (
-                "Task-bridged transferable candidates: sparse method×disease combos "
-                "with an ok Task bridge (not Cartesian coverage holes). "
-                "opportunity_score = emerging_score + literature gap tier + bridge bonus. "
-                "Empty list is expected until Task extraction quality improves."
+                "Sparse method×disease transfer candidates requiring an ok Task bridge "
+                "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
+                "+ optional binding actionability bump)"
             ),
             "parameters": {
                 "type": "object",
@@ -798,6 +998,21 @@ TOOL_SCHEMAS: list[dict] = [
                     "focus": {"type": "string", "description": "Optional metric keyword"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "study_type_relation_stats",
+            "description": (
+                "Read-only QA counts for study-type-specific relations: "
+                "SURVEYS_METHOD, COVERS_DISEASE, RELEASES_DATASET, PRETRAINS_ON. "
+                "Survey/cover edges are not the same as APPLIES_METHOD / TARGETS_DISEASE."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
             },
         },
     },
