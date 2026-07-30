@@ -14,7 +14,7 @@
 |------|------|
 | 三角色辩论 | Opportunity Scout → Evidence Reviewer → Final Synthesizer |
 | 周热点 | 发表窗口热点榜、Week-over-Week、可迁移候选、LLM 简报 |
-| 可视化 | Plotly：辩论漏斗、工具 treemap、method×disease、lit×data |
+| 可视化 | Plotly：辩论漏斗、工具 treemap、可迁移候选×方信、覆盖诊断 |
 | 证据追溯 | PMID、证据章节、引用片段、语料 focus 匹配文献 |
 | 空白报告 | Markdown Gap Report，可下载；默认写入 ops memory |
 | 数据可行性 | 方信 LIS（D-01/D-02、V1.1 分布、V-01/V-02、交叉矩阵） |
@@ -33,10 +33,8 @@
 cd D:\agent\prototype\build_kg_paper
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
-# 可视化页需要 plotly（若缺）：
-.\.venv\Scripts\pip install plotly
+# 已含 streamlit + plotly；无需再单独装
 ```
-
 根目录 `.env` 最少：
 
 ```ini
@@ -179,16 +177,17 @@ Extracted 为 0 时先跑抽取流水线。
 
 ### 5.3 Visualization
 
-Focus 下的 **空白机会 × 方信对照**（不强制先辩论）：
+侧栏焦点下的 **可迁移候选 × 方信对照**（需 ok Task 桥；非笛卡尔覆盖空洞；不强制先辩论）：
 
 | 区域 | 含义 |
 |------|------|
-| Summary | 组合数 / 文献稀缺数 / 已映射方信病种 / 高数据支持占比 |
-| Left · Opportunity table | method×disease 空白行；可点选；辩论命中行标 `Debate` 并置顶 |
-| Right · Fangxin detail | 选中病种的 landscape 缓存：病例规模、亚型、分子（只读，不在此 bootstrap） |
+| Summary | 候选数 / 文献稀缺 / 已映射方信 / 高数据占比 |
+| Left · 机会表 | 可迁移候选行（`bridge_task`、`bridge_mode`、`opportunity_score` 等）；可点选；辩论命中标 `Debate` 并置顶 |
+| Right · 方信详情 | 选中病种的 landscape 缓存：病例规模、亚型、分子；标题下展示桥接摘要（只读，不在此 bootstrap） |
+| 覆盖诊断（非机会） | 折叠区：method×疾病覆盖空洞，**不驱动**右侧方信选中；覆盖空洞 ≠ 研究方向 |
 | Session diagnostics | 折叠区：辩论漏斗 + 工具 treemap |
 
-默认只显示 `unexplored` / `minimal`；勾选 Show all coverage levels 看全部。无 focus 不扫全库。无 landscape 时请回 **Data Feasibility → Bootstrap Landscape**。
+主表来自 `emerging_gap_opportunities`（与 Weekly Hotspot 可迁移候选同源）；无 ok Task 桥时宁可留空，不回退笛卡尔 combo。无 focus 不扫全库。无 landscape 时请回 **Data Feasibility → Bootstrap Landscape**。
 
 ---
 
@@ -318,8 +317,10 @@ Extracted > 0？focus 是否过窄？API Key / 余额是否正常？
 ### Q4：Visualization 报缺 plotly
 
 ```powershell
-..\.venv\Scripts\pip install plotly
+..\.venv\Scripts\pip install -r ..\requirements.txt
 ```
+
+主依赖已含 plotly；若仍缺，确认用的是仓库根目录 `.venv`，而不是系统/Anaconda 的 streamlit。
 
 ### Q5：Weekly Hotspot 几乎为空
 
@@ -364,7 +365,7 @@ Extracted > 0？focus 是否过窄？API Key / 余额是否正常？
 |--------|------|
 | 看本周新兴方向 | Weekly Hotspot → Save / LLM brief |
 | 发现研究空白 | Sidebar focus → Run Gap Debate → Gap Report |
-| 看 focus 空白 × 方信对照 | Visualization |
+| 看 focus 可迁移候选 × 方信对照 | Visualization |
 | 查证据与 PMID | Evidence & Literature |
 | 评估数据能否支撑空白 | Data Feasibility → Quick check from Gap |
 | 手动测病种样本量 | Data Feasibility → V-01 |
