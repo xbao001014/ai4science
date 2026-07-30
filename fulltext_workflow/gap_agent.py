@@ -29,6 +29,7 @@ from analysis.agent_utils import (
     last_assistant_content,
     parse_json_block,
     run_tool_agent,
+    select_tool_bundle,
 )
 from analysis.graph_tools import GAP_TOOLS, GAP_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import build_gap_feasibility_tools
@@ -37,6 +38,45 @@ from db.schema import db_stats, init_db
 
 init_gap_registry()
 GAP_FEASIBILITY_TOOLS, GAP_FEASIBILITY_SCHEMAS = build_gap_feasibility_tools()
+
+OPTIMIST_TOOL_NAMES = [
+    "corpus_focus_coverage",
+    "limitation_temporal_profile",
+    "emerging_gap_opportunities",
+    "improvement_suggestions_by_topic",
+    "recent_highcite_papers",
+    "disease_task_coverage",
+]
+
+SKEPTIC_TOOL_NAMES = [
+    "corpus_focus_coverage",
+    "limitation_temporal_profile",
+    "author_stated_gaps",
+    "execute_kg_sql",
+    "disease_task_coverage",
+]
+
+MODERATOR_TOOL_NAMES = [
+    "literature_data_cross_matrix",
+    "pathology_disease_catalog",
+    "corpus_focus_coverage",
+    "execute_kg_sql",
+]
+
+
+def build_role_tool_bundle(role: str) -> tuple[dict[str, Any], list[dict]]:
+    role = role.lower().strip()
+    if role == "optimist":
+        return select_tool_bundle(OPTIMIST_TOOL_NAMES, GAP_TOOLS, GAP_TOOL_SCHEMAS)
+    if role == "skeptic":
+        return select_tool_bundle(SKEPTIC_TOOL_NAMES, GAP_TOOLS, GAP_TOOL_SCHEMAS)
+    if role == "moderator":
+        # Moderator needs KG tools + feasibility tools
+        merged_tools = {**GAP_TOOLS, **GAP_FEASIBILITY_TOOLS}
+        merged_schemas = GAP_TOOL_SCHEMAS + GAP_FEASIBILITY_SCHEMAS
+        return select_tool_bundle(MODERATOR_TOOL_NAMES, merged_tools, merged_schemas)
+    raise ValueError(f"Unknown debate role: {role}")
+
 
 ACCEPT_DEBATE_SCORE = 7.5
 
@@ -119,6 +159,7 @@ focus_subset.papers from global.papers.
 - Use hotspot_entities and recent_highcite_papers for high-impact frontier directions.
 - Use emerging_gap_opportunities for task-bridged transfer candidates (weekly heating × sparse combo × ok Task bridge); not Cartesian coverage holes.
 - Use study_type_relation_stats for QA counts of SURVEYS_METHOD / COVERS_DISEASE / RELEASES_DATASET / PRETRAINS_ON (not applied-method heat).
+- Covered combo gaps (gap_kind=covered) use COVERS_DISEASE mentions, not APPLIES×TARGETS co-occurrence; SURVEYS_METHOD is survey mention for secondary ranking only, not APPLIES_METHOD heat.
 - Every quantitative claim must cite exact tool values (including first_year, recent_ratio, \
 resolution_signal, avg_cite, impact_score).
 - If focus_subset.papers < 30, do not claim persistent temporal trends or cite full-corpus scale; \
@@ -341,8 +382,12 @@ def stream_gap_debate_agent(
     corpus_ctx = _corpus_context(focus)
     focus_hint = _focus_hint(focus)
     memory_block = resolve_ops_memory_block(focus, use_ops_memory)
-    debate_tools = bind_tools_with_focus(GAP_TOOLS, focus)
-    moderator_tools = bind_tools_with_focus(GAP_FEASIBILITY_TOOLS, focus)
+    opt_tools_raw, opt_schemas = build_role_tool_bundle("optimist")
+    ske_tools_raw, ske_schemas = build_role_tool_bundle("skeptic")
+    mod_tools_raw, mod_schemas = build_role_tool_bundle("moderator")
+    opt_tools = bind_tools_with_focus(opt_tools_raw, focus)
+    ske_tools = bind_tools_with_focus(ske_tools_raw, focus)
+    mod_tools = bind_tools_with_focus(mod_tools_raw, focus)
 
     optimist_proposal = ""
     skeptic_review: dict = {}
@@ -395,8 +440,8 @@ def stream_gap_debate_agent(
         ]
         yield from run_tool_agent(
             messages=opt_messages,
-            tools=debate_tools,
-            tool_schemas=GAP_TOOL_SCHEMAS,
+            tools=opt_tools,
+            tool_schemas=opt_schemas,
             role="optimist",
             max_iters=18,
             temperature=0.45,
@@ -425,8 +470,8 @@ def stream_gap_debate_agent(
         ]
         yield from run_tool_agent(
             messages=ske_messages,
-            tools=debate_tools,
-            tool_schemas=GAP_TOOL_SCHEMAS,
+            tools=ske_tools,
+            tool_schemas=ske_schemas,
             role="skeptic",
             max_iters=12,
             temperature=0.3,
@@ -484,8 +529,8 @@ def stream_gap_debate_agent(
         ]
         yield from run_tool_agent(
             messages=mod_messages,
-            tools=moderator_tools,
-            tool_schemas=GAP_FEASIBILITY_SCHEMAS,
+            tools=mod_tools,
+            tool_schemas=mod_schemas,
             role="moderator",
             max_iters=10,
             temperature=0.35,

@@ -11,6 +11,8 @@ from analysis.impact_scoring import aggregate_paper_impact
 from db.schema import get_conn
 
 REPORT_PATH = f"{config.OUTPUT_DIR}/gap_report.md"
+APPLIED_CAP = 30
+COVERED_CAP = 10
 
 
 def _q(sql: str, params: tuple = ()) -> list[dict]:
@@ -292,13 +294,41 @@ def tool_method_disease_combo_gap(focus: str | None = None) -> dict:
                 gaps.append({"method": m, "disease": d, "paper_cnt": 0, "gap": "unexplored"})
             elif cnt <= 2:
                 gaps.append({"method": m, "disease": d, "paper_cnt": cnt, "gap": "minimal"})
-    desc = "Hot method x hot disease combination gaps"
+    from analysis.binding_enrichment import enrich_method_disease_rows
+    from analysis.study_type_signals import annotate_study_type_rows, build_covered_gap_rows
+
+    for gap in gaps:
+        gap["gap_kind"] = "applied"
+    gaps = annotate_study_type_rows(gaps)
+    gaps = enrich_method_disease_rows(gaps)
+
+    cover_diseases = _q(f"""
+        SELECT e.name
+        FROM relations r JOIN entities e ON r.object_id=e.id
+        WHERE e.type='Disease' AND r.relation='COVERS_DISEASE'
+          AND COALESCE(r.status, 'active') = 'active' {df}
+        GROUP BY e.id ORDER BY COUNT(DISTINCT r.source_pmid) DESC
+        LIMIT {config.TOOL_TOP_N}
+    """)
+    cover_names = [row["name"] for row in cover_diseases]
+    applied_pairs = {(gap["method"], gap["disease"]) for gap in gaps}
+    covered = build_covered_gap_rows(
+        method_names=method_names,
+        cover_disease_names=cover_names,
+        applied_cooccur=existing,
+        applied_pair_set=applied_pairs,
+    )
+    covered = enrich_method_disease_rows(covered)
+
+    merged = gaps[:APPLIED_CAP] + covered[:COVERED_CAP]
+    desc = (
+        "Hot method x hot disease combination gaps: applied channel "
+        "(APPLIES_METHOD x TARGETS_DISEASE) plus covered channel "
+        "(COVERS_DISEASE without applied co-occurrence)"
+    )
     if focus:
         desc += f" (focus: {focus})"
-    from analysis.binding_enrichment import enrich_method_disease_rows
-
-    gaps = enrich_method_disease_rows(gaps)
-    return {"description": desc, "gaps": gaps[:40]}
+    return {"description": desc, "gaps": merged}
 
 
 def tool_metric_evidence_quality(focus: str | None = None) -> dict:
@@ -546,6 +576,7 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
         rows.append({
             "method": method,
             "disease": disease,
+            "gap_kind": gap.get("gap_kind", "applied"),
             "literature_gap": lit,
             "literature_paper_cnt": gap.get("paper_cnt", 0),
             **impact,
@@ -556,6 +587,7 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
             ),
         })
     from analysis.binding_enrichment import actionability_bump, enrich_method_disease_rows
+    from analysis.study_type_signals import annotate_study_type_rows
 
     rows = enrich_method_disease_rows(rows)
     for row in rows:
@@ -566,7 +598,13 @@ def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
             ),
             2,
         )
-    rows.sort(key=lambda r: r["gap_priority_score"], reverse=True)
+    rows = annotate_study_type_rows(rows)
+    rows.sort(
+        key=lambda r: (
+            -float(r["gap_priority_score"]),
+            -int(r.get("surveys_method_paper_cnt") or 0),
+        )
+    )
     return {
         "description": "Method×disease gaps weighted by supporting-paper citations/IF",
         "data": rows,
@@ -972,8 +1010,11 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "method_disease_combo_gap",
             "description": (
-                "Hot method x hot disease combination gaps. "
-                "paper_cnt=0 means unexplored; <=2 means minimal research."
+                "Hot method x disease dual-channel combination gaps: applied rows pair "
+                "APPLIES_METHOD x TARGETS_DISEASE, where paper_cnt=0 means unexplored "
+                "and <=2 means minimal applied research; covered rows pair methods with "
+                "COVERS_DISEASE mentions lacking applied co-occurrence, so their paper_cnt "
+                "is not an applied-gap count."
             ),
             "parameters": {
                 "type": "object",

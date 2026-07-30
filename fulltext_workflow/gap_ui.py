@@ -1432,6 +1432,9 @@ def render_gap_visualization_tab(
                     "疾病": r.get("disease") or "",
                     "文献空白": r.get("gap") or "",
                     "论文数": int(r.get("paper_cnt") or 0),
+                    "gap_kind": r.get("gap_kind") or "",
+                    "covers_disease_paper_cnt": int(r.get("covers_disease_paper_cnt") or 0),
+                    "surveys_method_paper_cnt": int(r.get("surveys_method_paper_cnt") or 0),
                     "方信": r.get("disease_id") or "—",
                     "数据": r.get("data") or "none",
                 }
@@ -1698,6 +1701,9 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
                 "public_dataset_cnt",
                 "public_dataset_names",
                 "actionability_hint",
+                "gap_kind",
+                "covers_disease_paper_cnt",
+                "surveys_method_paper_cnt",
             ]
             df_opps = pd.DataFrame(opps)
             ordered = [c for c in opp_cols if c in df_opps.columns]

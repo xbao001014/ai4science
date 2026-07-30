@@ -43,6 +43,24 @@ def _sanitize_assistant_message(msg_dict: dict[str, Any]) -> dict[str, Any]:
     return msg_dict
 
 
+def select_tool_bundle(
+    names: list[str],
+    tools: dict[str, Any],
+    schemas: list[dict],
+) -> tuple[dict[str, Any], list[dict]]:
+    schema_by_name = {
+        schema["function"]["name"]: schema
+        for schema in schemas
+        if isinstance(schema, dict) and "function" in schema
+    }
+    missing = [name for name in names if name not in tools or name not in schema_by_name]
+    if missing:
+        raise KeyError(f"Unknown tool(s) for bundle: {missing}")
+    selected_tools = {name: tools[name] for name in names}
+    selected_schemas = [schema_by_name[name] for name in names]
+    return selected_tools, selected_schemas
+
+
 def bind_tools_with_focus(
     tools: dict[str, Any],
     focus: str | None,
@@ -69,6 +87,12 @@ def bind_tools_with_focus(
                     kwargs["focus"] = foc
                 return f(**kwargs)
 
+            # Preserve the original signature so _safe_invoke_tool does not
+            # drop required kwargs (e.g. execute_kg_sql's sql) when filtering.
+            try:
+                _wrapped.__signature__ = inspect.signature(f)
+            except (TypeError, ValueError):
+                pass
             return _wrapped
 
         bound[name] = _make_wrapper(fn, default_focus)

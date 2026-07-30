@@ -568,6 +568,7 @@ def compute_emerging_gap_opportunities(
     """Find sparse, task-bridged method-to-disease transfer candidates."""
     from analysis.binding_enrichment import actionability_bump, enrich_method_disease_rows
     from analysis.focus_filter import focus_sql_clause, normalize_focus
+    from analysis.study_type_signals import annotate_study_type_rows
     from analysis.task_quality import classify_task_quality
     from extractor.entity_normalize import normalize_entity_name
 
@@ -710,7 +711,15 @@ def compute_emerging_gap_opportunities(
             ),
             2,
         )
-    rows.sort(key=lambda r: r["opportunity_score"], reverse=True)
+    for row in rows:
+        row["gap_kind"] = "applied"
+    rows = annotate_study_type_rows(rows)
+    rows.sort(
+        key=lambda r: (
+            -float(r["opportunity_score"]),
+            -int(r.get("surveys_method_paper_cnt") or 0),
+        )
+    )
     top_n = limit if limit is not None else min(20, config.HOTSPOT_TOP_N)
     return rows[:top_n]
 

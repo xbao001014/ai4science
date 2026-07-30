@@ -20,6 +20,12 @@ def test_optimist_prompt_says_curated_tools_first():
     assert "execute_kg_sql" in OPTIMIST_SYSTEM_PROMPT
 
 
+def test_optimist_prompt_study_type_downstream_guidance():
+    assert "gap_kind=covered" in OPTIMIST_SYSTEM_PROMPT
+    assert "COVERS_DISEASE" in OPTIMIST_SYSTEM_PROMPT
+    assert "SURVEYS_METHOD" in OPTIMIST_SYSTEM_PROMPT
+
+
 def test_skeptic_prompt_prefers_sql_for_targeted_verification():
     assert "execute_kg_sql" in SKEPTIC_SYSTEM_PROMPT
     assert "targeted verification" in SKEPTIC_SYSTEM_PROMPT
