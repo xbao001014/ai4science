@@ -186,10 +186,11 @@ def test_primary_viz_gaps_empty_focus_and_no_combo_fallback(monkeypatch):
     assert primary_viz_gaps(None) == []
     assert primary_viz_gaps("") == []
 
-    called = {"combo": 0, "transfer": 0}
+    called = {"combo": 0, "transfer": 0, "transfer_kwargs": None}
 
     def fake_transfer(**kwargs):
         called["transfer"] += 1
+        called["transfer_kwargs"] = kwargs
         return []
 
     def fake_combo(**kwargs):
@@ -206,9 +207,18 @@ def test_primary_viz_gaps_empty_focus_and_no_combo_fallback(monkeypatch):
         fake_combo,
         raising=False,
     )
-    out = primary_viz_gaps("nasopharyngeal carcinoma")
+    out = primary_viz_gaps(
+        "nasopharyngeal carcinoma",
+        limit=37,
+        window_days=21,
+    )
     assert out == []
     assert called["transfer"] == 1
+    assert called["transfer_kwargs"] == {
+        "focus": "nasopharyngeal carcinoma",
+        "limit": 37,
+        "window_days": 21,
+    }
     assert called["combo"] == 0
 
 

@@ -162,6 +162,8 @@ def filter_opportunity_rows(
 def primary_viz_gaps(
     focus: str | None,
     *,
+    limit: int | None = None,
+    window_days: int | None = None,
     opportunities: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Main-table source only. Never falls back to method_disease_combo_gap."""
@@ -170,7 +172,13 @@ def primary_viz_gaps(
     if opportunities is not None:
         return opportunities
     from analysis.weekly_hotspot import compute_emerging_gap_opportunities
-    return list(compute_emerging_gap_opportunities(focus=focus))
+    return list(
+        compute_emerging_gap_opportunities(
+            focus=focus,
+            limit=limit,
+            window_days=window_days,
+        )
+    )
 
 
 def assemble_opportunity_view(

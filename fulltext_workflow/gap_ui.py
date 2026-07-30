@@ -1349,6 +1349,19 @@ def _fangxin_scale_metrics(payload: dict) -> dict[str, int]:
     }
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_primary_viz_gaps(
+    focus: str,
+    window_days: int,
+    limit: int,
+) -> list[dict]:
+    return primary_viz_gaps(
+        focus,
+        limit=limit,
+        window_days=window_days,
+    )
+
+
 def render_gap_visualization_tab(
     events: list[dict],
     *,
@@ -1373,7 +1386,11 @@ def render_gap_visualization_tab(
         st.info("请在侧栏设置研究焦点。")
     else:
         try:
-            gaps = primary_viz_gaps(focus)
+            gaps = _load_primary_viz_gaps(
+                focus,
+                config.HOTSPOT_WINDOW_DAYS,
+                int(top_n),
+            )
         except Exception as exc:
             st.warning(f"无法加载可迁移候选：{exc}")
             gaps = []
@@ -1411,7 +1428,7 @@ def render_gap_visualization_tab(
     with col_l:
         st.markdown("**机会表**")
         if focus is None:
-            st.caption("设置焦点以加载知识图谱组合。")
+            st.caption("设置焦点以加载可迁移候选。")
         elif not gaps:
             st.info("该焦点下无可迁移候选（需升温方法×稀疏组合且存在 ok Task 桥）。")
         elif not rows:
@@ -1472,6 +1489,11 @@ def render_gap_visualization_tab(
         else:
             disease_name = str(selected.get("disease") or "")
             did = selected.get("disease_id")
+            st.caption(
+                f"桥接：{selected.get('bridge_task') or '—'} · "
+                f"{selected.get('bridge_mode') or '—'} · "
+                f"得分 {selected.get('opportunity_score') or 0}"
+            )
             if not did:
                 st.warning(
                     f"**{disease_name or '疾病'}** — 无法映射到方信 DiseaseCode"
@@ -1488,11 +1510,6 @@ def render_gap_visualization_tab(
                 names = " / ".join(x for x in (zh, en) if x) or disease_name
                 st.markdown(
                     f"**`{did}`** — {names} · 数据 **{selected.get('data') or 'none'}**"
-                )
-                st.caption(
-                    f"桥接：{selected.get('bridge_task') or '—'} · "
-                    f"{selected.get('bridge_mode') or '—'} · "
-                    f"得分 {selected.get('opportunity_score') or 0}"
                 )
                 st.caption(f"updated_at: {payload.get('updated_at') or '—'}")
 
