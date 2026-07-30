@@ -37,10 +37,30 @@ LIT_GAP_RANK = {"unexplored": 0, "minimal": 1}
 DATA_RANK = {"high": 0, "medium": 1, "low": 2, "none": 3}
 
 
+def normalize_opportunity_gap(g: dict[str, Any]) -> dict[str, Any]:
+    """Unify transferable + legacy combo shapes for build_opportunity_rows."""
+    out = dict(g)
+    if not out.get("gap"):
+        out["gap"] = out.get("literature_gap") or ""
+    if "paper_cnt" not in out or out.get("paper_cnt") is None:
+        out["paper_cnt"] = int(out.get("literature_paper_cnt") or 0)
+    else:
+        out["paper_cnt"] = int(out.get("paper_cnt") or 0)
+    out.setdefault("bridge_task", "")
+    out.setdefault("bridge_mode", "")
+    out.setdefault("bridge_quality", "")
+    out.setdefault("support_diseases", "")
+    if out.get("support_diseases") is not None and not isinstance(out["support_diseases"], str):
+        out["support_diseases"] = ", ".join(str(x) for x in out["support_diseases"])
+    out["opportunity_score"] = float(out.get("opportunity_score") or 0.0)
+    return out
+
+
 def sort_opportunity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def key(r: dict[str, Any]) -> tuple:
         return (
             0 if r.get("source") == "Debate" else 1,
+            -float(r.get("opportunity_score") or 0.0),
             LIT_GAP_RANK.get(str(r.get("gap") or ""), 2),
             DATA_RANK.get(str(r.get("data") or "none"), 3),
             int(r.get("paper_cnt") or 0),
@@ -60,6 +80,7 @@ def build_opportunity_rows(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for g in gaps:
+        g = normalize_opportunity_gap(g)
         method = str(g.get("method") or "")
         disease = str(g.get("disease") or "")
         did = disease_id_by_name.get(disease)
@@ -76,6 +97,11 @@ def build_opportunity_rows(
             "disease": disease,
             "gap": g.get("gap") or "",
             "paper_cnt": int(g.get("paper_cnt") or 0),
+            "bridge_task": g.get("bridge_task") or "",
+            "bridge_mode": g.get("bridge_mode") or "",
+            "bridge_quality": g.get("bridge_quality") or "",
+            "support_diseases": g.get("support_diseases") or "",
+            "opportunity_score": float(g.get("opportunity_score") or 0.0),
             "gap_kind": g.get("gap_kind") or "applied",
             "covers_disease_paper_cnt": int(g.get("covers_disease_paper_cnt") or 0),
             "surveys_method_paper_cnt": int(g.get("surveys_method_paper_cnt") or 0),
@@ -133,6 +159,20 @@ def filter_opportunity_rows(
     return out[: max(0, int(limit))]
 
 
+def primary_viz_gaps(
+    focus: str | None,
+    *,
+    opportunities: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Main-table source only. Never falls back to method_disease_combo_gap."""
+    if not (focus or "").strip():
+        return []
+    if opportunities is not None:
+        return opportunities
+    from analysis.weekly_hotspot import compute_emerging_gap_opportunities
+    return list(compute_emerging_gap_opportunities(focus=focus))
+
+
 def assemble_opportunity_view(
     *,
     gaps: list[dict[str, Any]],
@@ -142,6 +182,7 @@ def assemble_opportunity_view(
     scarce_only: bool = True,
     limit: int = 30,
 ) -> dict[str, Any]:
+    gaps = [normalize_opportunity_gap(g) for g in gaps]
     rows = build_opportunity_rows(gaps, disease_cases, disease_id_by_name)
     unmatched: list[str] = []
     if debate_titles:
