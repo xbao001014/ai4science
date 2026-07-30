@@ -127,7 +127,7 @@ from utils.proposal_difficulty_ui import (  # noqa: E402
 )
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
-from viz.gap_opportunity import assemble_opportunity_view  # noqa: E402
+from viz.gap_opportunity import assemble_opportunity_view, primary_viz_gaps  # noqa: E402
 from viz.gap_viz import (  # noqa: E402
     build_gap_viz_bundle,
     build_molecular_bar,
@@ -1356,19 +1356,14 @@ def render_gap_visualization_tab(
     focus_hint: str = "",
 ) -> None:
     """Focus gaps × Fangxin dual-pane; session funnel/treemap under diagnostics."""
-    st.subheader("焦点空白 × 方信支撑")
+    st.subheader("可迁移候选 × 方信支撑")
     st.caption(
-        "左：侧栏焦点下的方法×疾病机会（有报告时叠加辩论标题）。"
+        "左：侧栏焦点下由 ok Task 桥支撑的可迁移候选（有报告时叠加辩论标题）；"
+        "无可靠桥接时宁可留空，避免伪机会。"
         "右：所选疾病的方信疾病分布图谱缓存 — 只读；初始化在「数据可行性」页。"
     )
 
     focus = normalize_focus(focus_hint)
-    show_all = st.checkbox(
-        "显示全部覆盖等级",
-        value=False,
-        key="viz_show_all_coverage",
-        help="默认仅显示文献未覆盖 / 极少覆盖的空白。",
-    )
     top_n = st.slider("Top N", 10, 50, 30, key="viz_top_n")
 
     disease_cases, landscape_by_id, catalog_names = _landscape_indexes()
@@ -1378,9 +1373,9 @@ def render_gap_visualization_tab(
         st.info("请在侧栏设置研究焦点。")
     else:
         try:
-            gaps = list(tool_method_disease_combo_gap(focus=focus).get("gaps") or [])
+            gaps = primary_viz_gaps(focus)
         except Exception as exc:
-            st.warning(f"无法加载方法×疾病组合：{exc}")
+            st.warning(f"无法加载可迁移候选：{exc}")
             gaps = []
 
     disease_id_by_name: dict[str, str | None] = {}
@@ -1398,7 +1393,7 @@ def render_gap_visualization_tab(
         disease_cases=disease_cases,
         disease_id_by_name=disease_id_by_name,
         debate_titles=debate_titles or None,
-        scarce_only=not show_all,
+        scarce_only=True,
         limit=int(top_n),
     )
     rows = list(view.get("rows") or [])
@@ -1407,7 +1402,7 @@ def render_gap_visualization_tab(
     matched_count = int(view.get("debate_matched_count") or 0)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("组合数", int(summary.get("combo_count") or 0))
+    m1.metric("候选数", int(summary.get("combo_count") or 0))
     m2.metric("文献稀缺", int(summary.get("scarce_count") or 0))
     m3.metric("已映射方信", int(summary.get("mapped_count") or 0))
     m4.metric("高数据占比", f"{float(summary.get('high_share') or 0):.0f}%")
@@ -1418,23 +1413,21 @@ def render_gap_visualization_tab(
         if focus is None:
             st.caption("设置焦点以加载知识图谱组合。")
         elif not gaps:
-            st.info("该焦点下无方法×疾病组合 — 请先运行抽取 / 入库。")
+            st.info("该焦点下无可迁移候选（需升温方法×稀疏组合且存在 ok Task 桥）。")
         elif not rows:
-            st.info(
-                "过滤后无行 — 请启用 **显示全部覆盖等级** "
-                "或增大 Top N。"
-            )
+            st.info("过滤后无可迁移候选。")
         else:
             display_rows = [
                 {
                     "来源": r.get("source") or "",
                     "方法": r.get("method") or "",
                     "疾病": r.get("disease") or "",
+                    "桥接任务": r.get("bridge_task") or "",
+                    "桥接模式": r.get("bridge_mode") or "",
                     "文献空白": r.get("gap") or "",
                     "论文数": int(r.get("paper_cnt") or 0),
-                    "gap_kind": r.get("gap_kind") or "",
-                    "covers_disease_paper_cnt": int(r.get("covers_disease_paper_cnt") or 0),
-                    "surveys_method_paper_cnt": int(r.get("surveys_method_paper_cnt") or 0),
+                    "支持病种": r.get("support_diseases") or "",
+                    "得分": r.get("opportunity_score") or 0,
                     "方信": r.get("disease_id") or "—",
                     "数据": r.get("data") or "none",
                 }
@@ -1496,6 +1489,11 @@ def render_gap_visualization_tab(
                 st.markdown(
                     f"**`{did}`** — {names} · 数据 **{selected.get('data') or 'none'}**"
                 )
+                st.caption(
+                    f"桥接：{selected.get('bridge_task') or '—'} · "
+                    f"{selected.get('bridge_mode') or '—'} · "
+                    f"得分 {selected.get('opportunity_score') or 0}"
+                )
                 st.caption(f"updated_at: {payload.get('updated_at') or '—'}")
 
                 scale = _fangxin_scale_metrics(payload)
@@ -1528,6 +1526,30 @@ def render_gap_visualization_tab(
                 st.caption(
                     "更深入的队列评估见：**数据可行性 → V-01**。"
                 )
+
+    with st.expander("覆盖诊断（非机会）", expanded=False):
+        st.caption("方法×疾病覆盖空洞 ≠ 研究方向；不驱动右侧方信选中态。")
+        if focus is None:
+            st.info("设置焦点后可查看覆盖诊断。")
+        else:
+            try:
+                diag = list(tool_method_disease_combo_gap(focus=focus).get("gaps") or [])
+            except Exception as exc:
+                st.warning(f"覆盖诊断不可用：{exc}")
+                diag = []
+            scarce = [g for g in diag if g.get("gap") in ("unexplored", "minimal")][:20]
+            if scarce:
+                safe_table(pd.DataFrame([
+                    {
+                        "方法": g.get("method"),
+                        "疾病": g.get("disease"),
+                        "论文数": g.get("paper_cnt"),
+                        "gap": g.get("gap"),
+                    }
+                    for g in scarce
+                ]))
+            else:
+                st.info("该焦点下无稀缺覆盖空洞。")
 
     with st.expander("会话诊断", expanded=False):
         st.caption("当前会话的辩论漏斗与工具树图（可选）。")
