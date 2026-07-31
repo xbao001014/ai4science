@@ -106,7 +106,6 @@ from analysis.feasibility_tools import (  # noqa: E402
 )
 from feasibility.disease_mapper import map_gap_to_disease  # noqa: E402
 from feasibility.landscape import bootstrap_landscape  # noqa: E402
-from pipeline import assess_gap_feasibility  # noqa: E402
 from pipeline_utils import parse_gap_titles  # noqa: E402
 from debate_labels import (  # noqa: E402
     DEBATE_FLOW_HELP,
@@ -129,12 +128,6 @@ from utils.proposal_difficulty_ui import (  # noqa: E402
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
 from viz.gap_opportunity import assemble_opportunity_view, primary_viz_gaps  # noqa: E402
-from viz.gap_viz import (  # noqa: E402
-    build_gap_viz_bundle,
-    build_molecular_bar,
-    build_subtype_bar,
-    plotly_available,
-)
 from viz.evidence_viewer import (  # noqa: E402
     ViewerLoadError,
     load_paper_for_viewer,
@@ -981,6 +974,8 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 key="btn_gap_assess",
                 on_click=remember_main_tab_for(_DATA_TAB_LABEL),
             ):
+                from pipeline import assess_gap_feasibility  # noqa: E402
+
                 fr = assess_gap_feasibility(gap_pick, report_text)
                 st.session_state["gap_feas_result"] = fr
         else:
@@ -995,6 +990,8 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 key="btn_manual_gap",
                 on_click=remember_main_tab_for(_DATA_TAB_LABEL),
             ) and manual_gap.strip():
+                from pipeline import assess_gap_feasibility  # noqa: E402
+
                 fr = assess_gap_feasibility(manual_gap.strip(), manual_gap.strip())
                 st.session_state["gap_feas_result"] = fr
 
@@ -1485,6 +1482,13 @@ def render_gap_visualization_tab(
     focus_hint: str = "",
 ) -> None:
     """Focus gaps × Fangxin dual-pane; session funnel/treemap under diagnostics."""
+    from viz.gap_viz import (  # noqa: E402
+        build_gap_viz_bundle,
+        build_molecular_bar,
+        build_subtype_bar,
+        plotly_available,
+    )
+
     st.subheader("可迁移候选 × 方信支撑")
     st.caption(
         "左：侧栏焦点下由 ok Task 桥支撑的可迁移候选（有报告时叠加辩论标题）；"
