@@ -128,3 +128,43 @@ def test_resolve_focus_extraction_exact_and_none():
     assert resolve_focus_extraction(paper, "We apply ResNet") == 0
     assert resolve_focus_extraction(paper, None) is None
     assert resolve_focus_extraction(paper, "totally unrelated xyz") is None
+
+
+def test_render_html_single_paper_no_tabs(monkeypatch):
+    from viz.evidence_viewer import load_paper_for_viewer, render_evidence_viewer_html
+
+    _tmp_db(monkeypatch)
+    _seed_full("2001")
+    paper = load_paper_for_viewer("2001")
+    html = render_evidence_viewer_html(paper, initial_extraction_index=0)
+    assert "paper-tabs" not in html
+    assert "DEMO_PAPERS" in html or "VIEWER_PAPER" in html
+    assert "We apply ResNet" in html
+    assert "initial_extraction_index" in html or "INITIAL_EXTRACTION_INDEX" in html
+    assert "highlightEvidence" in html
+
+
+def test_render_html_empty_extractions_and_focus_quote(monkeypatch):
+    from viz.evidence_viewer import load_paper_for_viewer, render_evidence_viewer_html
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper(
+        {"pmid": "2002", "title": "T", "year": 2025, "journal_name": "J"}
+    )
+    mark_fulltext_status(pid, "available")
+    insert_sections(
+        pid,
+        [{
+            "section_type": "abstract",
+            "title": "",
+            "content": "UniqueFocusQuoteXYZ appears here.",
+            "order_idx": 0,
+        }],
+    )
+    paper = load_paper_for_viewer("2002")
+    html = render_evidence_viewer_html(
+        paper, focus_quote="UniqueFocusQuoteXYZ", unmatched_focus=True
+    )
+    assert "暂无抽取" in html or "没有可展示的抽取" in html
+    assert "UniqueFocusQuoteXYZ" in html
+    assert "证据未精确匹配到抽取卡" in html
