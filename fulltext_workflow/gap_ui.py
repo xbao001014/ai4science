@@ -1336,7 +1336,7 @@ def render_evidence_literature_section(
     try:
         paper = load_paper_for_viewer(pmid)
     except ViewerLoadError as err:
-        st.warning(err.message_zh)
+        st.warning(f"[{err.code}] {err.message_zh}")
         return
 
     idx = resolve_focus_extraction(paper, focus_quote)

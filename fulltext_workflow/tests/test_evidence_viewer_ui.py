@@ -42,3 +42,50 @@ def test_extract_evidence_keeps_longer_quote():
     rows = extract_evidence(events)
     assert len(rows) == 1
     assert len(rows[0]["摘录"]) == 200  # was 120; now allow up to 240 or full if shorter
+
+
+def test_viewer_load_warning_includes_error_code(monkeypatch):
+    import gap_ui
+
+    warnings = []
+
+    class FakeStreamlit:
+        session_state = {
+            "evidence_viewer": {"pmid": "missing", "focus_quote": None}
+        }
+
+        @staticmethod
+        def subheader(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def info(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def divider():
+            pass
+
+        @staticmethod
+        def button(*_args, **_kwargs):
+            return False
+
+        @staticmethod
+        def warning(message):
+            warnings.append(message)
+
+    def raise_load_error(_pmid):
+        raise gap_ui.ViewerLoadError("not_found", "论文不在语料中")
+
+    monkeypatch.setattr(gap_ui, "st", FakeStreamlit)
+    monkeypatch.setattr(gap_ui, "extract_evidence", lambda _events: [])
+    monkeypatch.setattr(
+        gap_ui,
+        "resolve_evidence_literature_papers",
+        lambda _events, _focus, limit: ([], "no_match"),
+    )
+    monkeypatch.setattr(gap_ui, "load_paper_for_viewer", raise_load_error)
+
+    gap_ui.render_evidence_literature_section([], None)
+
+    assert warnings == ["[not_found] 论文不在语料中"]
