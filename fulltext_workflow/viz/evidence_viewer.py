@@ -8,13 +8,12 @@ from typing import Any
 import config
 from db.schema import get_conn
 from viz.extraction_demo import (
-    OBJECT_TYPE_GROUP_ORDER,
     RELATION_LABELS_ZH,
     STUDY_TYPE_LABELS_ZH,
+    _object_type_sort_key,
+    _VALID_FULLTEXT_STATUSES,
     match_evidence_quote,
 )
-
-_VALID_FULLTEXT_STATUSES = frozenset({"available", "pdf_available"})
 
 
 class ViewerLoadError(Exception):
@@ -22,14 +21,6 @@ class ViewerLoadError(Exception):
         self.code = code
         self.message_zh = message_zh
         super().__init__(message_zh)
-
-
-def _object_type_sort_key(object_type: str) -> tuple[int, str]:
-    try:
-        return (OBJECT_TYPE_GROUP_ORDER.index(object_type), object_type)
-    except ValueError:
-        return (len(OBJECT_TYPE_GROUP_ORDER), object_type)
-
 
 def load_paper_for_viewer(
     pmid: str,
@@ -137,11 +128,14 @@ def resolve_focus_extraction(
             return i
         score = 0
         if q in eq or eq in q:
-            score = min(len(q), len(eq))
+            overlap_length = min(len(q), len(eq))
+            if overlap_length >= 8:
+                score = overlap_length
         else:
             hit = match_evidence_quote(eq, q) or match_evidence_quote(q, eq)
-            if hit:
+            if hit and hit[1] - hit[0] >= 8:
                 score = hit[1] - hit[0]
+        # Strict improvement preserves the first-seen candidate on ties.
         if score > best_score:
             best_score = score
             best_i = i
@@ -431,6 +425,6 @@ if (window.INITIAL_EXTRACTION_INDEX != null) {
 </script>
 </body>
 </html>
-""".replace("__PAPER_JSON__", payload).replace(
-        "__INIT_IDX__", init_idx
-    ).replace("__FOCUS_QUOTE__", fq).replace("__UNMATCHED__", unmatched)
+""".replace("__INIT_IDX__", init_idx).replace(
+        "__FOCUS_QUOTE__", fq
+    ).replace("__UNMATCHED__", unmatched).replace("__PAPER_JSON__", payload)

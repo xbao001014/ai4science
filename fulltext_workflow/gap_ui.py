@@ -1270,18 +1270,26 @@ def render_evidence_literature_section(
         row for row in evidence if str(row.get("PMID") or "").strip()
     ]
     if evidence_choices:
-        evidence_index = st.selectbox(
+        evidence_by_id = {
+            (
+                f"{str(row['PMID']).strip()}\x1f"
+                f"{str(row.get('标题/实体') or '')}\x1f"
+                f"{str(row.get('摘录') or '')}"
+            ): row
+            for row in evidence_choices
+        }
+        evidence_id = st.selectbox(
             "选择证据溯源",
-            range(len(evidence_choices)),
-            format_func=lambda i: (
-                f"{evidence_choices[i]['PMID']} · "
-                f"{str(evidence_choices[i].get('标题/实体') or '')[:40]} · "
-                f"{str(evidence_choices[i].get('摘录') or '')[:40]}"
+            list(evidence_by_id),
+            format_func=lambda choice_id: (
+                f"{evidence_by_id[choice_id]['PMID']} · "
+                f"{str(evidence_by_id[choice_id].get('标题/实体') or '')[:40]} · "
+                f"{str(evidence_by_id[choice_id].get('摘录') or '')[:40]}"
             ),
             key="evidence_viewer_evidence_pick",
         )
         if st.button("查看溯源（证据）", key="open_evidence_viewer_evidence"):
-            row = evidence_choices[evidence_index]
+            row = evidence_by_id[evidence_id]
             st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
                 row.get("PMID"),
                 row.get("摘录"),
@@ -1303,17 +1311,21 @@ def render_evidence_literature_section(
         row for row in papers if str(row.get("PMID") or "").strip()
     ]
     if paper_choices:
-        paper_index = st.selectbox(
+        paper_by_id = {
+            str(row["PMID"]).strip(): row
+            for row in paper_choices
+        }
+        paper_id = st.selectbox(
             "选择论文溯源",
-            range(len(paper_choices)),
-            format_func=lambda i: (
-                f"{paper_choices[i]['PMID']} · "
-                f"{str(paper_choices[i].get('标题') or '')[:40]}"
+            list(paper_by_id),
+            format_func=lambda choice_id: (
+                f"{paper_by_id[choice_id]['PMID']} · "
+                f"{str(paper_by_id[choice_id].get('标题') or '')[:40]}"
             ),
             key="evidence_viewer_paper_pick",
         )
         if st.button("查看溯源（论文）", key="open_evidence_viewer_paper"):
-            row = paper_choices[paper_index]
+            row = paper_by_id[paper_id]
             st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
                 row.get("PMID"),
             )

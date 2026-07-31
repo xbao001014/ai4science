@@ -75,7 +75,7 @@ def test_load_paper_for_viewer_ok(monkeypatch):
     assert paper["pmid"] == "1001"
     assert len(paper["sections"]) == 1
     assert len(paper["extractions"]) == 2
-    assert paper["extractions"][0]["object_type"] in {"Method", "Dataset"}
+    assert paper["extractions"][0]["object_type"] == "Method"
 
 
 def test_load_paper_not_found(monkeypatch):
@@ -96,6 +96,21 @@ def test_load_paper_no_fulltext(monkeypatch):
     with pytest.raises(ViewerLoadError) as ei:
         load_paper_for_viewer("1002")
     assert ei.value.code == "no_fulltext"
+
+
+def test_load_paper_no_sections(monkeypatch):
+    from viz.evidence_viewer import ViewerLoadError, load_paper_for_viewer
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper(
+        {"pmid": "1004", "title": "T", "year": 2025, "journal_name": "J"}
+    )
+    mark_fulltext_status(pid, "available")
+
+    with pytest.raises(ViewerLoadError) as ei:
+        load_paper_for_viewer("1004")
+
+    assert ei.value.code == "no_sections"
 
 
 def test_load_paper_allows_empty_extractions(monkeypatch):
@@ -130,6 +145,33 @@ def test_resolve_focus_extraction_exact_and_none():
     assert resolve_focus_extraction(paper, "totally unrelated xyz") is None
 
 
+def test_resolve_focus_extraction_ignores_short_non_exact_overlap():
+    from viz.evidence_viewer import resolve_focus_extraction
+
+    paper = {
+        "extractions": [
+            {"evidence_quote": "AUC was measured"},
+            {"evidence_quote": "short"},
+        ]
+    }
+
+    assert resolve_focus_extraction(paper, "AUC") is None
+    assert resolve_focus_extraction(paper, "short") == 1
+
+
+def test_viewer_reuses_demo_sort_and_status_helpers():
+    from viz import evidence_viewer, extraction_demo
+
+    assert (
+        evidence_viewer._object_type_sort_key
+        is extraction_demo._object_type_sort_key
+    )
+    assert (
+        evidence_viewer._VALID_FULLTEXT_STATUSES
+        is extraction_demo._VALID_FULLTEXT_STATUSES
+    )
+
+
 def test_render_html_single_paper_no_tabs(monkeypatch):
     from viz.evidence_viewer import load_paper_for_viewer, render_evidence_viewer_html
 
@@ -138,9 +180,15 @@ def test_render_html_single_paper_no_tabs(monkeypatch):
     paper = load_paper_for_viewer("2001")
     html = render_evidence_viewer_html(paper, initial_extraction_index=0)
     assert "paper-tabs" not in html
-    assert "DEMO_PAPERS" in html or "VIEWER_PAPER" in html
+    assert "window.VIEWER_PAPER = " in html
     assert "We apply ResNet" in html
-    assert "initial_extraction_index" in html or "INITIAL_EXTRACTION_INDEX" in html
+    assert "window.INITIAL_EXTRACTION_INDEX = 0;" in html
+    assert "window.UNMATCHED_FOCUS = false;" in html
+    assert "window.FOCUS_QUOTE = null;" in html
+    assert "__PAPER_JSON__" not in html
+    assert "__INIT_IDX__" not in html
+    assert "__FOCUS_QUOTE__" not in html
+    assert "__UNMATCHED__" not in html
     assert "highlightEvidence" in html
 
 
@@ -166,5 +214,34 @@ def test_render_html_empty_extractions_and_focus_quote(monkeypatch):
         paper, focus_quote="UniqueFocusQuoteXYZ", unmatched_focus=True
     )
     assert "暂无抽取" in html or "没有可展示的抽取" in html
-    assert "UniqueFocusQuoteXYZ" in html
+    assert 'window.FOCUS_QUOTE = "UniqueFocusQuoteXYZ";' in html
+    assert "window.UNMATCHED_FOCUS = true;" in html
+    assert "window.INITIAL_EXTRACTION_INDEX = null;" in html
+    assert "__PAPER_JSON__" not in html
+    assert "__INIT_IDX__" not in html
+    assert "__FOCUS_QUOTE__" not in html
+    assert "__UNMATCHED__" not in html
     assert "证据未精确匹配到抽取卡" in html
+
+
+def test_render_html_substitutes_paper_payload_last():
+    from viz.evidence_viewer import render_evidence_viewer_html
+
+    paper = {
+        "pmid": "placeholder-collision",
+        "title": "__INIT_IDX__ __FOCUS_QUOTE__ __UNMATCHED__",
+        "sections": [],
+        "extractions": [],
+    }
+
+    html = render_evidence_viewer_html(
+        paper,
+        initial_extraction_index=7,
+        focus_quote="focus",
+        unmatched_focus=True,
+    )
+
+    assert '"title": "__INIT_IDX__ __FOCUS_QUOTE__ __UNMATCHED__"' in html
+    assert "window.INITIAL_EXTRACTION_INDEX = 7;" in html
+    assert 'window.FOCUS_QUOTE = "focus";' in html
+    assert "window.UNMATCHED_FOCUS = true;" in html

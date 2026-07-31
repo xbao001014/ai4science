@@ -44,6 +44,66 @@ def test_extract_evidence_keeps_longer_quote():
     assert len(rows[0]["摘录"]) == 200  # was 120; now allow up to 240 or full if shorter
 
 
+def test_evidence_viewer_selectboxes_use_stable_string_ids(monkeypatch):
+    import gap_ui
+
+    option_sets = []
+
+    class FakeStreamlit:
+        session_state = {}
+
+        @staticmethod
+        def subheader(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def info(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def caption(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def divider():
+            pass
+
+        @staticmethod
+        def selectbox(_label, options, **_kwargs):
+            values = list(options)
+            option_sets.append(values)
+            return values[0]
+
+        @staticmethod
+        def button(*_args, **_kwargs):
+            return False
+
+    evidence = [
+        {"PMID": "123", "标题/实体": "A", "摘录": "quote one"},
+        {"PMID": "123", "标题/实体": "A", "摘录": "quote two"},
+    ]
+    papers = [
+        {"PMID": "456", "标题": "Paper B"},
+        {"PMID": "789", "标题": "Paper C"},
+    ]
+    monkeypatch.setattr(gap_ui, "st", FakeStreamlit)
+    monkeypatch.setattr(gap_ui, "safe_table", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gap_ui, "extract_evidence", lambda _events: evidence)
+    monkeypatch.setattr(
+        gap_ui,
+        "resolve_evidence_literature_papers",
+        lambda _events, _focus, limit: (papers, "tool"),
+    )
+
+    gap_ui.render_evidence_literature_section([], None)
+
+    assert len(option_sets) == 2
+    assert all(isinstance(value, str) for options in option_sets for value in options)
+    assert len(set(option_sets[0])) == 2
+    assert all(value.startswith("123") for value in option_sets[0])
+    assert option_sets[1] == ["456", "789"]
+
+
 def test_viewer_load_warning_includes_error_code(monkeypatch):
     import gap_ui
 
