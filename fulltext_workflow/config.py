@@ -108,6 +108,7 @@ HOTSPOT_WINDOW_DAYS: int = _default_hotspot_window()
 HOTSPOT_PRIOR_WINDOW_DAYS: int = int(os.getenv("HOTSPOT_PRIOR_WINDOW_DAYS", "14"))
 HOTSPOT_MIN_RECENT_PAPERS: int = int(os.getenv("HOTSPOT_MIN_RECENT_PAPERS", "2"))
 HOTSPOT_TOP_N: int = int(os.getenv("HOTSPOT_TOP_N", "20"))
+HOTSPOT_ESTABLISHED_MIN_PAPERS: int = int(os.getenv("HOTSPOT_ESTABLISHED_MIN_PAPERS", "10"))
 
 # Study-type policy matrix (deny/remap/dataset_mode); Task 3 wires into postprocess
 STUDY_POLICY_ENABLED: bool = os.getenv("STUDY_POLICY_ENABLED", "1").strip().lower() in (
