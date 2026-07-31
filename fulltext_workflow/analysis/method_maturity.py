@@ -75,15 +75,40 @@ def corpus_applies_method_counts() -> dict[str, int]:
     return {str(r["name"]): int(r["n"]) for r in rows}
 
 
+def corpus_applies_method_counts_canonical() -> dict[str, int]:
+    """Count distinct papers for each runtime-resolved Method canonical."""
+    from analysis.method_synonyms import resolve_method_canonical
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.name AS name, r.source_pmid AS pmid
+            FROM relations r
+            JOIN entities e ON r.object_id = e.id
+            WHERE e.type = 'Method'
+              AND r.relation = 'APPLIES_METHOD'
+              AND COALESCE(r.status, 'active') = 'active'
+            """
+        ).fetchall()
+    pmids_by_canonical: dict[str, set[str]] = {}
+    for row in rows:
+        canonical = resolve_method_canonical(str(row["name"]))
+        pmids_by_canonical.setdefault(canonical, set()).add(str(row["pmid"]))
+    return {name: len(pmids) for name, pmids in pmids_by_canonical.items()}
+
+
 def annotate_method_rows(
     rows: list[dict],
     *,
     name_key: str = "name",
     counts: dict[str, int] | None = None,
 ) -> list[dict]:
-    counts = counts if counts is not None else corpus_applies_method_counts()
+    from analysis.method_synonyms import resolve_method_canonical
+
+    counts = counts if counts is not None else corpus_applies_method_counts_canonical()
     for row in rows:
-        name = str(row.get(name_key) or "")
+        name = resolve_method_canonical(str(row.get(name_key) or ""))
+        row[name_key] = name
         n = int(counts.get(name, 0))
         row["corpus_paper_cnt"] = n
         row["method_maturity"] = classify_method_maturity(name, n)

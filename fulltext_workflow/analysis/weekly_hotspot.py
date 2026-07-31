@@ -13,10 +13,11 @@ from analysis.method_maturity import (
     annotate_method_rows,
     classify_method_maturity,
     context_novelty_bonus,
-    corpus_applies_method_counts,
+    corpus_applies_method_counts_canonical,
     maturity_penalty,
     nascent_bonus,
 )
+from analysis.method_synonyms import resolve_method_canonical
 from db.schema import (
     get_conn,
     get_weekly_hotspot_snapshots,
@@ -134,6 +135,90 @@ def _enrich_entity_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _compute_emerging_method_entities(
+    *,
+    recent_start: str,
+    prior_start: str,
+    prior_end: str,
+    min_recent: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Aggregate applied-Method edges by canonical, counting distinct PMIDs."""
+    eligible = _eligible_pub_predicate("p")
+    edge_rows = _q(
+        f"""
+        WITH recent_pmids AS (
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
+        ),
+        prior_pmids AS (
+            SELECT pmid FROM papers p
+            WHERE {eligible}
+              AND date(p.pub_date) >= date('now', ?)
+              AND date(p.pub_date) < date('now', ?)
+        )
+        SELECT e.name, r.source_pmid AS pmid,
+               r.source_pmid IN (SELECT pmid FROM recent_pmids) AS in_recent,
+               r.source_pmid IN (SELECT pmid FROM prior_pmids) AS in_prior,
+               COALESCE(p.citation_count, 0) AS cite,
+               1.0 * COALESCE(p.citation_count, 0)
+                   / MAX(2026 - COALESCE(p.year, ?), 1) AS cpy,
+               COALESCE(j.impact_factor, 0) AS impact_factor
+        FROM relations r
+        JOIN entities e ON r.object_id = e.id
+        JOIN papers p ON r.source_pmid = p.pmid
+        LEFT JOIN journals j ON p.journal_id = j.id
+        WHERE e.type = 'Method'
+          AND r.relation = 'APPLIES_METHOD'
+          AND COALESCE(r.status, 'active') = 'active'
+          AND (
+              r.source_pmid IN (SELECT pmid FROM recent_pmids)
+              OR r.source_pmid IN (SELECT pmid FROM prior_pmids)
+          )
+        """,
+        (recent_start, prior_start, prior_end, config.SEARCH_YEAR_END),
+    )
+    buckets: dict[str, dict[str, Any]] = {}
+    for edge in edge_rows:
+        canonical = resolve_method_canonical(str(edge["name"]))
+        bucket = buckets.setdefault(
+            canonical,
+            {"recent_pmids": set(), "prior_pmids": set(), "aliases": set(), "metrics": {}},
+        )
+        bucket["aliases"].add(str(edge["name"]))
+        pmid = str(edge["pmid"])
+        if edge["in_recent"]:
+            bucket["recent_pmids"].add(pmid)
+            bucket["metrics"][pmid] = (
+                float(edge["cite"] or 0),
+                float(edge["cpy"] or 0),
+                float(edge["impact_factor"] or 0),
+            )
+        if edge["in_prior"]:
+            bucket["prior_pmids"].add(pmid)
+
+    rows: list[dict[str, Any]] = []
+    for name, bucket in buckets.items():
+        recent_pmids = bucket["recent_pmids"]
+        if len(recent_pmids) < min_recent:
+            continue
+        metrics = list(bucket["metrics"].values())
+        aliases = sorted(bucket["aliases"])
+        rows.append({
+            "name": name,
+            "type": "Method",
+            "recent_cnt": len(recent_pmids),
+            "prior_cnt": len(bucket["prior_pmids"]),
+            "avg_cite": round(sum(m[0] for m in metrics) / len(metrics), 1),
+            "avg_cpy": round(sum(m[1] for m in metrics) / len(metrics), 2),
+            "avg_if": round(sum(m[2] for m in metrics) / len(metrics), 2),
+            "alias_count": len(aliases),
+            "aliases": ", ".join(aliases[:5]),
+        })
+    return _enrich_entity_rows(rows)[:limit]
+
+
 def compute_emerging_entities(
     entity_type: str,
     *,
@@ -148,6 +233,14 @@ def compute_emerging_entities(
     min_r = min_recent if min_recent is not None else config.HOTSPOT_MIN_RECENT_PAPERS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, prior_start, prior_end = _window_params(window, prior)
+    if entity_type == "Method":
+        return _compute_emerging_method_entities(
+            recent_start=recent_start,
+            prior_start=prior_start,
+            prior_end=prior_end,
+            min_recent=min_r,
+            limit=top_n,
+        )
     # Method heat should reflect techniques applied in papers, not RELATED_TO
     # co-mentions of umbrella terms (deep learning / pathomics / ...).
     relation_filter = (
@@ -215,20 +308,25 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
     eligible = _eligible_pub_predicate("p")
     rows = _q(
         f"""
-        SELECT DISTINCT p.pmid
+        SELECT DISTINCT p.pmid, e.name
         FROM papers p
         JOIN relations r ON r.source_pmid = p.pmid
         JOIN entities e ON r.object_id = e.id
-        WHERE e.name = ? AND e.type = ?
+        WHERE e.type = ?
           {relation_filter}
           AND {eligible}
           AND date(p.pub_date) >= date('now', ?)
         ORDER BY COALESCE(p.citation_count, 0) DESC, p.year DESC
-        LIMIT 3
         """,
-        (entity_name, entity_type, recent_start),
+        (entity_type, recent_start),
     )
-    return [str(r["pmid"]) for r in rows]
+    if entity_type == "Method":
+        return [
+            str(row["pmid"])
+            for row in rows
+            if resolve_method_canonical(str(row["name"])) == entity_name
+        ][:3]
+    return [str(r["pmid"]) for r in rows if str(r["name"]) == entity_name][:3]
 
 
 def compute_hot_combos(
@@ -298,7 +396,7 @@ def compute_hot_combos(
         else:
             phase = "stable"
         out.append({
-            "method": row["method"],
+            "method": resolve_method_canonical(str(row["method"])),
             "disease": row["disease"],
             "recent_cnt": recent,
             "prior_cnt": prior,
@@ -360,7 +458,7 @@ def compute_weekly_hotspots(
     tasks = compute_emerging_entities("Task", window_days=window, prior_days=prior)
     combos = compute_hot_combos(window_days=window, prior_days=prior)
     limitations = compute_emerging_limitations(window_days=window)
-    counts = corpus_applies_method_counts()
+    counts = corpus_applies_method_counts_canonical()
     annotate_method_rows(methods, counts=counts)
     active_methods = list(methods)
     emerging_methods = [
@@ -599,7 +697,7 @@ def compute_emerging_gap_opportunities(
         prior_days=prior_days,
     )
     method_stats = {
-        str(row["name"]): row
+        resolve_method_canonical(str(row["name"])): row
         for row in (data.get("active_methods") or data.get("emerging_methods", []))[:20]
     }
     method_counts: dict[str, int] | None = None
@@ -630,6 +728,8 @@ def compute_emerging_gap_opportunities(
             {"Method": set(), "Disease": set(), "Task": set()},
         )
         name = str(edge["name"])
+        if edge["type"] == "Method":
+            name = resolve_method_canonical(name)
         if edge["type"] == "Task":
             name = normalize_entity_name(name, "Task")
         bucket[str(edge["type"])].add(name)
@@ -709,7 +809,7 @@ def compute_emerging_gap_opportunities(
             maturity = stats.get("method_maturity")
             if not maturity or "corpus_paper_cnt" not in stats:
                 if method_counts is None:
-                    method_counts = corpus_applies_method_counts()
+                    method_counts = corpus_applies_method_counts_canonical()
                 maturity = classify_method_maturity(
                     method,
                     int(stats.get("corpus_paper_cnt") or method_counts.get(method, 0)),
