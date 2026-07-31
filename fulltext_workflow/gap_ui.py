@@ -1711,7 +1711,10 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "局限",
     ])
     with tab_m:
+        st.caption("新苗头；已过滤 established（成熟）方法。")
         safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
+        with st.expander("本周活跃（含成熟方法）", expanded=False):
+            safe_table(pd.DataFrame(payload.get("active_methods", [])))
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
@@ -1720,7 +1723,8 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         opps = payload.get("emerging_gap_opportunities", [])
         st.caption(
             "需合格 Task 桥（bridge_task / bridge_quality=ok）；"
-            "无桥接的文献覆盖空洞不计入，列表为空优于假阳性。"
+            "无桥接的文献覆盖空洞不计入；established 方法可出现但已降权，"
+            "列表为空优于假阳性。"
         )
         if opps:
             opp_cols = [
@@ -1735,6 +1739,9 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
                 "recent_hot_cnt",
                 "velocity",
                 "emerging_score",
+                "method_maturity",
+                "context_novelty_bonus",
+                "maturity_penalty",
                 "opportunity_score",
                 "binding_paper_cnt",
                 "public_dataset_cnt",

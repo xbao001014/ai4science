@@ -25,6 +25,9 @@ Rules:
 - Structure: (1) 本周概览 2-3 sentences (2) 升温方向 bullet list (3) 周环比变化 if any (4) 值得跟进的可迁移候选 top 3-5 (5) 一句风险提示.
 - emerging_gap_opportunities = task-bridged transfer candidates (bridge_task, bridge_mode); do NOT treat unbridged coverage holes as opportunities.
 - Mention exact numbers (recent_cnt, velocity, opportunity_score, bridge_task) from the data.
+- emerging_methods = 新苗头 only (non-established). Do NOT call established baselines (LLM, SVM, CNN, deep learning, etc.) 新兴热点.
+- If mentioning mature methods, only describe them as 情境迁移 / 成熟方法交叉, and only when they appear in emerging_gap_opportunities with method_maturity=established.
+- Prefer nascent/emerging methods in 升温方向.
 - No emoji. Professional tone. ~400-600 Chinese characters total.
 """
 
