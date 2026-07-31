@@ -25,6 +25,11 @@ def test_resolve_parenthetical_svm():
     assert resolve_method_canonical("support vector machine (svm)") == "support vector machine"
 
 
+def test_parenthetical_only_collapses_matching_concepts():
+    assert resolve_method_canonical("unet++ (resnet-50)") == "unet++ (resnet-50)"
+    assert resolve_method_canonical("clam (resnet)") == "clam (resnet)"
+
+
 def test_curated_synonym_maps(monkeypatch):
     import analysis.method_synonyms as ms
 
@@ -60,6 +65,23 @@ def test_near_duplicate_candidates_suggest_but_do_not_resolve():
     assert any("drugreflector" in a and "drugreflector" in b for a, b in pairs)
     # unresolved until curated
     assert resolve_method_canonical("drugreflector framework") == "drugreflector framework"
+
+
+def test_near_duplicate_candidates_prefer_frequent_canonical_and_skip_established():
+    candidates = near_duplicate_method_candidates(
+        [
+            "alpha beta",
+            "alpha beta framework",
+            "resnet",
+            "resnet framework",
+        ],
+        min_shared_tokens=1,
+        paper_counts={"alpha beta": 2, "alpha beta framework": 9},
+    )
+
+    assert {
+        (row["alias"], row["suggested_canonical"]) for row in candidates
+    } == {("alpha beta", "alpha beta framework")}
 
 
 def test_run_method_cluster_audit_formats_ranked_candidates(monkeypatch):

@@ -1,3 +1,28 @@
+# Final Review Fix Report
+
+## Fixed findings
+
+- Canonical method×disease hotspot combinations now aggregate distinct recent and
+  prior PMID sets before scoring and persistence.  Alias rows therefore produce
+  one stable snapshot key.
+- Parenthetical method names now collapse only when the inner term is the
+  head's acronym or an explicit curated synonym.  Unrelated architecture/base
+  model names such as `unet++ (resnet-50)` remain unchanged.
+- The method-cluster audit precomputes normalized data, skeletons, tokens, and
+  resolved names, then compares only names sharing a skeleton token.  It ranks
+  the suggested canonical by paper frequency before length, and excludes
+  established/generic umbrella targets.
+- Non-Method top-PMID lookup retains a SQL name predicate, and empty method
+  metric buckets cannot divide by zero.
+
+## Verification
+
+- Required pytest command: 20 passed in 5.14s.
+- Timed real-data smoke used a read-only SQLite backup of
+  `fulltext_workflow/data/kg_fulltext.db`; the source database was not opened
+  for writes.  The audit processed 6,670 Method entities and returned 50
+  candidates in 6.021s.
+
 # Final Whole-Branch Review Fixes
 
 ## Fix notes

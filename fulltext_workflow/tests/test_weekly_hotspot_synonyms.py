@@ -13,8 +13,10 @@ if str(_ROOT) not in sys.path:
 import config  # noqa: E402
 from analysis.weekly_hotspot import (  # noqa: E402
     _top_pmids_for_entity,
+    compute_hot_combos,
     compute_emerging_gap_opportunities,
     compute_weekly_hotspots,
+    persist_hotspot_snapshot,
 )
 from db.schema import get_conn, init_db, insert_relation, upsert_entity, upsert_paper  # noqa: E402
 
@@ -71,6 +73,33 @@ def test_two_aliases_merge_to_pass_min_recent(monkeypatch):
     assert emerging["niche-tool"]["corpus_paper_cnt"] == 2
     assert emerging["niche-tool"]["alias_count"] == 2
     assert emerging["niche-tool"]["aliases"] == "niche-tool, niche-tool-v2"
+
+
+def test_hot_combos_merge_method_aliases_before_snapshot_persist(monkeypatch):
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "HOTSPOT_MIN_RECENT_PAPERS", 1)
+    import analysis.method_synonyms as ms
+
+    monkeypatch.setitem(ms._METHOD_SYNONYMS, "niche-tool-v2", "niche-tool")
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "niche-tool", "Method")
+    _edge("1", p1, "TARGETS_DISEASE", "disease-a", "Disease")
+    p2 = _paper("2", 3)
+    _edge("2", p2, "APPLIES_METHOD", "niche-tool-v2", "Method")
+    _edge("2", p2, "TARGETS_DISEASE", "disease-a", "Disease")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+
+    assert compute_hot_combos(window_days=14, prior_days=14) == [{
+        "method": "niche-tool",
+        "disease": "disease-a",
+        "recent_cnt": 2,
+        "prior_cnt": 0,
+        "velocity": 2.0,
+        "gap_phase": "nascent",
+        "emerging_score": 1.039,
+    }]
+    assert persist_hotspot_snapshot(payload) > 0
 
 
 def _set_citation_count(pmid: str, citation_count: int) -> None:

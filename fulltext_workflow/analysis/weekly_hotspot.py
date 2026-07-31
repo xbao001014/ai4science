@@ -204,6 +204,8 @@ def _compute_emerging_method_entities(
         if len(recent_pmids) < min_recent:
             continue
         metrics = list(bucket["metrics"].values())
+        if not metrics:
+            continue
         aliases = sorted(bucket["aliases"])
         rows.append({
             "name": name,
@@ -305,6 +307,7 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
     relation_filter = (
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )
+    name_filter = "" if entity_type == "Method" else "AND e.name = ?"
     eligible = _eligible_pub_predicate("p")
     rows = _q(
         f"""
@@ -314,11 +317,16 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
         JOIN entities e ON r.object_id = e.id
         WHERE e.type = ?
           {relation_filter}
+          {name_filter}
           AND {eligible}
           AND date(p.pub_date) >= date('now', ?)
         ORDER BY COALESCE(p.citation_count, 0) DESC, p.year DESC
         """,
-        (entity_type, recent_start),
+        (
+            (entity_type, recent_start)
+            if entity_type == "Method"
+            else (entity_type, entity_name, recent_start)
+        ),
     )
     if entity_type == "Method":
         seen: set[str] = set()
@@ -362,37 +370,38 @@ def compute_hot_combos(
             WHERE {eligible}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
-        ),
-        combo AS (
-            SELECT em.name AS method,
-                   ed.name AS disease,
-                   COUNT(DISTINCT CASE
-                       WHEN p.pmid IN (SELECT pmid FROM recent_pmids)
-                       THEN p.pmid END) AS recent_cnt,
-                   COUNT(DISTINCT CASE
-                       WHEN p.pmid IN (SELECT pmid FROM prior_pmids)
-                       THEN p.pmid END) AS prior_cnt
-            FROM papers p
-            JOIN relations rm ON rm.source_pmid = p.pmid
-                AND rm.relation = 'APPLIES_METHOD'
-            JOIN entities em ON rm.object_id = em.id AND em.type = 'Method'
-            JOIN relations rd ON rd.source_pmid = p.pmid
-                AND rd.relation = 'TARGETS_DISEASE'
-            JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
-            GROUP BY em.id, ed.id
         )
-        SELECT method, disease, recent_cnt, prior_cnt
-        FROM combo
-        WHERE recent_cnt >= 1
-        ORDER BY recent_cnt DESC, prior_cnt ASC
+        SELECT em.name AS method,
+               ed.name AS disease,
+               p.pmid,
+               p.pmid IN (SELECT pmid FROM recent_pmids) AS in_recent,
+               p.pmid IN (SELECT pmid FROM prior_pmids) AS in_prior
+        FROM papers p
+        JOIN relations rm ON rm.source_pmid = p.pmid
+            AND rm.relation = 'APPLIES_METHOD'
+        JOIN entities em ON rm.object_id = em.id AND em.type = 'Method'
+        JOIN relations rd ON rd.source_pmid = p.pmid
+            AND rd.relation = 'TARGETS_DISEASE'
+        JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
+        WHERE p.pmid IN (SELECT pmid FROM recent_pmids)
+           OR p.pmid IN (SELECT pmid FROM prior_pmids)
         """,
         (recent_start, prior_start, prior_end),
     )
 
+    buckets: dict[tuple[str, str], dict[str, set[str]]] = {}
+    for row in rows:
+        key = (resolve_method_canonical(str(row["method"])), str(row["disease"]))
+        bucket = buckets.setdefault(key, {"recent_pmids": set(), "prior_pmids": set()})
+        if row["in_recent"]:
+            bucket["recent_pmids"].add(str(row["pmid"]))
+        if row["in_prior"]:
+            bucket["prior_pmids"].add(str(row["pmid"]))
+
     out: list[dict[str, Any]] = []
-    for row in rows[: top_n * 2]:
-        recent = int(row["recent_cnt"] or 0)
-        prior = int(row["prior_cnt"] or 0)
+    for (method, disease), bucket in buckets.items():
+        recent = len(bucket["recent_pmids"])
+        prior = len(bucket["prior_pmids"])
         if recent <= 0:
             continue
         if prior == 0 and recent <= 2:
@@ -404,15 +413,21 @@ def compute_hot_combos(
         else:
             phase = "stable"
         out.append({
-            "method": resolve_method_canonical(str(row["method"])),
-            "disease": row["disease"],
+            "method": method,
+            "disease": disease,
             "recent_cnt": recent,
             "prior_cnt": prior,
             "velocity": round((recent - prior) / max(prior, 1), 2),
             "gap_phase": phase,
             "emerging_score": emerging_score(recent, prior, 0, 0, 0),
         })
-    out.sort(key=lambda r: r["emerging_score"], reverse=True)
+    out.sort(
+        key=lambda r: (
+            -float(r["emerging_score"]),
+            str(r["method"]),
+            str(r["disease"]),
+        )
+    )
     return out[:top_n]
 
 
