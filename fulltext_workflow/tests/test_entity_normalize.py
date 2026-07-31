@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 
 from extractor.entity_normalize import (  # noqa: E402
     has_more_specific_disease,
+    is_foundation_llm_product,
     is_generic_disease,
     is_generic_method,
     is_generic_task,
@@ -19,6 +20,7 @@ from extractor.entity_normalize import (  # noqa: E402
     is_radiology_method,
     is_radiology_modality,
     is_reject_task,
+    is_umbrella_ai_method,
     normalize_entity_name,
     postprocess_triples,
     repair_triple_relation,
@@ -122,10 +124,78 @@ def test_is_radiology_method():
     )
     assert is_radiology_method("radiomics")
     assert is_radiology_method("imaging")
+    assert is_radiology_method("t1 sagittal model")
+    assert is_radiology_method("t1 axial model")
+    assert is_radiology_method("t2-weighted mri model")
     assert not is_radiology_method("hover-net")
     assert not is_radiology_method("clam")
     assert not is_radiology_method("dual-attention mil")
     assert not is_radiology_method("resnet-50")
+    assert not is_radiology_method("densenet121")
+    assert not is_radiology_method("axial attention mil")
+
+
+def test_is_foundation_llm_product():
+    assert is_foundation_llm_product("gpt-5")
+    assert is_foundation_llm_product("GPT-4o")
+    assert is_foundation_llm_product("chatgpt-4o")
+    assert is_foundation_llm_product("ChatGPT")
+    assert is_foundation_llm_product("claude 3.5 sonnet")
+    assert is_foundation_llm_product("gemini 2.5 pro")
+    assert is_foundation_llm_product("llama 3.1 70b")
+    assert is_foundation_llm_product("deepseek-r1")
+    assert is_foundation_llm_product("qwen2:72b")
+    assert is_foundation_llm_product("openai-o1")
+    assert is_foundation_llm_product("microsoft copilot")
+    assert is_foundation_llm_product("grok 3")
+    assert is_foundation_llm_product("mistral 7b")
+    assert is_low_value_method("gpt-5")
+    assert is_low_value_method("copilot")
+    # Domain models that merely contain "gpt" / "llama" as a suffix/stem stay.
+    assert not is_foundation_llm_product("histogpt")
+    assert not is_foundation_llm_product("seggpt")
+    assert not is_foundation_llm_product("cellama")
+    assert not is_low_value_method("histogpt")
+    assert not is_low_value_method("hover-net")
+
+
+def test_is_umbrella_ai_method():
+    assert is_umbrella_ai_method("deep learning model")
+    assert is_umbrella_ai_method("Deep Learning Models")
+    assert is_umbrella_ai_method("machine learning models")
+    assert is_umbrella_ai_method("ai model")
+    assert is_umbrella_ai_method("deep learning-based model")
+    assert is_umbrella_ai_method("artificial neural network")
+    assert is_umbrella_ai_method("deep neural network")
+    assert is_umbrella_ai_method("multimodal machine learning model")
+    assert is_low_value_method("deep learning model")
+    assert not is_umbrella_ai_method("hover-net")
+    assert not is_umbrella_ai_method("attention-based multiple instance learning")
+    assert not is_umbrella_ai_method("resnet-50")
+    assert not is_low_value_method("clam")
+
+
+def test_postprocess_drops_umbrella_ai_methods():
+    triples = [
+        _method_triple("deep learning model"),
+        _method_triple("ai model"),
+        _method_triple("clam"),
+    ]
+    out = postprocess_triples(triples, "methods")
+    names = [t.object.name for t in out if t.relation == "APPLIES_METHOD"]
+    assert names == ["clam"]
+
+
+def test_postprocess_drops_foundation_llm_products():
+    triples = [
+        _method_triple("gpt-5"),
+        _method_triple("chatgpt-4o"),
+        _method_triple("mistral 7b"),
+        _method_triple("clam"),
+    ]
+    out = postprocess_triples(triples, "methods")
+    names = [t.object.name for t in out if t.relation == "APPLIES_METHOD"]
+    assert names == ["clam"]
 
 
 def test_is_low_value_includes_radiology_methods():

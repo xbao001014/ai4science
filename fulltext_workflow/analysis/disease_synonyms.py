@@ -116,9 +116,12 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         canonical="colorectal adenocarcinoma",
         phrases=[
             "colorectal adenocarcinoma", "colorectal cancer", "colon cancer",
-            "rectal cancer", "crc", "bowel cancer",
+            "rectal cancer", "bowel cancer",
         ],
         sites=["colorectal", "colon", "rectal", "colonic", "bowel"],
+        # Short token: abbreviations path (word/paren bounded), not bare LIKE %crc%
+        # which false-positives on ccrcc.
+        abbreviations=["crc"],
         zh=["结直肠腺癌", "结直肠癌", "结肠癌", "直肠癌", "结直肠", "肠癌"],
         feasibility_keyword_zh="肠癌",
         mock_disease_id="CRC-ADC",
@@ -436,19 +439,18 @@ def concept_match_sql_clause(column: str, concept: DiseaseConcept) -> str:
 
     for abbr in concept.abbreviations:
         safe = _escape_sql_like(abbr)
-        site_part = _like_or(column, list(concept.sites)) if concept.sites else ""
-        hist = HISTOLOGY_CLASSES.get(concept.histology_class, [])
-        hist_part = _like_or(column, hist) if hist else ""
-        if site_part and hist_part:
-            clauses.append(
-                f"(LOWER({column}) LIKE LOWER('% {safe} %') AND ({site_part} OR {hist_part}))"
-            )
-            clauses.append(
-                f"(LOWER({column}) LIKE LOWER('{safe} %') AND ({site_part} OR {hist_part}))"
-            )
-            clauses.append(
-                f"(LOWER({column}) LIKE LOWER('% {safe}') AND ({site_part} OR {hist_part}))"
-            )
+        # Word / paren bounded — never bare %abbr% (crc must not match ccrcc).
+        abbr_forms = [
+            f"LOWER({column}) = LOWER('{safe}')",
+            f"LOWER({column}) LIKE LOWER('{safe} %')",
+            f"LOWER({column}) LIKE LOWER('% {safe}')",
+            f"LOWER({column}) LIKE LOWER('% {safe} %')",
+            f"LOWER({column}) LIKE LOWER('%({safe})%')",
+            f"LOWER({column}) LIKE LOWER('%({safe}/%')",
+            f"LOWER({column}) LIKE LOWER('%/{safe})%')",
+            f"LOWER({column}) LIKE LOWER('%/{safe}/%')",
+        ]
+        clauses.append("(" + " OR ".join(abbr_forms) + ")")
 
     return " OR ".join(clauses)
 

@@ -16,10 +16,10 @@ def test_normalize_tab_label_slugifies_labels():
 
 
 def test_build_tab_sync_script_embeds_requested_tab_and_labels():
-    labels = ["辩论过程", "数据可行性（方信 LIS）", "研究提案"]
+    labels = ["辩论过程", "数据可行性（方信）", "研究提案"]
     slug_by_label = {
         "辩论过程": "debate-process",
-        "数据可行性（方信 LIS）": "data-feasibility-fangxin-lis",
+        "数据可行性（方信）": "data-feasibility-fangxin-lis",
         "研究提案": "research-proposal",
     }
     script = build_tab_sync_script(
@@ -28,7 +28,7 @@ def test_build_tab_sync_script_embeds_requested_tab_and_labels():
         slug_by_label=slug_by_label,
     )
     assert "data-feasibility-fangxin-lis" in script
-    assert "数据可行性（方信 LIS）" in script
+    assert "数据可行性（方信）" in script
     assert "研究提案" in script
     assert "slugByLabel" in script
 

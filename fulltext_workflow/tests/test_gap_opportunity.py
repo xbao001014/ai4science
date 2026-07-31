@@ -218,8 +218,35 @@ def test_primary_viz_gaps_empty_focus_and_no_combo_fallback(monkeypatch):
         "focus": "nasopharyngeal carcinoma",
         "limit": 37,
         "window_days": 21,
+        "min_recent": None,
     }
     assert called["combo"] == 0
+
+
+def test_primary_viz_gaps_forwards_min_recent(monkeypatch):
+    called = {}
+
+    def fake_transfer(**kwargs):
+        called.update(kwargs)
+        return [{"method": "m", "disease": "d"}]
+
+    monkeypatch.setattr(
+        "analysis.weekly_hotspot.compute_emerging_gap_opportunities",
+        fake_transfer,
+    )
+    out = primary_viz_gaps(
+        "肠癌",
+        limit=12,
+        window_days=60,
+        min_recent=1,
+    )
+    assert out == [{"method": "m", "disease": "d"}]
+    assert called == {
+        "focus": "肠癌",
+        "limit": 12,
+        "window_days": 60,
+        "min_recent": 1,
+    }
 
 
 def test_primary_viz_gaps_uses_injected_list():

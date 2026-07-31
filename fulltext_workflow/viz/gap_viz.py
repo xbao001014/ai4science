@@ -110,7 +110,7 @@ def build_debate_funnel_figure(stats: dict[str, int]) -> Any:
         ("机会侦察", stats.get("scout_candidates", 0), "#2ca02c"),
         ("已核实", stats.get("verified", 0), "#1f77b4"),
         ("弱证据", stats.get("weak_evidence", 0), "#ff7f0e"),
-        ("伪空白", stats.get("false_gaps", 0), "#d62728"),
+        ("已排除假空白", stats.get("false_gaps", 0), "#d62728"),
         ("最终报告", stats.get("final_gaps", 0), "#9467bd"),
     ]
     labels = [s[0] for s in stages]

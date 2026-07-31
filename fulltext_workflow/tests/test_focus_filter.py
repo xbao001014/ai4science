@@ -55,7 +55,9 @@ def _seed_npc_fixture() -> None:
     )
     insert_relation(
         "Paper", paper, "REPORTS_LIMITATION", "Limitation", lim_id,
-        source_pmid="91000001", evidence_section="limitations", polarity="asserted",
+        source_pmid="91000001", evidence_section="limitations",
+        evidence_quote="limited cohort size",
+        polarity="asserted",
     )
 
 
@@ -72,6 +74,20 @@ def test_limitation_temporal_uses_disease_focus_not_limitation_name():
     assert any(r["limitation_name"] == "small sample size" for r in rows)
 
 
+def test_limitation_temporal_profile_attaches_provenance_pmid():
+    from analysis.gap_tools import tool_limitation_temporal_profile
+
+    _setup()
+    _seed_npc_fixture()
+    out = tool_limitation_temporal_profile(focus="nasopharyngeal carcinoma")
+    hit = next(
+        r for r in out["data"] if r.get("limitation_name") == "small sample size"
+    )
+    assert hit.get("source_pmid") == "91000001"
+    assert "91000001" in str(hit.get("sample_pmids") or "")
+    assert hit.get("evidence_quote") == "limited cohort size"
+
+
 def test_author_stated_gaps_uses_paper_focus_not_limitation_name():
     from analysis.gap_tools import tool_author_stated_gaps
 
@@ -80,6 +96,10 @@ def test_author_stated_gaps_uses_paper_focus_not_limitation_name():
     out = tool_author_stated_gaps(focus="nasopharyngeal carcinoma")
     names = [r["limitation"] for r in out["data"]]
     assert "small sample size" in names
+    hit = next(r for r in out["data"] if r["limitation"] == "small sample size")
+    assert "91000001" in str(hit.get("sample_pmids") or "")
+    assert hit.get("source_pmid") == "91000001"
+    assert hit.get("evidence_quote") == "limited cohort size"
     # Chinese focus alias must also hit papers, not require 鼻咽 in limitation text
     zh = tool_author_stated_gaps(focus="鼻咽癌")
     assert any(r["limitation"] == "small sample size" for r in zh["data"])
@@ -196,6 +216,33 @@ def test_corpus_coverage_zh_polyp_matches_english_baseline():
     assert zh == en
 
 
+def test_crc_abbr_does_not_match_ccrcc_substring():
+    """Short abbr 'crc' must not LIKE-match 'ccrcc' (renal)."""
+    from analysis.disease_synonyms import concept_match_sql_clause, resolve_disease_concept
+    from db.schema import get_conn
+
+    _setup()
+    upsert_entity("colorectal cancer", "Disease")
+    upsert_entity("colorectal cancer (crc)", "Disease")
+    upsert_entity("mss crc", "Disease")
+    upsert_entity("clear cell renal cell carcinoma (ccrcc)", "Disease")
+
+    concept = resolve_disease_concept("肠癌")
+    assert concept is not None
+    clause = " AND (" + concept_match_sql_clause("e.name", concept) + ")"
+    with get_conn() as conn:
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM entities e WHERE e.type = 'Disease'" + clause
+            ).fetchall()
+        }
+    assert "colorectal cancer" in names
+    assert "colorectal cancer (crc)" in names
+    assert "mss crc" in names
+    assert "clear cell renal cell carcinoma (ccrcc)" not in names
+
+
 if __name__ == "__main__":
     test_normalize_focus_treats_all_as_none()
     test_limitation_temporal_uses_disease_focus_not_limitation_name()
@@ -207,4 +254,5 @@ if __name__ == "__main__":
     test_focus_sql_zh_polyp_expands_english()
     test_corpus_coverage_zh_polyp_nonzero_on_fixture()
     test_corpus_coverage_zh_polyp_matches_english_baseline()
+    test_crc_abbr_does_not_match_ccrcc_substring()
     print("all ok")

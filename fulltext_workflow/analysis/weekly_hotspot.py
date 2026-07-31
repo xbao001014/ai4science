@@ -25,6 +25,7 @@ from db.schema import (
     replace_weekly_hotspot_snapshots,
     upsert_weekly_hotspot_run,
 )
+from extractor.entity_normalize import is_low_value_method
 
 # Main boards require at least month-level PubMed dates (折中).
 _ELIGIBLE_PRECISION = ("day", "month")
@@ -181,12 +182,17 @@ def _compute_emerging_method_entities(
     )
     buckets: dict[str, dict[str, Any]] = {}
     for edge in edge_rows:
-        canonical = resolve_method_canonical(str(edge["name"]))
+        raw_name = str(edge["name"])
+        if is_low_value_method(raw_name):
+            continue
+        canonical = resolve_method_canonical(raw_name)
+        if is_low_value_method(canonical):
+            continue
         bucket = buckets.setdefault(
             canonical,
             {"recent_pmids": set(), "prior_pmids": set(), "aliases": set(), "metrics": {}},
         )
-        bucket["aliases"].add(str(edge["name"]))
+        bucket["aliases"].add(raw_name)
         pmid = str(edge["pmid"])
         if edge["in_recent"]:
             bucket["recent_pmids"].add(pmid)
@@ -481,7 +487,13 @@ def compute_hot_combo_boards(
 
     buckets: dict[tuple[str, str], dict[str, set[str]]] = {}
     for row in rows:
-        key = (resolve_method_canonical(str(row["method"])), str(row["disease"]))
+        raw_method = str(row["method"])
+        if is_low_value_method(raw_method):
+            continue
+        method = resolve_method_canonical(raw_method)
+        if is_low_value_method(method):
+            continue
+        key = (method, str(row["disease"]))
         bucket = buckets.setdefault(key, {"recent_pmids": set(), "prior_pmids": set()})
         if row["in_recent"]:
             bucket["recent_pmids"].add(str(row["pmid"]))
@@ -835,6 +847,7 @@ def compute_emerging_gap_opportunities(
     *,
     window_days: int | None = None,
     prior_days: int | None = None,
+    min_recent: int | None = None,
     limit: int | None = None,
     payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -848,6 +861,7 @@ def compute_emerging_gap_opportunities(
     data = payload or compute_weekly_hotspots(
         window_days=window_days,
         prior_days=prior_days,
+        min_recent=min_recent,
     )
     # Prefer 新苗头 board; never use established methods (LLM/SVM/…) as transfer heat.
     heat_rows = data.get("emerging_methods") or []
@@ -891,7 +905,11 @@ def compute_emerging_gap_opportunities(
         )
         name = str(edge["name"])
         if edge["type"] == "Method":
+            if is_low_value_method(name):
+                continue
             name = resolve_method_canonical(name)
+            if is_low_value_method(name):
+                continue
         if edge["type"] == "Task":
             name = normalize_entity_name(name, "Task")
         bucket[str(edge["type"])].add(name)
@@ -923,11 +941,15 @@ def compute_emerging_gap_opportunities(
                 task_pmids.setdefault(task, set()).add(pmid)
 
     if normalize_focus(focus):
+        # Focus filters targets to focus-matched diseases only (not a union with
+        # the full heating board, which floods non-focus diseases into viz).
         focus_diseases = _q(
             "SELECT name FROM entities e WHERE e.type = 'Disease'"
             + focus_sql_clause("e.name", focus)
         )
-        hot_diseases.update(str(row["name"]) for row in focus_diseases)
+        hot_diseases = {str(row["name"]) for row in focus_diseases}
+        if not hot_diseases:
+            return []
 
     rows: list[dict[str, Any]] = []
     for method in hot_methods:
@@ -1030,13 +1052,15 @@ def compute_emerging_gap_opportunities(
 
 
 def tool_emerging_gap_opportunities(focus: str | None = None) -> dict[str, Any]:
-    rows = compute_emerging_gap_opportunities(focus=focus)
+    window = int(config.HOTSPOT_TRANSFER_WINDOW_DAYS)
+    rows = compute_emerging_gap_opportunities(focus=focus, window_days=window)
     desc = (
         "Sparse method×disease transfer candidates from non-established (新苗头) methods "
         "requiring an ok Task bridge "
         "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
         "+ context novelty + nascent bonus − maturity penalty "
-        "+ optional binding actionability bump; established methods like LLM/SVM excluded)"
+        "+ optional binding actionability bump; established methods like LLM/SVM excluded; "
+        f"window_days={window})"
     )
     if focus:
         desc += f" (focus: {focus})"

@@ -30,6 +30,76 @@ def _focus_clause(column: str, focus: str | None) -> str:
     return focus_sql_clause(column, focus)
 
 
+def _attach_limitation_provenance(
+    rows: list[dict],
+    *,
+    pmid_fc: str,
+    prefer_relation: str | None = "REPORTS_LIMITATION",
+) -> list[dict]:
+    """Add sample_pmids + one representative source_pmid/quote for UI provenance."""
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        pmids = [
+            p.strip()
+            for p in str(item.get("sample_pmids") or "").split(",")
+            if p.strip()
+        ]
+        item["sample_pmids"] = ",".join(pmids[:5])
+        lim = str(item.get("limitation") or "").strip()
+        if lim:
+            rel_filter = (
+                "AND r.relation = ?"
+                if prefer_relation
+                else "AND (r.relation = 'REPORTS_LIMITATION' OR e.type = 'Limitation')"
+            )
+            params: tuple[Any, ...] = (
+                (lim, prefer_relation) if prefer_relation else (lim,)
+            )
+            rep = _q(
+                f"""
+                SELECT r.source_pmid, r.evidence_section, r.evidence_quote
+                FROM relations r
+                JOIN entities e ON r.object_id = e.id
+                WHERE e.name = ?
+                  AND COALESCE(r.status, 'active') = 'active'
+                  {rel_filter}
+                  {pmid_fc}
+                ORDER BY CASE WHEN r.evidence_quote IS NOT NULL
+                               AND TRIM(r.evidence_quote) != '' THEN 0 ELSE 1 END,
+                         r.id
+                LIMIT 1
+                """,
+                params,
+            )
+            if rep:
+                item["source_pmid"] = rep[0].get("source_pmid") or ""
+                item["evidence_section"] = rep[0].get("evidence_section") or ""
+                item["evidence_quote"] = rep[0].get("evidence_quote") or ""
+                if not pmids and item["source_pmid"]:
+                    samples = _q(
+                        f"""
+                        SELECT GROUP_CONCAT(DISTINCT r.source_pmid) AS sample_pmids
+                        FROM relations r
+                        JOIN entities e ON r.object_id = e.id
+                        WHERE e.name = ?
+                          AND COALESCE(r.status, 'active') = 'active'
+                          {rel_filter}
+                          {pmid_fc}
+                        """,
+                        params,
+                    )
+                    raw = str((samples[0] if samples else {}).get("sample_pmids") or "")
+                    pmids = [p.strip() for p in raw.split(",") if p.strip()]
+                    item["sample_pmids"] = ",".join(pmids[:5])
+            elif pmids:
+                item["source_pmid"] = pmids[0]
+        elif pmids:
+            item["source_pmid"] = pmids[0]
+        out.append(item)
+    return out
+
+
 def tool_author_stated_gaps(focus: str | None = None) -> dict:
     # Focus must filter papers (PMID), not limitation entity names — names are
     # usually generic ("small sample size"), never the disease string.
@@ -38,7 +108,8 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
         SELECT e.name AS limitation,
                COUNT(DISTINCT r.source_pmid) AS paper_cnt,
                GROUP_CONCAT(DISTINCT r.evidence_section) AS sections,
-               GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes
+               GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes,
+               GROUP_CONCAT(DISTINCT r.source_pmid) AS sample_pmids
         FROM relations r
         JOIN entities e ON r.object_id = e.id
         WHERE r.relation = 'REPORTS_LIMITATION'
@@ -48,12 +119,15 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
         ORDER BY paper_cnt DESC
         LIMIT {config.TOOL_TOP_N}
     """)
-    if not rows:
+    if rows:
+        rows = _attach_limitation_provenance(rows, pmid_fc=pmid_fc)
+    else:
         rows = _q(f"""
             SELECT e.name AS limitation,
                    COUNT(DISTINCT r.source_pmid) AS paper_cnt,
                    GROUP_CONCAT(DISTINCT r.evidence_section) AS sections,
-                   GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes
+                   GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes,
+                   GROUP_CONCAT(DISTINCT r.source_pmid) AS sample_pmids
             FROM relations r
             JOIN entities e ON r.object_id = e.id
             WHERE e.type='Limitation'
@@ -63,6 +137,9 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
             ORDER BY paper_cnt DESC
             LIMIT {config.TOOL_TOP_N}
         """)
+        rows = _attach_limitation_provenance(
+            rows, pmid_fc=pmid_fc, prefer_relation=None
+        )
     desc = "Author-stated research limitations/gaps from full-text extraction"
     if focus:
         desc += f" (focus: {focus})"
@@ -388,6 +465,15 @@ def tool_limitation_temporal_profile(focus: str | None = None) -> dict:
         rows = cached if cached else compute_limitation_temporal_profiles(focus=None)[
             : config.TOOL_TOP_N
         ]
+    # Cached table rows use limitation_name only; provenance attach needs limitation.
+    normalized = []
+    for row in rows:
+        item = dict(row)
+        if not item.get("limitation"):
+            item["limitation"] = item.get("limitation_name") or ""
+        normalized.append(item)
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", f)
+    rows = _attach_limitation_provenance(normalized, pmid_fc=pmid_fc)
     desc = (
         "Limitation temporal profile: first/last year, proposal_age "
         "(as_of_year - first_year), recent_ratio, temporal_status "
@@ -416,6 +502,14 @@ def tool_limitation_gap_status(focus: str | None = None) -> dict:
     from analysis.gap_lifecycle import compute_limitation_gap_status
 
     rows = compute_limitation_gap_status(focus=focus)
+    normalized = []
+    for row in rows:
+        item = dict(row)
+        if not item.get("limitation"):
+            item["limitation"] = item.get("limitation_name") or ""
+        normalized.append(item)
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", normalize_focus(focus))
+    rows = _attach_limitation_provenance(normalized, pmid_fc=pmid_fc)
     desc = (
         "Limitation temporal profile plus heuristic resolution_signal "
         "(none/weak/moderate follow-up research on shared disease/task/method)"
@@ -1068,7 +1162,8 @@ TOOL_SCHEMAS: list[dict] = [
                 "requiring an ok Task bridge "
                 "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
                 "+ context novelty + nascent bonus − maturity penalty "
-                "+ optional binding actionability bump; established LLM/SVM etc. excluded)"
+                "+ optional binding actionability bump; established LLM/SVM etc. excluded; "
+                "uses HOTSPOT_TRANSFER_WINDOW_DAYS, default max(60, weekly window))"
             ),
             "parameters": {
                 "type": "object",

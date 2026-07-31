@@ -129,6 +129,32 @@ from utils.proposal_difficulty_ui import (  # noqa: E402
 )
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
+from utils.journey_guide import (  # noqa: E402
+    POST_DEBATE_TAB_SLUG,
+    format_journey_line,
+    journey_action_buttons,
+    journey_status,
+    next_step_hint,
+)
+from utils.gap_ui_prefs import (  # noqa: E402
+    EMPTY_VIZ_SUGGESTED_WINDOW_DAYS,
+    SHARED_MIN_RECENT_KEY,
+    SHARED_WINDOW_DAYS_KEY,
+    debate_focus_or_error,
+    focus_dependency_caption,
+    seed_shared_window_state,
+    should_offer_wider_window,
+    wider_window_value,
+)
+from utils.gap_ui_handoff import (  # noqa: E402
+    DATA_FEAS_VIEW_KEY,
+    DATA_FEAS_VIEWS,
+    DATA_VIEW_GAP_CHECK,
+    DATA_VIEW_V01,
+    apply_opportunity_proposal_handoff,
+    apply_opportunity_v01_handoff,
+    debate_summary_metrics,
+)
 from viz.gap_opportunity import assemble_opportunity_view, primary_viz_gaps  # noqa: E402
 from viz.evidence_viewer import (  # noqa: E402
     ViewerLoadError,
@@ -180,7 +206,7 @@ TOOL_META: dict[str, dict] = {
     "attribute_distribution": {"label": "V1.1 属性分布", "category": "数据可行性"},
     "molecular_positivity": {"label": "V1.1 分子阳性率", "category": "数据可行性"},
     "text_disease_matches": {"label": "V1.1 文本匹配", "category": "数据可行性"},
-    "emerging_gap_opportunities": {"label": "可迁移候选", "category": "每周热点"},
+    "emerging_gap_opportunities": {"label": "跨病种可借鉴方向", "category": "每周热点"},
 }
 
 CATEGORY_COLOR = {
@@ -222,7 +248,7 @@ FEAS_API_META: dict[str, dict] = {
     },
     "D-02": {
         "name": "任务类型（由 LIS 数据推断）",
-        "endpoint": "(client-side · 疾病分布图谱缓存)",
+        "endpoint": "(client-side · 病种数据缓存)",
     },
     "cohort": {
         "name": "患者 / 标本 / 切片计数",
@@ -274,7 +300,7 @@ MAIN_TAB_ENTRIES: list[tuple[str, str]] = [
     ("visualization", "可视化"),
     ("evidence-literature", "证据与文献"),
     ("gap-report", "研究空白报告"),
-    ("data-feasibility-fangxin-lis", "数据可行性（方信 LIS）"),
+    ("data-feasibility-fangxin-lis", "数据可行性（方信）"),
     ("research-proposal", "研究提案"),
 ]
 MAIN_TAB_LABELS = [label for _, label in MAIN_TAB_ENTRIES]
@@ -481,7 +507,7 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
     """Streamlit tab: Fangxin LIS API / pathology_data_api_spec interfaces."""
     st.subheader("方信病理数据 API（schema V1.1）")
     st.caption(
-        f"通过 `{config.PATHOLOGY_API_BASE_URL}` 访问方信 LIS。 "
+        f"通过 `{config.PATHOLOGY_API_BASE_URL}` 访问方信病理数据接口（LIS）。 "
         "对齐 `数据库接口更新V1.1.pdf` 查询语义（§7），基于现有 GET 接口。 "
         "参见 [api_document.md](../api_document.md)。"
     )
@@ -494,11 +520,11 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
     c0, c1, c2 = st.columns([2, 1, 1])
     with c0:
         st.markdown(
-            f"**阶段 0 疾病分布图谱** — SQLite `pathology_landscape`：**{lc}** 种疾病"
+            f"**阶段 0 病种数据缓存** — SQLite `pathology_landscape`：**{lc}** 种疾病"
         )
         if not disease_catalog:
             st.warning(
-                "尚无缓存疾病。请点击 **初始化疾病分布图谱** 从 LIS API 加载。"
+                "尚无缓存疾病。请点击 **初始化病种数据缓存** 从方信接口加载。"
             )
         else:
             st.caption(
@@ -507,18 +533,18 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
             )
     with c1:
         if st.button(
-            "初始化疾病分布图谱",
+            "初始化病种数据缓存",
             use_container_width=True,
             on_click=remember_main_tab_for(_DATA_TAB_LABEL),
         ):
-            with st.spinner("正在从 LIS API 拉取疾病与样本统计 …"):
+            with st.spinner("正在从方信接口拉取疾病与样本统计 …"):
                 res = bootstrap_landscape(force=False)
                 load_feasibility_disease_catalog.clear()
                 if res.get("skipped"):
                     st.session_state["landscape_msg"] = res.get("reason", "已加载")
                 else:
                     st.session_state["landscape_msg"] = (
-                        f"已从 API 加载 {res['disease_count']} 种疾病"
+                        f"已从接口加载 {res['disease_count']} 种疾病"
                     )
                 st.rerun()
     with c2:
@@ -527,16 +553,16 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
             use_container_width=True,
             on_click=remember_main_tab_for(_DATA_TAB_LABEL),
         ):
-            with st.spinner("正在强制从 LIS API 重载 …"):
+            with st.spinner("正在强制从方信接口重载 …"):
                 bootstrap_landscape(force=True)
                 load_feasibility_disease_catalog.clear()
-                st.session_state["landscape_msg"] = "已强制从 API 重载"
+                st.session_state["landscape_msg"] = "已强制从接口重载"
                 st.rerun()
     if st.session_state.get("landscape_msg"):
         st.success(st.session_state["landscape_msg"])
 
     if lc > 0:
-        with st.expander("缓存疾病分布图谱快照", expanded=False):
+        with st.expander("缓存病种快照", expanded=False):
             for row in get_all_landscape():
                 cat = row["payload"].get("catalog", {})
                 v11 = row["payload"].get("v11") or {}
@@ -551,267 +577,74 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
 
     st.divider()
 
-    (
-        sub_catalog,
-        sub_subtype,
-        sub_attr,
-        sub_mol,
-        sub_text,
-        sub_v01,
-        sub_v02,
-        sub_v03,
-        sub_cross,
-        sub_gap,
-    ) = st.tabs([
-        "D-01 / D-02 目录",
-        "亚型（§7.4）",
-        "属性（§7.3）",
-        "分子（§7.8）",
-        "文本匹配（§7.5–7.7）",
-        "V-01 可行性",
-        "V-02 空白分析",
-        "V-03 公开数据集",
-        "文献×数据矩阵",
-        "从空白快速核查",
-    ])
+    if DATA_FEAS_VIEW_KEY not in st.session_state:
+        st.session_state[DATA_FEAS_VIEW_KEY] = DATA_VIEW_GAP_CHECK
+    data_view = st.radio(
+        "数据可行性视图",
+        list(DATA_FEAS_VIEWS),
+        horizontal=True,
+        key=DATA_FEAS_VIEW_KEY,
+        label_visibility="collapsed",
+        on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+    )
 
-    with sub_catalog:
-        st.markdown(f"**{FEAS_API_META['D-01']['name']}** · `{FEAS_API_META['D-01']['endpoint']}`")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            organ = st.selectbox(
-                "organ_system（API OrganSystem）",
-                organ_options,
-                format_func=lambda x: x or "（全部）",
-                key="feas_organ",
+    if data_view == DATA_VIEW_GAP_CHECK:
+
+        st.markdown("**从辩论报告评估空白**")
+        report_text = st.session_state.get("report", "")
+        parsed_gaps = parse_gap_titles(report_text) if report_text else []
+        if parsed_gaps:
+            gap_pick = st.selectbox(
+                "从辩论报告选择空白",
+                parsed_gaps,
+                key="feas_gap_pick",
                 on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
-        with col_b:
-            min_cases = st.number_input(
-                "min_cases",
-                1,
-                5000,
-                50,
-                step=10,
-                key="feas_min_cases",
+            if st.button(
+                "评估所选空白",
+                type="primary",
+                key="btn_gap_assess",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                from pipeline import assess_gap_feasibility  # noqa: E402
+
+                fr = assess_gap_feasibility(gap_pick, report_text)
+                st.session_state["gap_feas_result"] = fr
+        else:
+            manual_gap = st.text_area(
+                "或输入空白标题 / 描述",
+                height=100,
+                key="feas_manual_gap",
                 on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
-        if st.button(
-            "查询 D-01",
-            key="btn_d01",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            d01 = tool_pathology_disease_catalog(
-                organ_system=organ or None,
-                min_cases=int(min_cases),
-            )
-            st.session_state["d01_result"] = d01
-        if "d01_result" in st.session_state:
-            r = st.session_state["d01_result"]
-            st.metric("疾病类型总数", r.get("total", 0))
-            render_tool_result("pathology_disease_catalog", r)
-
-        st.divider()
-        st.markdown(f"**{FEAS_API_META['D-02']['name']}** · `{FEAS_API_META['D-02']['endpoint']}`")
-        d02_id = st.selectbox(
-            "disease_id（DiseaseCode）",
-            disease_ids,
-            format_func=lambda did: format_disease_option(did, disease_catalog),
-            key="feas_d02_disease",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        c_d02a, c_d02b = st.columns(2)
-        with c_d02a:
             if st.button(
-                "查询 D-02 任务",
-                key="btn_d02",
+                "评估手动输入的空白",
+                key="btn_manual_gap",
                 on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-            ):
-                st.session_state["d02_result"] = tool_pathology_tasks_for_disease(d02_id)
-        with c_d02b:
-            if st.button(
-                "查询队列统计（§7.1/7.2）",
-                key="btn_cohort",
-                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-            ):
-                st.session_state["cohort_result"] = tool_disease_cohort_stats(d02_id)
-        if "d02_result" in st.session_state:
-            render_tool_result("pathology_tasks_for_disease", st.session_state["d02_result"])
-        if "cohort_result" in st.session_state:
-            cr = st.session_state["cohort_result"]
-            if "error" in cr:
-                st.error(cr["error"])
-            else:
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("患者", cr.get("patient_count", 0))
-                m2.metric("标本", cr.get("specimen_count", 0))
-                m3.metric("切片", cr.get("slide_count", 0))
-                m4.metric("医院", cr.get("hospital_count", 0))
+            ) and manual_gap.strip():
+                from pipeline import assess_gap_feasibility  # noqa: E402
 
-    with sub_subtype:
-        st.markdown(f"**{FEAS_API_META['subtype']['name']}** · `{FEAS_API_META['subtype']['endpoint']}`")
-        st_id = st.selectbox(
-            "disease_id",
-            disease_ids,
-            format_func=lambda did: format_disease_option(did, disease_catalog),
-            key="subtype_disease",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "查询亚型分布",
-            key="btn_subtype",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["subtype_result"] = tool_subtype_distribution(st_id)
-        if "subtype_result" in st.session_state:
-            r = st.session_state["subtype_result"]
-            if "error" in r:
-                st.error(r["error"])
-            else:
-                st.caption(
-                    f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
-                )
-                dist = r.get("distribution") or []
-                if dist:
-                    safe_table(pd.DataFrame(dist), height=360)
-                else:
-                    st.info("当前 API 样本中该疾病无亚型行。")
+                fr = assess_gap_feasibility(manual_gap.strip(), manual_gap.strip())
+                st.session_state["gap_feas_result"] = fr
 
-    with sub_attr:
-        st.markdown(
-            f"**{FEAS_API_META['attribute']['name']}** · `{FEAS_API_META['attribute']['endpoint']}`"
-        )
-        at_id = st.selectbox(
-            "disease_id",
-            disease_ids,
-            format_func=lambda did: format_disease_option(did, disease_catalog),
-            key="attr_disease",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        attr_kw = st.text_input(
-            "属性关键词（可选）",
-            value="",
-            key="attr_keyword",
-            placeholder="分期 / 分级 / severity / Gleason …",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "查询属性分布",
-            key="btn_attr",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["attr_result"] = tool_attribute_distribution(
-                at_id, attribute_keyword=attr_kw or None
-            )
-        if "attr_result" in st.session_state:
-            r = st.session_state["attr_result"]
-            if "error" in r:
-                st.error(r["error"])
-            else:
-                st.caption(
-                    f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
-                )
-                dist = r.get("distribution") or []
-                if dist:
-                    safe_table(pd.DataFrame(dist), height=360)
-                else:
-                    st.info("该疾病 / 关键词下无匹配属性行。")
+        fr = st.session_state.get("gap_feas_result")
+        if fr:
+            st.markdown(f"**{fr.gap_title}**")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("对应方信病种", fr.disease_id or "—")
+            m2.metric("映射置信度", f"{fr.map_confidence:.2f}")
+            m3.metric("状态", fr.status)
+            st.markdown("##### 方信 V-01")
+            render_feasibility_result(fr.assessment)
+            pda = getattr(fr, "public_dataset_assessment", None) or {}
+            if pda:
+                st.markdown("##### 公开数据集 V-03")
+                render_public_dataset_result(pda)
+            if fr.evolution_log:
+                with st.expander("演化日志"):
+                    st.json(fr.evolution_log)
+    elif data_view == DATA_VIEW_V01:
 
-    with sub_mol:
-        st.markdown(
-            f"**{FEAS_API_META['molecular']['name']}** · `{FEAS_API_META['molecular']['endpoint']}`"
-        )
-        mol_id = st.selectbox(
-            "disease_id",
-            disease_ids,
-            format_func=lambda did: format_disease_option(did, disease_catalog),
-            key="mol_disease",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        biomarker = st.selectbox(
-            "biomarker",
-            ["HER2", "EGFR", "MSI", "P16", "Ki-67", "PD-L1", "EBER", "P40", "CK"],
-            key="mol_biomarker",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "查询阳性率",
-            type="primary",
-            key="btn_mol",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["mol_result"] = tool_molecular_positivity(mol_id, biomarker)
-        if "mol_result" in st.session_state:
-            r = st.session_state["mol_result"]
-            if "error" in r:
-                st.error(r["error"])
-            else:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("队列患者", r.get("patient_scope", 0))
-                c2.metric("已检测", r.get("tested_patients", 0))
-                c3.metric("阳性", r.get("positive_patients", 0))
-                c4.metric("阳性率", f"{r.get('positivity_rate', 0):.1%}")
-
-    with sub_text:
-        st.markdown(f"**{FEAS_API_META['text']['name']}** · `{FEAS_API_META['text']['endpoint']}`")
-        st.caption(
-            "使用 text_disease_match 做 NLP/报告命中追溯。"
-            "独立 disease_alias_dict REST 尚未开放 — 请通过匹配结果与疾病字典解析。"
-        )
-        tx_options = ["(all)"] + disease_ids
-        tx_id = st.selectbox(
-            "disease_id 过滤",
-            tx_options,
-            format_func=lambda did: (
-                "（全部疾病）"
-                if did == "(all)"
-                else format_disease_option(did, disease_catalog)
-            ),
-            key="text_disease",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        pending_only = st.checkbox(
-            "仅待审（§7.7）",
-            value=False,
-            key="text_pending",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "查询文本匹配",
-            key="btn_text",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["text_result"] = tool_text_disease_matches(
-                None if tx_id == "(all)" else tx_id,
-                pending_only=pending_only,
-            )
-        if "text_result" in st.session_state:
-            r = st.session_state["text_result"]
-            if "error" in r:
-                st.error(r["error"])
-            else:
-                st.metric("匹配总数", r.get("total_matches", 0))
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown("**核验状态**")
-                    vs = r.get("verification_status") or {}
-                    if vs:
-                        safe_table(
-                            pd.DataFrame(
-                                [{"status": k, "count": v} for k, v in vs.items()]
-                            )
-                        )
-                with col_b:
-                    st.markdown("**高频提及**")
-                    mentions = r.get("top_mentions") or []
-                    if mentions:
-                        safe_table(pd.DataFrame(mentions), height=260)
-                sample = r.get("sample") or []
-                if sample:
-                    with st.expander("样例行", expanded=False):
-                        safe_table(pd.DataFrame(sample), height=320)
-
-    with sub_v01:
         st.markdown(f"**{FEAS_API_META['V-01']['name']}** · `{FEAS_API_META['V-01']['endpoint']}`")
         st.caption(
             "汇总 LIS 查询 API 的样本数、患者、属性与分子结果，"
@@ -820,7 +653,7 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
         fc1, fc2 = st.columns(2)
         with fc1:
             v01_disease = st.selectbox(
-                "disease_id（DiseaseCode）",
+                "方信病种",
                 disease_ids,
                 format_func=lambda did: format_disease_option(did, disease_catalog),
                 key="v01_disease",
@@ -881,138 +714,340 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
             )
         if "v01_result" in st.session_state:
             render_feasibility_result(st.session_state["v01_result"])
+    else:
+        (
+            sub_catalog,
+            sub_subtype,
+            sub_attr,
+            sub_mol,
+            sub_text,
+            sub_v02,
+            sub_v03,
+            sub_cross,
+        ) = st.tabs([
+            "D-01 / D-02 目录",
+            "亚型（§7.4）",
+            "属性（§7.3）",
+            "分子（§7.8）",
+            "文本匹配（§7.5–7.7）",
+            "V-02 空白分析",
+            "V-03 公开数据集",
+            "文献×数据矩阵",
+        ])
 
-    with sub_v02:
-        st.markdown(f"**{FEAS_API_META['V-02']['name']}** · `{FEAS_API_META['V-02']['endpoint']}`")
-        st.caption(
-            "假设与 V-01 相同；突出数据瓶颈与替代方向。"
-        )
-        if st.button(
-            "复制 V-01 表单并运行 V-02",
-            key="btn_v02_copy",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            labels = [x.strip() for x in st.session_state.get("v01_labels", "").split(",") if x.strip()]
-            markers = [x.strip() for x in st.session_state.get("v01_markers", "").split(",") if x.strip()]
-            annotations = [x.strip() for x in st.session_state.get("v01_annotations", "").split(",") if x.strip()]
-            st.session_state["v02_result"] = tool_data_gap_analysis(
-                disease_id=st.session_state.get("v01_disease", default_disease_id(disease_catalog)),
-                task_type=st.session_state.get("v01_task", TASK_TYPE_OPTIONS[0]),
-                required_labels=labels,
-                required_molecular_markers=markers,
-                required_annotations=annotations,
-                min_followup_months=int(st.session_state.get("v01_followup", 12) or 0) or None,
-            )
-        if "v02_result" in st.session_state:
-            render_feasibility_result(st.session_state["v02_result"])
+        with sub_catalog:
 
-    with sub_v03:
-        st.markdown(f"**{FEAS_API_META['V-03']['name']}** · `{FEAS_API_META['V-03']['endpoint']}`")
-        st.caption(
-            "经 focus 相关论文选出 USES_DATASET 中 access_class=public 的集合；"
-            "数据集名不必包含 focus 关键词。"
-        )
-        v03_kw = st.text_input(
-            "关键词 / 空白描述",
-            value=focus_hint,
-            key="v03_keyword",
-            placeholder="例如 nasopharyngeal carcinoma WSI",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "运行 V-03 评估",
-            type="primary",
-            key="btn_v03",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["v03_result"] = tool_public_dataset_assess(v03_kw or "")
-        if "v03_result" in st.session_state:
-            render_public_dataset_result(st.session_state["v03_result"])
-
-    with sub_cross:
-        st.markdown(f"**{FEAS_API_META['cross']['name']}**")
-        cross_focus = st.text_input(
-            "文献焦点关键词",
-            value=focus_hint,
-            key="cross_focus",
-            placeholder="例如 radiomics",
-            on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-        )
-        if st.button(
-            "构建交叉矩阵",
-            key="btn_cross",
-            on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-        ):
-            st.session_state["cross_result"] = tool_literature_data_cross_matrix(
-                focus=cross_focus or None,
-            )
-        if "cross_result" in st.session_state:
-            r = st.session_state["cross_result"]
-            st.caption(r.get("description", ""))
-            data = r.get("data", [])
-            if data:
-                safe_table(pd.DataFrame(data), height=400)
-                st.caption(
-                    "cross_priority_score = 文献空白 + LIS 队列 + 引用/IF 影响 "
-                    "（完整加权需运行 enrich-s2 与 import-if）"
+            st.markdown(f"**{FEAS_API_META['D-01']['name']}** · `{FEAS_API_META['D-01']['endpoint']}`")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                organ = st.selectbox(
+                    "organ_system（API OrganSystem）",
+                    organ_options,
+                    format_func=lambda x: x or "（全部）",
+                    key="feas_organ",
+                    on_change=remember_main_tab_for(_DATA_TAB_LABEL),
                 )
-            else:
-                st.info("无交叉矩阵行（知识图谱可能为空 — 请先运行抽取）。")
-
-    with sub_gap:
-        st.markdown("**从辩论报告评估空白**")
-        report_text = st.session_state.get("report", "")
-        parsed_gaps = parse_gap_titles(report_text) if report_text else []
-        if parsed_gaps:
-            gap_pick = st.selectbox(
-                "从辩论报告选择空白",
-                parsed_gaps,
-                key="feas_gap_pick",
-                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
-            )
+            with col_b:
+                min_cases = st.number_input(
+                    "min_cases",
+                    1,
+                    5000,
+                    50,
+                    step=10,
+                    key="feas_min_cases",
+                    on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+                )
             if st.button(
-                "评估所选空白",
-                type="primary",
-                key="btn_gap_assess",
+                "查询 D-01",
+                key="btn_d01",
                 on_click=remember_main_tab_for(_DATA_TAB_LABEL),
             ):
-                from pipeline import assess_gap_feasibility  # noqa: E402
+                d01 = tool_pathology_disease_catalog(
+                    organ_system=organ or None,
+                    min_cases=int(min_cases),
+                )
+                st.session_state["d01_result"] = d01
+            if "d01_result" in st.session_state:
+                r = st.session_state["d01_result"]
+                st.metric("疾病类型总数", r.get("total", 0))
+                render_tool_result("pathology_disease_catalog", r)
 
-                fr = assess_gap_feasibility(gap_pick, report_text)
-                st.session_state["gap_feas_result"] = fr
-        else:
-            manual_gap = st.text_area(
-                "或输入空白标题 / 描述",
-                height=100,
-                key="feas_manual_gap",
+            st.divider()
+            st.markdown(f"**{FEAS_API_META['D-02']['name']}** · `{FEAS_API_META['D-02']['endpoint']}`")
+            d02_id = st.selectbox(
+                "方信病种",
+                disease_ids,
+                format_func=lambda did: format_disease_option(did, disease_catalog),
+                key="feas_d02_disease",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            c_d02a, c_d02b = st.columns(2)
+            with c_d02a:
+                if st.button(
+                    "查询 D-02 任务",
+                    key="btn_d02",
+                    on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+                ):
+                    st.session_state["d02_result"] = tool_pathology_tasks_for_disease(d02_id)
+            with c_d02b:
+                if st.button(
+                    "查询队列统计（§7.1/7.2）",
+                    key="btn_cohort",
+                    on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+                ):
+                    st.session_state["cohort_result"] = tool_disease_cohort_stats(d02_id)
+            if "d02_result" in st.session_state:
+                render_tool_result("pathology_tasks_for_disease", st.session_state["d02_result"])
+            if "cohort_result" in st.session_state:
+                cr = st.session_state["cohort_result"]
+                if "error" in cr:
+                    st.error(cr["error"])
+                else:
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("患者", cr.get("patient_count", 0))
+                    m2.metric("标本", cr.get("specimen_count", 0))
+                    m3.metric("切片", cr.get("slide_count", 0))
+                    m4.metric("医院", cr.get("hospital_count", 0))
+        with sub_subtype:
+
+            st.markdown(f"**{FEAS_API_META['subtype']['name']}** · `{FEAS_API_META['subtype']['endpoint']}`")
+            st_id = st.selectbox(
+                "disease_id",
+                disease_ids,
+                format_func=lambda did: format_disease_option(did, disease_catalog),
+                key="subtype_disease",
                 on_change=remember_main_tab_for(_DATA_TAB_LABEL),
             )
             if st.button(
-                "评估手动输入的空白",
-                key="btn_manual_gap",
+                "查询亚型分布",
+                key="btn_subtype",
                 on_click=remember_main_tab_for(_DATA_TAB_LABEL),
-            ) and manual_gap.strip():
-                from pipeline import assess_gap_feasibility  # noqa: E402
+            ):
+                st.session_state["subtype_result"] = tool_subtype_distribution(st_id)
+            if "subtype_result" in st.session_state:
+                r = st.session_state["subtype_result"]
+                if "error" in r:
+                    st.error(r["error"])
+                else:
+                    st.caption(
+                        f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
+                    )
+                    dist = r.get("distribution") or []
+                    if dist:
+                        safe_table(pd.DataFrame(dist), height=360)
+                    else:
+                        st.info("当前 API 样本中该疾病无亚型行。")
+        with sub_attr:
 
-                fr = assess_gap_feasibility(manual_gap.strip(), manual_gap.strip())
-                st.session_state["gap_feas_result"] = fr
+            st.markdown(
+                f"**{FEAS_API_META['attribute']['name']}** · `{FEAS_API_META['attribute']['endpoint']}`"
+            )
+            at_id = st.selectbox(
+                "disease_id",
+                disease_ids,
+                format_func=lambda did: format_disease_option(did, disease_catalog),
+                key="attr_disease",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            attr_kw = st.text_input(
+                "属性关键词（可选）",
+                value="",
+                key="attr_keyword",
+                placeholder="分期 / 分级 / severity / Gleason …",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "查询属性分布",
+                key="btn_attr",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["attr_result"] = tool_attribute_distribution(
+                    at_id, attribute_keyword=attr_kw or None
+                )
+            if "attr_result" in st.session_state:
+                r = st.session_state["attr_result"]
+                if "error" in r:
+                    st.error(r["error"])
+                else:
+                    st.caption(
+                        f"patient_scope={r.get('patient_scope')} · matched_rows={r.get('matched_rows')}"
+                    )
+                    dist = r.get("distribution") or []
+                    if dist:
+                        safe_table(pd.DataFrame(dist), height=360)
+                    else:
+                        st.info("该疾病 / 关键词下无匹配属性行。")
+        with sub_mol:
 
-        fr = st.session_state.get("gap_feas_result")
-        if fr:
-            st.markdown(f"**{fr.gap_title}**")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("映射 disease_id", fr.disease_id or "—")
-            m2.metric("映射置信度", f"{fr.map_confidence:.2f}")
-            m3.metric("状态", fr.status)
-            st.markdown("##### 方信 V-01")
-            render_feasibility_result(fr.assessment)
-            pda = getattr(fr, "public_dataset_assessment", None) or {}
-            if pda:
-                st.markdown("##### 公开数据集 V-03")
-                render_public_dataset_result(pda)
-            if fr.evolution_log:
-                with st.expander("演化日志"):
-                    st.json(fr.evolution_log)
+            st.markdown(
+                f"**{FEAS_API_META['molecular']['name']}** · `{FEAS_API_META['molecular']['endpoint']}`"
+            )
+            mol_id = st.selectbox(
+                "disease_id",
+                disease_ids,
+                format_func=lambda did: format_disease_option(did, disease_catalog),
+                key="mol_disease",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            biomarker = st.selectbox(
+                "biomarker",
+                ["HER2", "EGFR", "MSI", "P16", "Ki-67", "PD-L1", "EBER", "P40", "CK"],
+                key="mol_biomarker",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "查询阳性率",
+                type="primary",
+                key="btn_mol",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["mol_result"] = tool_molecular_positivity(mol_id, biomarker)
+            if "mol_result" in st.session_state:
+                r = st.session_state["mol_result"]
+                if "error" in r:
+                    st.error(r["error"])
+                else:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("队列患者", r.get("patient_scope", 0))
+                    c2.metric("已检测", r.get("tested_patients", 0))
+                    c3.metric("阳性", r.get("positive_patients", 0))
+                    c4.metric("阳性率", f"{r.get('positivity_rate', 0):.1%}")
+        with sub_text:
+
+            st.markdown(f"**{FEAS_API_META['text']['name']}** · `{FEAS_API_META['text']['endpoint']}`")
+            st.caption(
+                "使用 text_disease_match 做 NLP/报告命中追溯。"
+                "独立 disease_alias_dict REST 尚未开放 — 请通过匹配结果与疾病字典解析。"
+            )
+            tx_options = ["(all)"] + disease_ids
+            tx_id = st.selectbox(
+                "disease_id 过滤",
+                tx_options,
+                format_func=lambda did: (
+                    "（全部疾病）"
+                    if did == "(all)"
+                    else format_disease_option(did, disease_catalog)
+                ),
+                key="text_disease",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            pending_only = st.checkbox(
+                "仅待审（§7.7）",
+                value=False,
+                key="text_pending",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "查询文本匹配",
+                key="btn_text",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["text_result"] = tool_text_disease_matches(
+                    None if tx_id == "(all)" else tx_id,
+                    pending_only=pending_only,
+                )
+            if "text_result" in st.session_state:
+                r = st.session_state["text_result"]
+                if "error" in r:
+                    st.error(r["error"])
+                else:
+                    st.metric("匹配总数", r.get("total_matches", 0))
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown("**核验状态**")
+                        vs = r.get("verification_status") or {}
+                        if vs:
+                            safe_table(
+                                pd.DataFrame(
+                                    [{"status": k, "count": v} for k, v in vs.items()]
+                                )
+                            )
+                    with col_b:
+                        st.markdown("**高频提及**")
+                        mentions = r.get("top_mentions") or []
+                        if mentions:
+                            safe_table(pd.DataFrame(mentions), height=260)
+                    sample = r.get("sample") or []
+                    if sample:
+                        with st.expander("样例行", expanded=False):
+                            safe_table(pd.DataFrame(sample), height=320)
+        with sub_v02:
+
+            st.markdown(f"**{FEAS_API_META['V-02']['name']}** · `{FEAS_API_META['V-02']['endpoint']}`")
+            st.caption(
+                "假设与 V-01 相同；突出数据瓶颈与替代方向。"
+            )
+            if st.button(
+                "复制 V-01 表单并运行 V-02",
+                key="btn_v02_copy",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                labels = [x.strip() for x in st.session_state.get("v01_labels", "").split(",") if x.strip()]
+                markers = [x.strip() for x in st.session_state.get("v01_markers", "").split(",") if x.strip()]
+                annotations = [x.strip() for x in st.session_state.get("v01_annotations", "").split(",") if x.strip()]
+                st.session_state["v02_result"] = tool_data_gap_analysis(
+                    disease_id=st.session_state.get("v01_disease", default_disease_id(disease_catalog)),
+                    task_type=st.session_state.get("v01_task", TASK_TYPE_OPTIONS[0]),
+                    required_labels=labels,
+                    required_molecular_markers=markers,
+                    required_annotations=annotations,
+                    min_followup_months=int(st.session_state.get("v01_followup", 12) or 0) or None,
+                )
+            if "v02_result" in st.session_state:
+                render_feasibility_result(st.session_state["v02_result"])
+        with sub_v03:
+
+            st.markdown(f"**{FEAS_API_META['V-03']['name']}** · `{FEAS_API_META['V-03']['endpoint']}`")
+            st.caption(
+                "经 focus 相关论文选出 USES_DATASET 中 access_class=public 的集合；"
+                "数据集名不必包含 focus 关键词。"
+            )
+            v03_kw = st.text_input(
+                "关键词 / 空白描述",
+                value=focus_hint,
+                key="v03_keyword",
+                placeholder="例如 nasopharyngeal carcinoma WSI",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "运行 V-03 评估",
+                type="primary",
+                key="btn_v03",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["v03_result"] = tool_public_dataset_assess(v03_kw or "")
+            if "v03_result" in st.session_state:
+                render_public_dataset_result(st.session_state["v03_result"])
+        with sub_cross:
+
+            st.markdown(f"**{FEAS_API_META['cross']['name']}**")
+            cross_focus = st.text_input(
+                "文献焦点关键词",
+                value=focus_hint,
+                key="cross_focus",
+                placeholder="例如 radiomics",
+                on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            if st.button(
+                "构建交叉矩阵",
+                key="btn_cross",
+                on_click=remember_main_tab_for(_DATA_TAB_LABEL),
+            ):
+                st.session_state["cross_result"] = tool_literature_data_cross_matrix(
+                    focus=cross_focus or None,
+                )
+            if "cross_result" in st.session_state:
+                r = st.session_state["cross_result"]
+                st.caption(r.get("description", ""))
+                data = r.get("data", [])
+                if data:
+                    safe_table(pd.DataFrame(data), height=400)
+                    st.caption(
+                        "cross_priority_score = 文献空白 + LIS 队列 + 引用/IF 影响 "
+                        "（完整加权需运行 enrich-s2 与 import-if）"
+                    )
+                else:
+                    st.info("无交叉矩阵行（知识图谱可能为空 — 请先运行抽取）。")
 
 
 def _format_improvement_suggestion_rows(suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1159,7 +1194,8 @@ def make_evidence_viewer_selection(
     return {"pmid": pid, "focus_quote": fq or None}
 
 
-PROVENANCE_LIST_LIMIT = 30
+PROVENANCE_LIST_LIMIT = 30  # legacy alias; paper list uses PAPER_LIST_LIMIT
+PAPER_LIST_LIMIT = 10
 
 
 def provenance_row_key(kind: str, pmid: str, *parts: str) -> str:
@@ -1173,9 +1209,41 @@ def provenance_row_key(kind: str, pmid: str, *parts: str) -> str:
 def partition_provenance_rows(
     rows: list[dict],
     *,
-    limit: int = PROVENANCE_LIST_LIMIT,
+    limit: int = PAPER_LIST_LIMIT,
 ) -> tuple[list[dict], list[dict]]:
     return rows[:limit], rows[limit:]
+
+
+def group_evidence_by_source(rows: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Group evidence rows by 工具/来源 label; preserve first-seen source order."""
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in rows:
+        source = str(row.get("工具") or "").strip() or "其他"
+        if source not in groups:
+            groups[source] = []
+            order.append(source)
+        groups[source].append(row)
+    return [(source, groups[source]) for source in order]
+
+
+def _pmid_from_evidence_item(item: dict) -> str:
+    """Prefer per-row PMID; fall back to first sample_pmids entry (aggregated tools)."""
+    pmid = str(item.get("source_pmid") or item.get("pmid") or "").strip()
+    if pmid:
+        return pmid
+    samples = item.get("sample_pmids")
+    if isinstance(samples, (list, tuple)):
+        for part in samples:
+            s = str(part or "").strip()
+            if s:
+                return s
+        return ""
+    for part in str(samples or "").split(","):
+        s = part.strip()
+        if s:
+            return s
+    return ""
 
 
 def extract_evidence(events: list[dict]) -> list[dict]:
@@ -1189,18 +1257,19 @@ def extract_evidence(events: list[dict]) -> list[dict]:
             for item in result.get(key, []) or []:
                 if not isinstance(item, dict):
                     continue
-                pmid = item.get("source_pmid") or item.get("pmid") or ""
+                pmid = _pmid_from_evidence_item(item)
                 quote = item.get("evidence_quote") or item.get("quotes") or ""
                 title = item.get("title") or item.get("limitation") or item.get("metric") or ""
-                uid = f"{pmid}:{quote[:40]}:{title[:40]}"
+                uid = f"{pmid}:{str(quote)[:40]}:{str(title)[:40]}"
                 if uid in seen:
                     continue
                 seen.add(uid)
                 if pmid or quote or title:
+                    section = item.get("evidence_section") or item.get("sections") or ""
                     rows.append({
                         "PMID": pmid,
                         "标题/实体": str(title),
-                        "证据章节": item.get("evidence_section") or item.get("sections", ""),
+                        "证据章节": section,
                         "摘录": str(quote)[:240] if quote else "",
                         "工具": TOOL_META.get(ev.get("name", ""), {}).get("label", ev.get("name", "")),
                     })
@@ -1346,20 +1415,12 @@ def render_evidence_literature_section(
 
     st.subheader(f"全文证据（{len(evidence)} 行）")
     if evidence:
-        evidence_with_pmid = [
-            row for row in evidence if str(row.get("PMID") or "").strip()
-        ]
-        evidence_without_pmid = [
-            row for row in evidence if not str(row.get("PMID") or "").strip()
-        ]
-        evidence_head, evidence_tail = partition_provenance_rows(
-            evidence_with_pmid
-        )
-        _render_evidence_rows(evidence_head, key_prefix="evidence")
-        if evidence_tail:
-            with st.expander(f"更多证据（{len(evidence_tail)}）"):
-                _render_evidence_rows(evidence_tail, key_prefix="evidence")
-        _render_evidence_rows(evidence_without_pmid, key_prefix="evidence")
+        for source, source_rows in group_evidence_by_source(evidence):
+            with st.expander(f"{source}（{len(source_rows)}）", expanded=False):
+                _render_evidence_rows(
+                    source_rows,
+                    key_prefix=f"evidence_{provenance_row_key('src', source, source)}",
+                )
     else:
         st.info("尚未抽取证据摘录。")
 
@@ -1377,12 +1438,18 @@ def render_evidence_literature_section(
         papers_without_pmid = [
             row for row in papers if not str(row.get("PMID") or "").strip()
         ]
-        papers_head, papers_tail = partition_provenance_rows(papers_with_pmid)
+        papers_head, papers_tail = partition_provenance_rows(
+            papers_with_pmid, limit=PAPER_LIST_LIMIT
+        )
         _render_paper_rows(papers_head)
         if papers_tail:
-            with st.expander(f"更多论文（{len(papers_tail)}）"):
+            with st.expander(f"更多论文（{len(papers_tail)}）", expanded=False):
                 _render_paper_rows(papers_tail)
-        _render_paper_rows(papers_without_pmid)
+        if papers_without_pmid:
+            with st.expander(
+                f"缺 PMID 论文（{len(papers_without_pmid)}）", expanded=False
+            ):
+                _render_paper_rows(papers_without_pmid)
     else:
         st.info("工具结果或语料焦点匹配中无论文元数据。")
 
@@ -1450,6 +1517,38 @@ def group_call_result_pairs(events: list[dict]) -> list[dict[str, Any]]:
             order.append(cid)
         pairs[cid][ev["type"]] = ev
     return [pairs[cid] for cid in order]
+
+
+def render_recommended_journey(
+    *,
+    focus_text: str,
+    report_text: str,
+    proposal_text: str,
+) -> None:
+    """P0 path guide: browse → focus → debate → report → verify → proposal."""
+    status = journey_status(
+        has_focus=bool(normalize_focus(focus_text)),
+        has_report=bool((report_text or "").strip()),
+        has_proposal=bool((proposal_text or "").strip()),
+    )
+    st.markdown(format_journey_line(status))
+    st.caption(next_step_hint(status))
+    actions = [
+        (slug, label)
+        for slug, label in journey_action_buttons(status)
+        if slug and slug in MAIN_TAB_BY_SLUG
+    ]
+    if not actions:
+        return
+    cols = st.columns(len(actions))
+    for col, (slug, label) in zip(cols, actions):
+        with col:
+            st.button(
+                label,
+                key=f"journey_nav_{slug}",
+                use_container_width=True,
+                on_click=remember_main_tab_for(MAIN_TAB_BY_SLUG[slug]),
+            )
 
 
 def render_debate_role_guide(*, compact: bool = False) -> None:
@@ -1535,11 +1634,13 @@ def _load_primary_viz_gaps(
     focus: str,
     window_days: int,
     limit: int,
+    min_recent: int | None = None,
 ) -> list[dict]:
     return primary_viz_gaps(
         focus,
         limit=limit,
         window_days=window_days,
+        min_recent=min_recent,
     )
 
 
@@ -1557,30 +1658,44 @@ def render_gap_visualization_tab(
         plotly_available,
     )
 
-    st.subheader("可迁移候选 × 方信支撑")
+    st.subheader("跨病种可借鉴方向 × 方信队列")
     st.caption(
-        "左：侧栏焦点下由 ok Task 桥支撑的可迁移候选（有报告时叠加辩论标题）；"
-        "无可靠桥接时宁可留空，避免伪机会。"
-        "右：所选疾病的方信疾病分布图谱缓存 — 只读；初始化在「数据可行性」页。"
+        "左：本焦点下「别处已验证任务 → 本病原应用」的跨病种方向（有报告时叠加辩论标题）；"
+        "无可靠任务桥梁时宁可留空，避免伪机会。"
+        "右：所选病种的方信队列概况 — 只读；初始化在「数据可行性」页。"
     )
 
     focus = normalize_focus(focus_hint)
     top_n = st.slider("Top N", 10, 50, 30, key="viz_top_n")
+    seed_shared_window_state(
+        st.session_state,
+        default_window=config.HOTSPOT_WINDOW_DAYS,
+        default_min_recent=config.HOTSPOT_MIN_RECENT_PAPERS,
+    )
+    window_days = int(st.session_state.get(SHARED_WINDOW_DAYS_KEY, config.HOTSPOT_WINDOW_DAYS))
+    min_recent = int(
+        st.session_state.get(SHARED_MIN_RECENT_KEY, config.HOTSPOT_MIN_RECENT_PAPERS)
+    )
+    st.caption(
+        f"发表窗口 **{window_days}** 天 · 最少近窗篇数 **{min_recent}**"
+        "（与「每周热点」共用，在侧栏调整）。"
+    )
 
     disease_cases, landscape_by_id, catalog_names = _landscape_indexes()
 
     gaps: list[dict] = []
     if focus is None:
-        st.info("请在侧栏设置研究焦点。")
+        st.info("请在侧栏设置研究焦点。（可视化需要焦点；辩论可另选「按全库」。）")
     else:
         try:
             gaps = _load_primary_viz_gaps(
                 focus,
-                config.HOTSPOT_WINDOW_DAYS,
+                int(window_days),
                 int(top_n),
+                min_recent=int(min_recent),
             )
         except Exception as exc:
-            st.warning(f"无法加载可迁移候选：{exc}")
+            st.warning(f"无法加载跨病种可借鉴方向：{exc}")
             gaps = []
 
     disease_id_by_name: dict[str, str | None] = {}
@@ -1608,32 +1723,50 @@ def render_gap_visualization_tab(
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("候选数", int(summary.get("combo_count") or 0))
-    m2.metric("文献稀缺", int(summary.get("scarce_count") or 0))
-    m3.metric("已映射方信", int(summary.get("mapped_count") or 0))
+    m2.metric("文献很少", int(summary.get("scarce_count") or 0))
+    m3.metric("已对应方信病种", int(summary.get("mapped_count") or 0))
     m4.metric("高数据占比", f"{float(summary.get('high_share') or 0):.0f}%")
 
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("**机会表**")
         if focus is None:
-            st.caption("设置焦点以加载可迁移候选。")
+            st.caption("设置焦点以加载跨病种可借鉴方向。")
         elif not gaps:
-            st.info("该焦点下无可迁移候选（需升温方法×稀疏组合且存在 ok Task 桥）。")
+            st.info(
+                "该焦点/窗口下暂无跨病种可借鉴方向。"
+                "需要：近期升温且非「成熟常用」的方法 × 本焦点文献很少的病种，"
+                "并存在已验证任务桥梁。可增大侧栏发表窗口或降低最少近窗篇数。"
+            )
+            if should_offer_wider_window(
+                window_days=int(window_days),
+                has_focus=True,
+                gaps_empty=True,
+            ):
+                if st.button(
+                    f"改用 {EMPTY_VIZ_SUGGESTED_WINDOW_DAYS} 天窗口",
+                    key="viz_widen_window",
+                    use_container_width=True,
+                ):
+                    st.session_state[SHARED_WINDOW_DAYS_KEY] = wider_window_value(
+                        int(window_days)
+                    )
+                    st.rerun()
         elif not rows:
-            st.info("过滤后无可迁移候选。")
+            st.info("过滤后暂无跨病种可借鉴方向。")
         else:
             display_rows = [
                 {
                     "来源": r.get("source") or "",
                     "方法": r.get("method") or "",
                     "疾病": r.get("disease") or "",
-                    "桥接任务": r.get("bridge_task") or "",
-                    "桥接模式": r.get("bridge_mode") or "",
-                    "文献空白": r.get("gap") or "",
+                    "已验证任务桥梁": r.get("bridge_task") or "",
+                    "桥梁模式": r.get("bridge_mode") or "",
+                    "覆盖程度": r.get("gap") or "",
                     "论文数": int(r.get("paper_cnt") or 0),
                     "支持病种": r.get("support_diseases") or "",
                     "得分": r.get("opportunity_score") or 0,
-                    "方信": r.get("disease_id") or "—",
+                    "方信病种": r.get("disease_id") or "—",
                     "数据": r.get("data") or "none",
                 }
                 for r in rows
@@ -1662,6 +1795,45 @@ def render_gap_visualization_tab(
                 format_func=lambda k: label_by_key.get(k, k),
                 key="viz_selected_combo",
             )
+            selected_for_action = next(
+                (
+                    r
+                    for r in rows
+                    if str(r.get("row_key")) == st.session_state.get("viz_selected_combo")
+                ),
+                None,
+            )
+            act1, act2 = st.columns(2)
+            with act1:
+                if st.button(
+                    "生成提案",
+                    key="viz_to_proposal",
+                    use_container_width=True,
+                    disabled=selected_for_action is None,
+                    help="将所选组合写入研究提案「手动输入」并跳转",
+                ):
+                    if selected_for_action is not None:
+                        apply_opportunity_proposal_handoff(
+                            st.session_state, selected_for_action
+                        )
+                        remember_main_tab(_PROPOSAL_TAB_LABEL)
+                        st.rerun()
+            with act2:
+                if st.button(
+                    "打开 V-01",
+                    key="viz_to_v01",
+                    use_container_width=True,
+                    disabled=selected_for_action is None,
+                    help="跳转数据可行性并预填方信病种（若已对应）",
+                ):
+                    if selected_for_action is not None:
+                        row = dict(selected_for_action)
+                        did = str(row.get("disease_id") or "").strip()
+                        if did and did not in landscape_by_id:
+                            row["disease_id"] = ""
+                        apply_opportunity_v01_handoff(st.session_state, row)
+                        remember_main_tab(_DATA_TAB_LABEL)
+                        st.rerun()
             st.caption(f"已有 {matched_count} 条辩论空白匹配到表格。")
             if unmatched:
                 listed = "\n".join(f"- {t}" for t in unmatched[:12])
@@ -1669,7 +1841,7 @@ def render_gap_visualization_tab(
                 st.info(f"未匹配的辩论空白（不伪造行展示）：\n{listed}{extra}")
 
     with col_r:
-        st.markdown("**方信详情**")
+        st.markdown("**方信队列概况**")
         selected_key = st.session_state.get("viz_selected_combo")
         selected = next((r for r in rows if str(r.get("row_key")) == selected_key), None)
         if not rows or selected is None:
@@ -1678,17 +1850,17 @@ def render_gap_visualization_tab(
             disease_name = str(selected.get("disease") or "")
             did = selected.get("disease_id")
             st.caption(
-                f"桥接：{selected.get('bridge_task') or '—'} · "
+                f"任务桥梁：{selected.get('bridge_task') or '—'} · "
                 f"{selected.get('bridge_mode') or '—'} · "
                 f"得分 {selected.get('opportunity_score') or 0}"
             )
             if not did:
                 st.warning(
-                    f"**{disease_name or '疾病'}** — 无法映射到方信 DiseaseCode"
+                    f"**{disease_name or '疾病'}** — 无法对应到方信病种"
                 )
             elif did not in landscape_by_id:
                 st.info(
-                    f"`{did}` 无疾病分布图谱缓存 — 请在「数据可行性」中初始化"
+                    f"`{did}` 无病种数据缓存 — 请在「数据可行性」中初始化"
                 )
             else:
                 payload = landscape_by_id[did]
@@ -1718,7 +1890,7 @@ def render_gap_visualization_tab(
                 elif subtypes:
                     safe_table(pd.DataFrame(subtypes[:8]), height=280)
                 else:
-                    st.caption("疾病分布图谱缓存中无亚型分布。")
+                    st.caption("病种数据缓存中无亚型分布。")
 
                 fig_mol = build_molecular_bar(molecular) if plotly_available() else None
                 if fig_mol is not None:
@@ -1726,21 +1898,21 @@ def render_gap_visualization_tab(
                 elif molecular:
                     safe_table(pd.DataFrame(molecular[:8]), height=280)
                 else:
-                    st.caption("疾病分布图谱缓存中无分子阳性率。")
+                    st.caption("病种数据缓存中无分子阳性率。")
 
                 st.caption(
                     "更深入的队列评估见：**数据可行性 → V-01**。"
                 )
 
-    with st.expander("覆盖诊断（非机会）", expanded=False):
-        st.caption("方法×疾病覆盖空洞 ≠ 研究方向；不驱动右侧方信选中态。")
+    with st.expander("文献覆盖空洞（仅诊断，非推荐）", expanded=False):
+        st.caption("方法×疾病在文献中的空洞 ≠ 研究方向；不驱动右侧方信选中态。")
         if focus is None:
-            st.info("设置焦点后可查看覆盖诊断。")
+            st.info("设置焦点后可查看文献覆盖空洞。")
         else:
             try:
                 diag = list(tool_method_disease_combo_gap(focus=focus).get("gaps") or [])
             except Exception as exc:
-                st.warning(f"覆盖诊断不可用：{exc}")
+                st.warning(f"覆盖空洞诊断不可用：{exc}")
                 diag = []
             scarce = [g for g in diag if g.get("gap") in ("unexplored", "minimal")][:20]
             if scarce:
@@ -1749,12 +1921,12 @@ def render_gap_visualization_tab(
                         "方法": g.get("method"),
                         "疾病": g.get("disease"),
                         "论文数": g.get("paper_cnt"),
-                        "gap": g.get("gap"),
+                        "覆盖程度": g.get("gap"),
                     }
                     for g in scarce
                 ]))
             else:
-                st.info("该焦点下无稀缺覆盖空洞。")
+                st.info("该焦点下无「文献很少」的覆盖空洞。")
 
     with st.expander("会话诊断", expanded=False):
         st.caption("当前会话的辩论漏斗与工具树图（可选）。")
@@ -1776,7 +1948,7 @@ def render_gap_visualization_tab(
             c1.metric("侦察候选", stats.get("scout_candidates", 0))
             c2.metric("已核实", stats.get("verified", 0))
             c3.metric("弱证据", stats.get("weak_evidence", 0))
-            c4.metric("伪空白", stats.get("false_gaps", 0))
+            c4.metric("已排除假空白", stats.get("false_gaps", 0))
             c5.metric("最终空白", stats.get("final_gaps", 0))
 
         d1, d2 = st.columns(2)
@@ -1842,24 +2014,19 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     c3.metric("当前周", week_id())
     c4.metric("上一快照", weeks[1] if len(weeks) > 1 else "—")
 
-    ctrl1, ctrl2 = st.columns(2)
-    with ctrl1:
-        window_days = st.slider(
-            "发表窗口（天）",
-            7,
-            60,
-            config.HOTSPOT_WINDOW_DAYS,
-            key="hotspot_window_days",
-        )
-    with ctrl2:
-        min_recent = st.slider(
-            "最少近窗篇数（进方法/疾病/任务榜）",
-            1,
-            5,
-            config.HOTSPOT_MIN_RECENT_PAPERS,
-            key="hotspot_min_recent",
-            help="默认 2：同概念至少 2 篇才进主榜。调到 1 可看到更多单篇新苗头（噪声也会增加）。",
-        )
+    seed_shared_window_state(
+        st.session_state,
+        default_window=config.HOTSPOT_WINDOW_DAYS,
+        default_min_recent=config.HOTSPOT_MIN_RECENT_PAPERS,
+    )
+    window_days = int(st.session_state.get(SHARED_WINDOW_DAYS_KEY, config.HOTSPOT_WINDOW_DAYS))
+    min_recent = int(
+        st.session_state.get(SHARED_MIN_RECENT_KEY, config.HOTSPOT_MIN_RECENT_PAPERS)
+    )
+    st.caption(
+        f"当前窗口 **{window_days}** 天 · 最少近窗篇数 **{min_recent}**"
+        "（与「可视化」共用，在侧栏调整）。"
+    )
     payload = _load_weekly_hotspot_payload(len(weeks), window_days, min_recent)
 
     m1, m2, m3, m4 = st.columns(4)
@@ -1869,7 +2036,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     )
     m2.metric("排除(年精度)", payload.get("papers_excluded_low_precision", 0))
     m3.metric("热门方法", (payload.get("emerging_methods") or [{}])[0].get("name", "—"))
-    m4.metric("可迁移候选", len(payload.get("emerging_gap_opportunities") or []))
+    m4.metric("跨病种可借鉴", len(payload.get("emerging_gap_opportunities") or []))
 
     wow = payload.get("week_over_week") or {}
     if wow.get("has_baseline"):
@@ -1919,16 +2086,16 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "方法",
         "疾病",
         "热门组合",
-        "可迁移候选",
+        "跨病种可借鉴",
         "局限",
     ])
     with tab_m:
         st.caption(
-            f"新苗头；已过滤 established（成熟）方法。已按 method synonym 软归并。"
+            f"新苗头；已过滤「成熟常用」方法。已按方法同义词软归并。"
             f"当前最少近窗篇数 = **{min_recent}**。"
         )
         safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
-        with st.expander("本周活跃（含成熟方法）", expanded=False):
+        with st.expander("本周活跃（含成熟常用方法）", expanded=False):
             safe_table(pd.DataFrame(payload.get("active_methods", [])))
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
@@ -1936,7 +2103,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.caption(
             "按方法折叠：同方法多病种合并为一行（diseases 列）；"
             "recent_cnt 为该方法窗口内不重复论文数。"
-            "成熟度排序优先 nascent / emerging；established 后置。"
+            "排序优先新苗头；成熟常用方法后置。"
         )
         by_method = payload.get("hot_combos_by_method") or []
         if by_method:
@@ -1963,9 +2130,9 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     with tab_o:
         opps = payload.get("emerging_gap_opportunities", [])
         st.caption(
-            "需合格 Task 桥（bridge_task / bridge_quality=ok）；"
-            "无桥接的文献覆盖空洞不计入；"
-            "established 方法（LLM/SVM 等）已从可迁移热池过滤；"
+            "仅展示带「已验证任务桥梁」的跨病种方向；"
+            "无桥梁的文献覆盖空洞不计入；"
+            "成熟常用方法（如 LLM/SVM）已从推荐池排除；"
             "列表为空优于假阳性。"
         )
         if opps:
@@ -1998,7 +2165,10 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
             extra = [c for c in df_opps.columns if c not in ordered]
             safe_table(df_opps[ordered + extra])
         else:
-            st.info("本窗口内无可迁移候选（需升温方法×稀疏组合且存在 ok Task 桥）。")
+            st.info(
+                "本窗口内暂无跨病种可借鉴方向"
+                "（需近期升温方法 × 文献很少的组合，并存在已验证任务桥梁）。"
+            )
     with tab_l:
         safe_table(pd.DataFrame(payload.get("new_limitations", [])))
         focus = normalize_focus(focus_hint) or ""
@@ -2055,7 +2225,7 @@ def main() -> None:
                             f"抽取实体：{stats.get('entities', 0)}　|　全文关系：{stats['relations_fulltext']}",
                             f"引用已补全：{stats.get('s2_enriched', 0)}",
                             f"期刊影响因子库：{stats.get('journals_with_if', 0)} 种",
-                            f"疾病分布图谱：{landscape_count()} 种疾病",
+                            f"病种数据缓存：{landscape_count()} 种疾病",
                         ]
                     )
                 )
@@ -2067,6 +2237,14 @@ def main() -> None:
             help="疾病/主题焦点。支持中文别名（如 肠息肉 → colorectal polyp）。",
         )
         _foc_norm = normalize_focus(focus_input)
+        st.caption(focus_dependency_caption(has_focus=bool(_foc_norm)))
+        allow_full_corpus = False
+        if not _foc_norm:
+            allow_full_corpus = st.checkbox(
+                "焦点为空时按全库辩论",
+                value=False,
+                help="不勾选则无法启动辩论。可视化仍必须填写焦点。",
+            )
         if _foc_norm:
             from analysis.disease_synonyms import resolve_disease_concept  # noqa: E402
 
@@ -2081,6 +2259,29 @@ def main() -> None:
                 st.caption(f"已解析：{_resolved.canonical}{_fx}{_cui}")
             elif any("\u4e00" <= ch <= "\u9fff" for ch in _foc_norm):
                 st.caption("无同义词映射 — 可试英文疾病名")
+
+        st.markdown("**发表窗口（热点 / 可视化共用）**")
+        seed_shared_window_state(
+            st.session_state,
+            default_window=config.HOTSPOT_WINDOW_DAYS,
+            default_min_recent=config.HOTSPOT_MIN_RECENT_PAPERS,
+        )
+        st.slider(
+            "发表窗口（天）",
+            7,
+            90,
+            key=SHARED_WINDOW_DAYS_KEY,
+            help="每周热点与可视化共用同一窗口；默认偏短时可视化可能无候选，可调到 60+。",
+        )
+        st.slider(
+            "最少近窗篇数",
+            1,
+            5,
+            key=SHARED_MIN_RECENT_KEY,
+            help="进方法/疾病/任务榜与升温推荐池的最低近窗篇数。",
+        )
+
+        st.markdown("**研究空白辩论**")
         top_n_input = st.slider(
             "推荐研究空白条数",
             3,
@@ -2095,25 +2296,18 @@ def main() -> None:
             2,
             help="机会侦察 → 证据审阅 → 综合终审 可重复的最大轮数",
         )
-        proposal_rounds_input = st.slider(
-            "研究提案迭代轮次上限",
-            1,
-            5,
-            2,
-            help="在「研究提案」页中，生成与评审交替迭代的最大轮数",
-        )
         verbose_input = st.checkbox("显示 LLM 推理过程")
         use_ops_memory_input = st.checkbox(
-            "使用运维记忆",
+            "使用近期已报空白（防重复）",
             value=True,
             help="注入该焦点最近 4 条已报告空白，软性回避相近方向",
         )
         persist_ops_memory_input = st.checkbox(
             "记忆本次运行",
             value=True,
-            help="辩论或提案成功后写入 ops_runs 与空白条目",
+            help="辩论或提案成功后写入近期已报空白记录",
         )
-        with st.expander("当前焦点的运维记忆", expanded=False):
+        with st.expander("当前焦点的近期已报空白", expanded=False):
             from analysis.ops_memory import load_recent_gaps  # noqa: E402
 
             mem = load_recent_gaps(focus_input or None)
@@ -2123,7 +2317,18 @@ def main() -> None:
                 for it in mem.items[:40]:
                     st.markdown(f"- `{it.week_id}` {it.title}")
         st.divider()
-        run_button = st.button("运行空白辩论", type="primary", use_container_width=True)
+        _debate_focus, _debate_err = debate_focus_or_error(
+            focus_input,
+            allow_full_corpus=allow_full_corpus,
+        )
+        if _debate_err:
+            st.caption(_debate_err)
+        run_button = st.button(
+            "运行空白辩论",
+            type="primary",
+            use_container_width=True,
+            disabled=_debate_err is not None,
+        )
 
         if st.session_state["events"]:
             s = compute_stats(st.session_state["events"])
@@ -2138,117 +2343,159 @@ def main() -> None:
                 st.metric(label, val)
 
     st.title("病理 AI · 研究空白分析")
-    focus_label = f"焦点：*{focus_input}*" if focus_input else "全库"
+    focus_label = (
+        f"焦点：*{focus_input}*"
+        if focus_input
+        else ("全库（已勾选）" if allow_full_corpus else "未设焦点")
+    )
     st.caption(
         f"机会侦察 × 证据审阅 × 综合终审  |  "
         f"全文知识图谱  |  {focus_label}"
+    )
+    render_recommended_journey(
+        focus_text=focus_input,
+        report_text=st.session_state.get("report", ""),
+        proposal_text=st.session_state.get("proposal", ""),
     )
     render_debate_role_guide(compact=True)
     st.divider()
 
     if run_button:
-        st.session_state.update({
-            "events": [], "report": "", "run_focus": focus_input or "全部",
-            "run_top_n": top_n_input, "debate_confidence": 0.0,
-        })
-        live_events: list[dict] = []
-        tool_step = 0
-        current_role = ""
+        debate_focus, debate_err = debate_focus_or_error(
+            focus_input,
+            allow_full_corpus=allow_full_corpus,
+        )
+        if debate_err:
+            st.error(debate_err)
+        else:
+            st.session_state.update({
+                "events": [], "report": "",
+                "run_focus": debate_focus or "全部",
+                "run_top_n": top_n_input, "debate_confidence": 0.0,
+            })
+            live_events: list[dict] = []
+            tool_step = 0
+            current_role = ""
 
-        with st.status(
-            "正在辩论：机会侦察 → 证据审阅 → 综合终审 …",
-            expanded=True,
-        ) as sw:
-            for event in stream_gap_debate_agent(
-                focus=focus_input or None,
-                top_n=top_n_input,
-                max_debate_rounds=debate_rounds_input,
-                use_ops_memory=use_ops_memory_input,
-            ):
-                live_events.append(event)
-                st.session_state["events"] = list(live_events)
-                etype = event.get("type", "")
+            with st.status(
+                "正在辩论：机会侦察 → 证据审阅 → 综合终审 …",
+                expanded=True,
+            ) as sw:
+                for event in stream_gap_debate_agent(
+                    focus=debate_focus,
+                    top_n=top_n_input,
+                    max_debate_rounds=debate_rounds_input,
+                    use_ops_memory=use_ops_memory_input,
+                ):
+                    live_events.append(event)
+                    st.session_state["events"] = list(live_events)
+                    etype = event.get("type", "")
 
-                if etype == "debate_round_start":
-                    st.markdown(f"**辩论轮次 {event['round']} / {event['max_rounds']}**")
-                elif etype == "phase_start":
-                    current_role = event.get("role", "")
-                    st.markdown(
-                        f"{role_badge(current_role)} 阶段开始",
-                        unsafe_allow_html=True,
-                    )
-                elif etype == "llm_request_start":
-                    st.caption(
-                        f"等待 {role_display(event.get('role', ''))} LLM "
-                        f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
-                    )
-                elif etype == "tool_call":
-                    tool_step += 1
-                    role = event.get("role", "")
-                    role_lbl = role_display(role)
-                    meta = TOOL_META.get(event["name"], {"label": event["name"]})
-                    args = event.get("args") or {}
-                    st.write(
-                        f"  步骤 {tool_step} [{role_lbl}] {meta.get('label', event['name'])} "
-                        f"· `{args}`"
-                    )
-                elif etype == "tool_running":
-                    meta = TOOL_META.get(event["name"], {"label": event["name"]})
-                    st.caption(f"    … 正在运行 {meta.get('label', event['name'])}")
-                elif etype == "tool_result":
-                    r = event.get("result", {})
-                    summary = format_tool_result_summary(event.get("name", ""), r)
-                    st.write(f"    → {summary}")
-                elif etype == "tool_error":
-                    st.warning(f"[{event.get('role')}] {event['name']}: {event.get('error')}")
-                elif etype == "optimist_proposal":
-                    st.success(
-                        f"机会侦察候选（第 {event['round']} 轮）："
-                        f"{len(event['content'])} 字符"
-                    )
-                elif etype == "skeptic_review":
-                    st.info(
-                        f"证据审阅置信度：{event['confidence']:.1f}/10  "
-                        f"（核实={event['verified_count']}，伪空白={event['false_count']}）"
-                    )
-                elif etype == "debate_feedback":
-                    st.warning(
-                        f"综合终审修订请求："
-                        f"{event.get('revision_priority', '')[:120]}"
-                    )
-                elif etype == "thinking" and verbose_input:
-                    with st.expander(
-                        f"推理 [{role_display(event.get('role', '?'))}]",
-                        expanded=False,
-                    ):
-                        st.markdown(event.get("content", ""))
-                elif etype == "final":
-                    final_md = unwrap_outer_markdown_fence(event.get("content", ""))
-                    st.session_state["report"] = final_md
-                    st.session_state["debate_rounds"] = event.get("rounds", 1)
-                    st.session_state["debate_confidence"] = event.get("confidence", 0.0)
-                    if persist_ops_memory_input and final_md:
-                        from analysis.ops_memory import persist_debate_report  # noqa: E402
-
-                        rid = persist_debate_report(
-                            final_md,
-                            focus=focus_input or None,
-                            source="gap_ui",
-                            enabled=True,
+                    if etype == "debate_round_start":
+                        st.markdown(
+                            f"**辩论轮次 {event['round']} / {event['max_rounds']}**"
                         )
-                        if rid:
-                            st.session_state["ops_run_id"] = rid
-                    sw.update(
-                        label=(
-                            f"辩论完成 — {tool_step} 次工具调用，"
-                            f"审阅置信度 {event.get('confidence', 0):.1f}/10"
-                        ),
-                        state="complete",
-                        expanded=False,
-                    )
-                elif etype == "error":
-                    st.error(event.get("content"))
-                    sw.update(label="辩论失败", state="error")
+                    elif etype == "phase_start":
+                        current_role = event.get("role", "")
+                        st.markdown(
+                            f"{role_badge(current_role)} 阶段开始",
+                            unsafe_allow_html=True,
+                        )
+                    elif etype == "llm_request_start":
+                        st.caption(
+                            f"等待 {role_display(event.get('role', ''))} LLM "
+                            f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
+                        )
+                    elif etype == "tool_call":
+                        tool_step += 1
+                        role = event.get("role", "")
+                        role_lbl = role_display(role)
+                        meta = TOOL_META.get(event["name"], {"label": event["name"]})
+                        args = event.get("args") or {}
+                        st.write(
+                            f"  步骤 {tool_step} [{role_lbl}] "
+                            f"{meta.get('label', event['name'])} "
+                            f"· `{args}`"
+                        )
+                    elif etype == "tool_running":
+                        meta = TOOL_META.get(event["name"], {"label": event["name"]})
+                        st.caption(
+                            f"    … 正在运行 {meta.get('label', event['name'])}"
+                        )
+                    elif etype == "tool_result":
+                        r = event.get("result", {})
+                        summary = format_tool_result_summary(
+                            event.get("name", ""), r
+                        )
+                        st.write(f"    → {summary}")
+                    elif etype == "tool_error":
+                        st.warning(
+                            f"[{event.get('role')}] {event['name']}: "
+                            f"{event.get('error')}"
+                        )
+                    elif etype == "optimist_proposal":
+                        st.success(
+                            f"机会侦察候选（第 {event['round']} 轮）："
+                            f"{len(event['content'])} 字符"
+                        )
+                    elif etype == "skeptic_review":
+                        st.info(
+                            f"证据审阅置信度：{event['confidence']:.1f}/10  "
+                            f"（核实={event['verified_count']}，"
+                            f"已排除假空白={event['false_count']}）"
+                        )
+                    elif etype == "debate_feedback":
+                        st.warning(
+                            "综合终审修订请求：\n\n"
+                            f"{event.get('revision_priority', '')}"
+                        )
+                    elif etype == "thinking" and verbose_input:
+                        with st.expander(
+                            f"推理 [{role_display(event.get('role', '?'))}]",
+                            expanded=False,
+                        ):
+                            st.markdown(event.get("content", ""))
+                    elif etype == "final":
+                        final_md = unwrap_outer_markdown_fence(
+                            event.get("content", "")
+                        )
+                        st.session_state["report"] = final_md
+                        st.session_state["debate_rounds"] = event.get("rounds", 1)
+                        st.session_state["debate_confidence"] = event.get(
+                            "confidence", 0.0
+                        )
+                        if final_md.strip():
+                            # P0: land on deliverable instead of debate-process log.
+                            remember_main_tab(POST_DEBATE_TAB_SLUG)
+                        if persist_ops_memory_input and final_md:
+                            from analysis.ops_memory import (  # noqa: E402
+                                persist_debate_report,
+                            )
+
+                            rid = persist_debate_report(
+                                final_md,
+                                focus=debate_focus,
+                                source="gap_ui",
+                                enabled=True,
+                            )
+                            if rid:
+                                st.session_state["ops_run_id"] = rid
+                        sw.update(
+                            label=(
+                                f"辩论完成 — {tool_step} 次工具调用，"
+                                f"审阅置信度 {event.get('confidence', 0):.1f}/10"
+                                + (
+                                    " · 已切换到研究空白报告"
+                                    if final_md.strip()
+                                    else ""
+                                )
+                            ),
+                            state="complete",
+                            expanded=False,
+                        )
+                    elif etype == "error":
+                        st.error(event.get("content"))
+                        sw.update(label="辩论失败", state="error")
 
     st.divider()
 
@@ -2263,6 +2510,7 @@ def main() -> None:
         with tab_debate:
             st.info(
                 "在侧栏设置焦点并点击 **运行空白辩论**。"
+                "焦点为空时须勾选「按全库辩论」。"
                 "系统将依次运行 **机会侦察** → **证据审阅** → **综合终审**。"
             )
             render_debate_role_guide()
@@ -2290,60 +2538,88 @@ def main() -> None:
 
     elif st.session_state["events"]:
         with tab_debate:
-            st.subheader("辩论轨迹")
-            render_debate_role_guide(compact=True)
-            st.divider()
+            st.subheader("辩论摘要")
+            summary = debate_summary_metrics(
+                st.session_state["events"],
+                st.session_state.get("report", ""),
+                debate_confidence=float(
+                    st.session_state.get("debate_confidence", 0.0) or 0.0
+                ),
+            )
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("侦察候选", summary["scout_candidates"])
+            c2.metric("已核实", summary["verified"])
+            c3.metric("弱证据", summary["weak_evidence"])
+            c4.metric("已排除假空白", summary["false_gaps"])
+            c5.metric("最终空白", summary["final_gaps"])
+            c6.metric("审阅置信度", f"{summary['confidence']:.1f}/10")
+            st.caption(
+                f"工具调用 {summary['tool_steps']} 次 · "
+                "下方为角色轮次与工具详情（默认折叠）。"
+            )
+
             pairs = group_call_result_pairs(st.session_state["events"])
             debate_cards = [
                 e for e in st.session_state["events"]
                 if e.get("type") in ("optimist_proposal", "skeptic_review", "debate_feedback")
             ]
-            for card in debate_cards:
-                ct = card["type"]
-                if ct == "optimist_proposal":
-                    with st.expander(
-                        f"机会侦察 — 第 {card['round']} 轮候选",
-                        expanded=False,
-                    ):
-                        st.markdown(
-                            unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
+            with st.expander("角色轮次详情", expanded=bool(debate_cards)):
+                if not debate_cards:
+                    st.caption("尚无机会侦察 / 证据审阅卡片。")
+                for card in debate_cards:
+                    ct = card["type"]
+                    if ct == "optimist_proposal":
+                        with st.expander(
+                            f"机会侦察 — 第 {card['round']} 轮候选",
+                            expanded=False,
+                        ):
+                            st.markdown(
+                                unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
+                            )
+                    elif ct == "skeptic_review":
+                        with st.expander(
+                            f"证据审阅 — 第 {card['round']} 轮 "
+                            f"（置信度 {card.get('confidence', 0):.1f}/10）",
+                            expanded=False,
+                        ):
+                            st.markdown(
+                                unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
+                            )
+                    elif ct == "debate_feedback":
+                        st.warning(
+                            f"第 {card['round']} 轮 · 综合终审修订："
+                            f"{card.get('revision_priority', '')}"
                         )
-                elif ct == "skeptic_review":
-                    with st.expander(
-                        f"证据审阅 — 第 {card['round']} 轮 "
-                        f"（置信度 {card.get('confidence', 0):.1f}/10）",
-                        expanded=False,
-                    ):
-                        st.markdown(
-                            unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
-                        )
-                elif ct == "debate_feedback":
-                    st.warning(
-                        f"第 {card['round']} 轮 · 综合终审修订："
-                        f"{card.get('revision_priority', '')}"
-                    )
 
-            st.divider()
-            for i, pair in enumerate(pairs, 1):
-                call = pair.get("tool_call", {})
-                res = pair.get("tool_result")
-                err = pair.get("tool_error")
-                name = call.get("name", "?")
-                role = call.get("role", "")
-                meta = TOOL_META.get(name, {"label": name, "category": "其他"})
-                feas_lbl = IDEA_TOOL_META.get(name)
-                label = feas_lbl or meta.get("label", name)
-                role_lbl = role_display(role)
-                with st.expander(f"步骤 {i}：[{role_lbl}] {label}", expanded=False):
-                    st.markdown(role_badge(role), unsafe_allow_html=True)
-                    if err:
-                        st.error(err.get("error"))
-                    elif res:
-                        rdict = res.get("result", {})
-                        if name in FEASIBILITY_TOOLS:
-                            render_feasibility_result(rdict)
-                        else:
-                            render_tool_result(name, rdict)
+            with st.expander(
+                f"工具调用详情（{len(pairs)}）",
+                expanded=False,
+            ):
+                if not pairs:
+                    st.caption("本次会话尚无工具调用。")
+                for i, pair in enumerate(pairs, 1):
+                    call = pair.get("tool_call", {})
+                    res = pair.get("tool_result")
+                    err = pair.get("tool_error")
+                    name = call.get("name", "?")
+                    role = call.get("role", "")
+                    meta = TOOL_META.get(name, {"label": name, "category": "其他"})
+                    feas_lbl = IDEA_TOOL_META.get(name)
+                    label = feas_lbl or meta.get("label", name)
+                    role_lbl = role_display(role)
+                    with st.expander(
+                        f"步骤 {i}：[{role_lbl}] {label}",
+                        expanded=False,
+                    ):
+                        st.markdown(role_badge(role), unsafe_allow_html=True)
+                        if err:
+                            st.error(err.get("error"))
+                        elif res:
+                            rdict = res.get("result", {})
+                            if name in FEASIBILITY_TOOLS:
+                                render_feasibility_result(rdict)
+                            else:
+                                render_tool_result(name, rdict)
 
         with tab_hotspot:
             render_weekly_hotspot_tab(
@@ -2382,6 +2658,10 @@ def main() -> None:
                 st.caption(
                     "报告由 **综合终审** 产出。下文中的角色名已替换为 "
                     "机会侦察 / 证据审阅 / 综合终审。"
+                )
+                st.success(
+                    "下一步：到 **可视化** 查看方信队列概况，或打开 **研究提案** 生成方案。"
+                    "（顶部推荐路径也可一键跳转。）"
                 )
                 st.divider()
                 st.markdown(display_report)
@@ -2448,6 +2728,18 @@ def main() -> None:
                 ),
                 on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
             )
+            with st.expander("高级：迭代轮次", expanded=False):
+                if "proposal_rounds_limit" not in st.session_state:
+                    st.session_state["proposal_rounds_limit"] = 2
+                st.slider(
+                    "研究提案迭代轮次上限",
+                    1,
+                    5,
+                    key="proposal_rounds_limit",
+                    help="生成与评审交替迭代的最大轮数",
+                    on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
+                )
+            proposal_rounds_input = int(st.session_state.get("proposal_rounds_limit", 2))
 
             gen_btn = st.button(
                 "生成研究提案",

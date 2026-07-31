@@ -164,6 +164,7 @@ def primary_viz_gaps(
     *,
     limit: int | None = None,
     window_days: int | None = None,
+    min_recent: int | None = None,
     opportunities: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Main-table source only. Never falls back to method_disease_combo_gap."""
@@ -177,6 +178,7 @@ def primary_viz_gaps(
             focus=focus,
             limit=limit,
             window_days=window_days,
+            min_recent=min_recent,
         )
     )
 

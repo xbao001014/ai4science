@@ -38,6 +38,8 @@
 - 领域伞词：`deep learning`、`machine learning`、`AI`、`pathomics`、`digital pathology`…
 - 训练 / 工程套路：`early stopping`、`data augmentation`、`adam`、`learning rate schedule`、`mixup`、`dropout`、`transfer learning`（单独出现）等
 - 放射 / 影像学方法：`radiomics`、`pyradiomics`、含 `ct`/`mri`/`pet`/`ultrasound`/`cbct`/`oct`/`endoscopy` 等线索的 Method（含病理+CT 多模态；方信仅病理切片）
+- 通用基础模型产品名：`gpt-5`、`chatgpt`、`claude`、`gemini`、`llama`、`deepseek`、`qwen`、`copilot`、`grok`、`mistral` 等（保留 `histogpt` / `seggpt` 等带领域前缀名）
+- 泛 AI 伞词短语：`deep learning model`、`ai model`、`machine learning models` 等（一律丢弃，不同于可单独降权保留的 `_GENERIC_METHODS`）
 
 ### 2.2 后处理维护点（`entity_normalize.py`）
 
@@ -47,11 +49,13 @@
 | `_LOW_VALUE_METHODS` | 精确匹配；**一律丢弃**（即使是唯一 Method） | 新训练/工程噪音精确名 |
 | `_LOW_VALUE_METHOD_PATTERNS` | 正则匹配；一律丢弃 | 变体拼写（如 `early-stop`、`lr schedule`） |
 | `_RADIOLOGY_METHODS` | 精确匹配影像 Method（含复用 `_RADIOLOGY_MODALITIES` + `pyradiomics` 等）；一律丢弃。裸词 `imaging` 仅精确匹配 | 新影像噪音精确名 |
-| `_RADIOLOGY_METHOD_PATTERNS` | 词边界/词干匹配影像线索；一律丢弃（**不要**加 `\bimaging\b`） | 新影像变体 |
+| `_RADIOLOGY_METHOD_PATTERNS` | 词边界/词干匹配影像线索（含 `sagittal`、`t1 weighted`、`t1 axial` 等；**不要**裸 `\baxial\b` / `\bimaging\b`）；一律丢弃 | 新影像变体 |
+| `_FOUNDATION_LLM_METHODS` / `_FOUNDATION_LLM_METHOD_PATTERNS` | 通用 LLM 产品名；一律丢弃（词边界避免误伤 `histogpt`） | 新产品线名 |
+| `_UMBRELLA_AI_METHODS` / `_UMBRELLA_AI_METHOD_PATTERNS` | 泛 AI 短语；一律丢弃 | 新伞词短语 |
 | `_NO_PAPER_METHOD_SECTIONS` | `discussion` / `future_work` / `introduction` 禁止 `APPLIES_METHOD` 与 `COMPARES_METHOD` | 一般不改 |
 | 贡献优先于对比 | 同名 Method 同时有两列时保留 `APPLIES_METHOD`、丢弃 `COMPARES_METHOD` | 一般不改 |
 
-相关函数：`is_generic_method`、`is_low_value_method`、`is_radiology_method`。
+相关函数：`is_generic_method`、`is_low_value_method`、`is_radiology_method`、`is_foundation_llm_product`、`is_umbrella_ai_method`。
 
 ### 2.3 Method 两列
 

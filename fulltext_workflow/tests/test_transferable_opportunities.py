@@ -128,3 +128,98 @@ def test_established_method_transfer_is_excluded(monkeypatch):
     niche_hit = by_pair.get(("niche-transfer-method", "disease-b"))
     assert niche_hit is not None, rows
     assert niche_hit.get("method_maturity") != "established"
+
+
+def test_radiology_method_transfer_is_excluded(monkeypatch):
+    """Legacy radiology Methods in KG must not enter transferable heat."""
+    _tmp_db(monkeypatch)
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "t1 sagittal model", "Method")
+    _edge("1", p1, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("1", p1, "PERFORMS_TASK", "survival prediction", "Task")
+    p2 = _paper("2", 3)
+    _edge("2", p2, "TARGETS_DISEASE", "disease-b", "Disease")
+    _edge("2", p2, "PERFORMS_TASK", "survival prediction", "Task")
+    p3 = _paper("3", 2)
+    _edge("3", p3, "APPLIES_METHOD", "pathology-mil-method", "Method")
+    _edge("3", p3, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("3", p3, "PERFORMS_TASK", "survival prediction", "Task")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    names = {row["name"] for row in payload.get("emerging_methods", [])}
+    assert "t1 sagittal model" not in names, names
+    rows = compute_emerging_gap_opportunities(window_days=14, payload=payload)
+    by_pair = {(r["method"], r["disease"]): r for r in rows}
+    assert ("t1 sagittal model", "disease-b") not in by_pair, rows
+    assert ("pathology-mil-method", "disease-b") in by_pair, rows
+
+
+def test_foundation_llm_product_transfer_is_excluded(monkeypatch):
+    _tmp_db(monkeypatch)
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "gpt-5", "Method")
+    _edge("1", p1, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("1", p1, "PERFORMS_TASK", "survival prediction", "Task")
+    p2 = _paper("2", 3)
+    _edge("2", p2, "TARGETS_DISEASE", "disease-b", "Disease")
+    _edge("2", p2, "PERFORMS_TASK", "survival prediction", "Task")
+    p3 = _paper("3", 2)
+    _edge("3", p3, "APPLIES_METHOD", "histogpt", "Method")
+    _edge("3", p3, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("3", p3, "PERFORMS_TASK", "survival prediction", "Task")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    names = {row["name"] for row in payload.get("emerging_methods", [])}
+    assert "gpt-5" not in names, names
+    assert "histogpt" in names, names
+    rows = compute_emerging_gap_opportunities(window_days=14, payload=payload)
+    by_pair = {(r["method"], r["disease"]): r for r in rows}
+    assert ("gpt-5", "disease-b") not in by_pair, rows
+    assert ("histogpt", "disease-b") in by_pair, rows
+
+
+def test_focus_limits_targets_to_focus_diseases_not_all_heating(monkeypatch):
+    """focus is a filter: targets must match focus, not the full heating board."""
+    _tmp_db(monkeypatch)
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "niche-transfer-method", "Method")
+    _edge("1", p1, "TARGETS_DISEASE", "breast cancer", "Disease")
+    _edge("1", p1, "PERFORMS_TASK", "survival prediction", "Task")
+    p2 = _paper("2", 3)
+    _edge("2", p2, "TARGETS_DISEASE", "colorectal cancer", "Disease")
+    _edge("2", p2, "PERFORMS_TASK", "survival prediction", "Task")
+    p3 = _paper("3", 2)
+    _edge("3", p3, "TARGETS_DISEASE", "lung cancer", "Disease")
+    _edge("3", p3, "PERFORMS_TASK", "survival prediction", "Task")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    rows = compute_emerging_gap_opportunities(
+        focus="肠癌", window_days=14, payload=payload
+    )
+    diseases = {r["disease"] for r in rows}
+    assert "colorectal cancer" in diseases, rows
+    assert "lung cancer" not in diseases, rows
+    assert "breast cancer" not in diseases, rows
+
+
+def test_tool_emerging_gap_uses_transfer_window(monkeypatch):
+    """Agent tool must use HOTSPOT_TRANSFER_WINDOW_DAYS, not the short weekly default."""
+    from analysis.weekly_hotspot import tool_emerging_gap_opportunities
+
+    monkeypatch.setattr(config, "HOTSPOT_WINDOW_DAYS", 14)
+    monkeypatch.setattr(config, "HOTSPOT_TRANSFER_WINDOW_DAYS", 60)
+    captured: dict = {}
+
+    def fake_compute(**kwargs):
+        captured.update(kwargs)
+        return [{"method": "m", "disease": "colorectal cancer"}]
+
+    monkeypatch.setattr(
+        "analysis.weekly_hotspot.compute_emerging_gap_opportunities",
+        fake_compute,
+    )
+    out = tool_emerging_gap_opportunities(focus="肠癌")
+    assert captured.get("window_days") == 60
+    assert captured.get("focus") == "肠癌"
+    assert "window_days=60" in out["description"]
+    assert len(out["data"]) == 1

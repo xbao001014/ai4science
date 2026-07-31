@@ -289,6 +289,101 @@ _RADIOLOGY_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bpet[\s\-/]?ct\b",
         r"\bradiolog",
         r"\boptical\s+coherence\s+tomograph",
+        # MRI sequence / plane labels (not bare \baxial\b — avoids "axial attention")
+        r"\bsagittal\b",
+        r"\bcoronal\b",
+        r"\bflair\b",
+        r"\bdwi\b",
+        r"\bdiffusion[\s\-]?weighted\b",
+        r"\bt[12][\s\-]?weighted\b",
+        r"\bt[12]\s+(sagittal|axial|coronal)\b",
+        r"\b(axial|coronal|sagittal)\s+(t[12]|mri|ct|view|plane|slice|image|model)\b",
+    )
+)
+
+# Commercial / general-purpose foundation LLM product names — not research Methods.
+# Word boundaries keep histogpt / seggpt / cellama.
+_FOUNDATION_LLM_METHODS = frozenset(
+    {
+        "chatgpt",
+        "chat gpt",
+        "chat-gpt",
+        "gpt",
+        "claude",
+        "gemini",
+        "deepseek",
+        "llama",
+        "qwen",
+        "openai",
+        "bard",
+        "copilot",
+        "microsoft copilot",
+        "grok",
+        "mistral",
+        "mixtral",
+    }
+)
+
+_FOUNDATION_LLM_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        r"\bchat[\s-]?gpt\b",
+        r"\bgpt-?\d",  # gpt-4, gpt5, gpt-4o, gpt-5.2, gpt-5-nano
+        r"\bclaude\b",
+        r"\bgemini\b",
+        r"\bdeepseek\b",
+        r"\bllama\d*",  # llama / llama3 / llama3.1:70b
+        r"\bqwen\d*",  # qwen / qwen2:72b
+        r"\bopenai\b",
+        r"\bbard\b",
+        r"\bcopilot\b",
+        r"\bgrok\b",
+        r"\bmistral\b",
+        r"\bmixtral\b",
+        r"\bphi-?\d",
+    )
+)
+
+# Vague AI umbrella phrases — always drop (unlike _GENERIC_METHODS which may keep alone).
+_UMBRELLA_AI_METHODS = frozenset(
+    {
+        "ai model",
+        "ai models",
+        "ml model",
+        "ml models",
+        "dl model",
+        "dl models",
+        "deep learning model",
+        "deep learning models",
+        "machine learning model",
+        "machine learning models",
+        "deep learning-based model",
+        "deep learning based model",
+        "machine learning-based model",
+        "machine learning based model",
+        "artificial neural network",
+        "artificial neural networks",
+        "deep neural network",
+        "deep neural networks",
+        "deep convolutional neural network",
+        "deep convolutional neural networks",
+        "graph neural network",
+        "graph neural networks",
+        "integrative machine learning",
+    }
+)
+
+_UMBRELLA_AI_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        r"^(ai|ml|dl)\s+models?$",
+        r"\b(deep|machine)\s+learning([\s-]+based)?\s+models?\b",
+        r"\bartificial\s+intelligence\s+models?\b",
+        r"^artificial\s+neural\s+networks?$",
+        r"^deep\s+(convolutional\s+)?neural\s+networks?$",
+        r"^graph\s+neural\s+networks?$",
+        r"\b(deep|machine)\s+learning\s+algorithms?\b",
+        r"^multimodal\s+(deep|machine)\s+learning(\s+models?)?$",
     )
 )
 
@@ -410,13 +505,17 @@ def is_generic_method(name: str) -> bool:
 
 
 def is_low_value_method(name: str) -> bool:
-    """True for training/engineering routines or radiology Methods (not contribution Methods)."""
+    """True for training routines, radiology, foundation LLMs, or AI umbrella phrases."""
     key = _norm_key(name)
     if key in _LOW_VALUE_METHODS:
         return True
     if any(p.search(key) for p in _LOW_VALUE_METHOD_PATTERNS):
         return True
-    return is_radiology_method(name)
+    if is_radiology_method(name):
+        return True
+    if is_foundation_llm_product(name):
+        return True
+    return is_umbrella_ai_method(name)
 
 
 def is_generic_disease(name: str) -> bool:
@@ -492,6 +591,22 @@ def is_radiology_method(name: str) -> bool:
     if key in _RADIOLOGY_METHODS:
         return True
     return any(p.search(key) for p in _RADIOLOGY_METHOD_PATTERNS)
+
+
+def is_foundation_llm_product(name: str) -> bool:
+    """True for commercial/general foundation LLM product names (not research Methods)."""
+    key = _norm_key(name)
+    if key in _FOUNDATION_LLM_METHODS:
+        return True
+    return any(p.search(key) for p in _FOUNDATION_LLM_METHOD_PATTERNS)
+
+
+def is_umbrella_ai_method(name: str) -> bool:
+    """True for vague AI/ML/DL umbrella phrases that are not contribution Methods."""
+    key = _norm_key(name)
+    if key in _UMBRELLA_AI_METHODS:
+        return True
+    return any(p.search(key) for p in _UMBRELLA_AI_METHOD_PATTERNS)
 
 
 def is_generic_task(name: str) -> bool:

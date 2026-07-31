@@ -44,6 +44,50 @@ def test_extract_evidence_keeps_longer_quote():
     assert len(rows[0]["摘录"]) == 200  # was 120; now allow up to 240 or full if shorter
 
 
+def test_extract_evidence_uses_sample_pmids_for_aggregated_limitations():
+    from gap_ui import extract_evidence
+
+    events = [{
+        "type": "tool_result",
+        "name": "author_stated_gaps",
+        "result": {
+            "data": [{
+                "limitation": "small sample size",
+                "paper_cnt": 3,
+                "sample_pmids": "111,222,333",
+                "source_pmid": "111",
+                "evidence_section": "limitations",
+                "evidence_quote": "limited cohort size",
+                "sections": "limitations,discussion",
+                "quotes": "limited cohort size,another quote",
+            }]
+        },
+    }]
+    rows = extract_evidence(events)
+    assert len(rows) == 1
+    assert rows[0]["PMID"] == "111"
+    assert rows[0]["摘录"] == "limited cohort size"
+    assert rows[0]["标题/实体"] == "small sample size"
+
+
+def test_extract_evidence_falls_back_to_first_sample_pmid():
+    from gap_ui import extract_evidence
+
+    events = [{
+        "type": "tool_result",
+        "name": "author_stated_gaps",
+        "result": {
+            "data": [{
+                "limitation": "no external validation",
+                "sample_pmids": "555,666",
+                "quotes": "needs external cohort",
+            }]
+        },
+    }]
+    rows = extract_evidence(events)
+    assert rows[0]["PMID"] == "555"
+
+
 def test_provenance_row_key_stable_and_distinct():
     from gap_ui import provenance_row_key
 
@@ -56,15 +100,30 @@ def test_provenance_row_key_stable_and_distinct():
     assert provenance_row_key("evidence", "123", "title", "quote one") == a
 
 
-def test_partition_provenance_rows_caps_at_30():
-    from gap_ui import PROVENANCE_LIST_LIMIT, partition_provenance_rows
+def test_partition_provenance_rows_caps_at_10():
+    from gap_ui import PAPER_LIST_LIMIT, partition_provenance_rows
 
-    rows = [{"PMID": str(i)} for i in range(35)]
+    rows = [{"PMID": str(i)} for i in range(15)]
     head, tail = partition_provenance_rows(rows)
-    assert len(head) == PROVENANCE_LIST_LIMIT == 30
+    assert len(head) == PAPER_LIST_LIMIT == 10
     assert len(tail) == 5
     assert head[0]["PMID"] == "0"
-    assert tail[0]["PMID"] == "30"
+    assert tail[0]["PMID"] == "10"
+
+
+def test_group_evidence_by_source_preserves_order():
+    from gap_ui import group_evidence_by_source
+
+    rows = [
+        {"工具": "高引近期论文", "PMID": "1"},
+        {"工具": "作者自述空白", "PMID": "2"},
+        {"工具": "高引近期论文", "PMID": "3"},
+        {"工具": "", "PMID": "4"},
+    ]
+    groups = group_evidence_by_source(rows)
+    assert [name for name, _ in groups] == ["高引近期论文", "作者自述空白", "其他"]
+    assert [r["PMID"] for r in groups[0][1]] == ["1", "3"]
+    assert [r["PMID"] for r in groups[2][1]] == ["4"]
 
 
 def test_extract_evidence_keeps_full_title():
