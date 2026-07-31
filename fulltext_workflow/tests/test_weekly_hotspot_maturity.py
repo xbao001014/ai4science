@@ -81,6 +81,27 @@ def test_llm_excluded_from_emerging_but_in_active(monkeypatch):
     assert niche["method_maturity"] == "nascent"
 
 
+def test_frequency_established_method_is_demoted_but_niche_stays_emerging(monkeypatch):
+    _tmp_db(monkeypatch)
+    for index in range(10):
+        pmid = f"freq-{index}"
+        paper_id = _paper(pmid, 2)
+        _edge(pmid, paper_id, "APPLIES_METHOD", "freq-established-method", "Method")
+        _edge(pmid, paper_id, "TARGETS_DISEASE", "disease-a", "Disease")
+
+    niche_paper = _paper("niche", 3)
+    _edge("niche", niche_paper, "APPLIES_METHOD", "recent-niche-method", "Method")
+    _edge("niche", niche_paper, "TARGETS_DISEASE", "disease-a", "Disease")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    emerging_names = {row["name"] for row in payload["emerging_methods"]}
+    active_by_name = {row["name"]: row for row in payload["active_methods"]}
+
+    assert "freq-established-method" not in emerging_names
+    assert active_by_name["freq-established-method"]["method_maturity"] == "established"
+    assert "recent-niche-method" in emerging_names
+
+
 def test_report_labels_new_methods_and_lists_established(monkeypatch):
     _tmp_db(monkeypatch)
     paper_id = _paper("1", 2)
@@ -95,3 +116,17 @@ def test_report_labels_new_methods_and_lists_established(monkeypatch):
     assert "## Emerging Methods (新苗头)" in report
     assert "### Established Methods (active this window)" in report
     assert "- large language model (corpus papers: 1)" in report
+
+
+def test_report_omits_established_heading_when_none_are_active(monkeypatch):
+    _tmp_db(monkeypatch)
+    paper_id = _paper("1", 2)
+    _edge("1", paper_id, "APPLIES_METHOD", "niche-new-method", "Method")
+    _edge("1", paper_id, "TARGETS_DISEASE", "disease-a", "Disease")
+
+    report = generate_hotspot_report(
+        compute_weekly_hotspots(window_days=14, prior_days=14),
+        wow={"has_baseline": False, "previous_week_id": "2026-W01", "boards": {}},
+    )
+
+    assert "### Established Methods (active this window)" not in report

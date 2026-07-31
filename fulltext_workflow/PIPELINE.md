@@ -481,6 +481,7 @@ FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=
 HOTSPOT_WINDOW_DAYS=14                 # weekly 热点检测窗口（默认跟 FETCH_EDAT_DAYS）
 HOTSPOT_PRIOR_WINDOW_DAYS=14           # 上一窗口，用于算 velocity
 HOTSPOT_MIN_RECENT_PAPERS=2            # 实体至少 N 篇窗口内发表论文才上榜
+HOTSPOT_ESTABLISHED_MIN_PAPERS=10      # 全库 APPLIES_METHOD 达 N 篇即成熟，过滤出新苗头主榜
 OPS_MEMORY_ENABLED=1
 OPS_MEMORY_LOOKBACK_RUNS=4
 ```
@@ -533,7 +534,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 **board 类型**：`method` / `disease` / `task` / `combo` / `limitation`  
 **combo 的 item_key**：`{method}|{disease}`
 
-一次性 bulk 入库时 prior 发表窗口可能偏空，周环比应依赖**持久化快照**。
+一次性 bulk 入库时 prior 发表窗口可能偏空，周环比应依赖**持久化快照**。方法榜启用新苗头筛选后的首个过渡周，上一快照中的成熟方法可能因重新分类被标为 `Cooled`；这不代表实际热度下降。
 
 **周环比**（`compare_with_previous_week`）：
 
@@ -553,7 +554,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 
 相关工具与 UI：
 
-- **emerging_gap_opportunities**（可迁移候选）：升温 method × 稀疏 disease 组合，且需 **ok Task 桥**（`bridge_task`、`bridge_mode`）；**非**热门实体笛卡尔积交叉。`opportunity_score = emerging_score + literature_gap 分档 + bridge_bonus`（同篇桥接加分高于跨篇）。当前 Task 质量不足时列表为空属预期——待 Task 抽取质量提升或全库重抽后再看。
+- **emerging_gap_opportunities**（可迁移候选）：升温 method × 稀疏 disease 组合，且需 **ok Task 桥**（`bridge_task`、`bridge_mode`）；**非**热门实体笛卡尔积交叉。`opportunity_score = emerging_score + literature_gap 分档 + bridge_bonus + context_novelty − maturity_penalty + nascent_bonus + actionability_bump`（同篇桥接加分高于跨篇；binding / public dataset 可加 actionability bump）。当前 Task 质量不足时列表为空属预期——待 Task 抽取质量提升或全库重抽后再看。
 - **hotspot-brief**：热点 JSON → 中文周报摘要（可迁移候选语义同上）
 - **gap_ui → Weekly Hotspot**：方法/病种/组合/**可迁移候选** + WoW + 一键简报
 

@@ -602,7 +602,7 @@ def compute_emerging_gap_opportunities(
         str(row["name"]): row
         for row in (data.get("active_methods") or data.get("emerging_methods", []))[:20]
     }
-    method_counts = corpus_applies_method_counts()
+    method_counts: dict[str, int] | None = None
     hot_methods = set(method_stats)
     hot_diseases = {
         str(row["name"]) for row in data.get("heating_diseases", [])[:20]
@@ -706,10 +706,14 @@ def compute_emerging_gap_opportunities(
             literature_gap = "unexplored" if paper_cnt == 0 else "minimal"
             stats = method_stats[method]
             hot_score = float(stats.get("emerging_score") or 0)
-            maturity = stats.get("method_maturity") or classify_method_maturity(
-                method,
-                int(stats.get("corpus_paper_cnt") or method_counts.get(method, 0)),
-            )
+            maturity = stats.get("method_maturity")
+            if not maturity or "corpus_paper_cnt" not in stats:
+                if method_counts is None:
+                    method_counts = corpus_applies_method_counts()
+                maturity = classify_method_maturity(
+                    method,
+                    int(stats.get("corpus_paper_cnt") or method_counts.get(method, 0)),
+                )
             novelty = context_novelty_bonus(paper_cnt)
             penalty = maturity_penalty(maturity)
             nascent = nascent_bonus(maturity)
@@ -800,6 +804,10 @@ def _format_wow_section(wow: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"Compared with **{wow['previous_week_id']}** (persisted snapshot).")
+    lines.append(
+        "> Method-board comparisons can label previously established methods as dropped for "
+        "one transition week after novelty gating; this is reclassification, not necessarily cooling."
+    )
     lines.append("")
     board_titles = {
         "method": "Methods",
@@ -842,6 +850,11 @@ def generate_hotspot_report(
     """Render markdown report from compute_weekly_hotspots() payload."""
     data = payload or compute_weekly_hotspots()
     comparison = wow if wow is not None else compare_with_previous_week(data)
+    established = [
+        row
+        for row in data.get("active_methods", [])
+        if row.get("method_maturity") == "established"
+    ][:5]
     lines = [
         f"# Weekly Hotspot Report — {data['week_id']}",
         "",
@@ -878,14 +891,18 @@ def generate_hotspot_report(
                 "top_pmids",
             ],
         ),
-        "### Established Methods (active this window)",
-        "",
-        *[
-            f"- {row['name']} (corpus papers: {row.get('corpus_paper_cnt', 0)})"
-            for row in data.get("active_methods", [])
-            if row.get("method_maturity") == "established"
-        ][:5],
-        "",
+    ])
+    if established:
+        lines.extend([
+            "### Established Methods (active this window)",
+            "",
+            *[
+                f"- {row['name']} (corpus papers: {row.get('corpus_paper_cnt', 0)})"
+                for row in established
+            ],
+            "",
+        ])
+    lines.extend([
         "## Heating Diseases",
         "",
         _format_table(

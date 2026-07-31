@@ -131,6 +131,10 @@ opportunity_score =
   emerging_score(method)          # or 0 if not in board
   + literature_gap_points(tier)   # 0→unexplored, ≤2→minimal
   + bridge_bonus                  # e.g. same-paper bridge > cross-paper; ok only
+  + context_novelty_bonus
+  - maturity_penalty
+  + nascent_bonus
+  + actionability_bump             # binding / public-dataset support, when available
 ```
 
 ### Output row fields

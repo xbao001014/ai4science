@@ -1670,6 +1670,10 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     wow = payload.get("week_over_week") or {}
     if wow.get("has_baseline"):
         st.markdown(f"**周环比** 对比 `{wow.get('previous_week_id')}`")
+        st.caption(
+            "方法榜启用新苗头筛选后的首个过渡周，既有成熟方法可能因重新分类显示为“降温”；"
+            "这不一定表示实际热度下降。"
+        )
         for board, title in [("method", "方法"), ("disease", "疾病"), ("combo", "组合")]:
             b = wow.get("boards", {}).get(board, {})
             new_e = ", ".join(r["label"][:40] for r in b.get("new_entrants", [])[:3]) or "—"
@@ -1718,6 +1722,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
+        st.caption("成熟度排序优先展示 nascent / emerging 方法组合；established 方法仍保留但后置。")
         safe_table(pd.DataFrame(payload.get("hot_combos", [])))
     with tab_o:
         opps = payload.get("emerging_gap_opportunities", [])
