@@ -102,3 +102,32 @@ def test_sparse_pair_with_ok_cross_paper_task_bridge_is_included(monkeypatch):
     assert hit[0]["bridge_quality"] == "ok"
     assert hit[0]["bridge_mode"] == "cross_paper"
     assert "disease-a" in hit[0]["support_diseases"]
+
+
+def test_established_method_transfer_is_demoted_not_dropped(monkeypatch):
+    _tmp_db(monkeypatch)
+    # LLM used on disease-a with ok task; disease-b shares task; sparse LLM×disease-b
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "large language model", "Method")
+    _edge("1", p1, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("1", p1, "PERFORMS_TASK", "survival prediction", "Task")
+    p2 = _paper("2", 3)
+    _edge("2", p2, "TARGETS_DISEASE", "disease-b", "Disease")
+    _edge("2", p2, "PERFORMS_TASK", "survival prediction", "Task")
+    # Nascent method with same bridge pattern for score comparison
+    p3 = _paper("3", 2)
+    _edge("3", p3, "APPLIES_METHOD", "niche-transfer-method", "Method")
+    _edge("3", p3, "TARGETS_DISEASE", "disease-a", "Disease")
+    _edge("3", p3, "PERFORMS_TASK", "survival prediction", "Task")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    rows = compute_emerging_gap_opportunities(window_days=14, payload=payload)
+    by_pair = {(r["method"], r["disease"]): r for r in rows}
+
+    llm_hit = by_pair.get(("large language model", "disease-b"))
+    niche_hit = by_pair.get(("niche-transfer-method", "disease-b"))
+    assert llm_hit is not None, rows
+    assert llm_hit["method_maturity"] == "established"
+    assert llm_hit["maturity_penalty"] == 2.0
+    assert niche_hit is not None, rows
+    assert niche_hit["opportunity_score"] > llm_hit["opportunity_score"]

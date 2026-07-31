@@ -1011,6 +1011,7 @@ TOOL_SCHEMAS: list[dict] = [
             "description": (
                 "Sparse method×disease transfer candidates requiring an ok Task bridge "
                 "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
+                "+ context novelty + nascent bonus − maturity penalty "
                 "+ optional binding actionability bump)"
             ),
             "parameters": {

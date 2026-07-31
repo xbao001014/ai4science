@@ -9,7 +9,14 @@ from typing import Any
 
 import config
 from analysis.impact_scoring import literature_gap_points, norm_if
-from analysis.method_maturity import annotate_method_rows, corpus_applies_method_counts
+from analysis.method_maturity import (
+    annotate_method_rows,
+    classify_method_maturity,
+    context_novelty_bonus,
+    corpus_applies_method_counts,
+    maturity_penalty,
+    nascent_bonus,
+)
 from db.schema import (
     get_conn,
     get_weekly_hotspot_snapshots,
@@ -593,8 +600,9 @@ def compute_emerging_gap_opportunities(
     )
     method_stats = {
         str(row["name"]): row
-        for row in data.get("emerging_methods", [])[:20]
+        for row in (data.get("active_methods") or data.get("emerging_methods", []))[:20]
     }
+    method_counts = corpus_applies_method_counts()
     hot_methods = set(method_stats)
     hot_diseases = {
         str(row["name"]) for row in data.get("heating_diseases", [])[:20]
@@ -698,9 +706,19 @@ def compute_emerging_gap_opportunities(
             literature_gap = "unexplored" if paper_cnt == 0 else "minimal"
             stats = method_stats[method]
             hot_score = float(stats.get("emerging_score") or 0)
+            maturity = stats.get("method_maturity") or classify_method_maturity(
+                method,
+                int(stats.get("corpus_paper_cnt") or method_counts.get(method, 0)),
+            )
+            novelty = context_novelty_bonus(paper_cnt)
+            penalty = maturity_penalty(maturity)
+            nascent = nascent_bonus(maturity)
             rows.append({
                 "method": method,
                 "disease": disease,
+                "method_maturity": maturity,
+                "context_novelty_bonus": novelty,
+                "maturity_penalty": penalty,
                 "literature_gap": literature_gap,
                 "literature_paper_cnt": paper_cnt,
                 "bridge_task": bridge_task,
@@ -711,7 +729,12 @@ def compute_emerging_gap_opportunities(
                 "velocity": stats.get("velocity"),
                 "emerging_score": hot_score,
                 "opportunity_score": round(
-                    hot_score + literature_gap_points(literature_gap) + bridge_bonus,
+                    hot_score
+                    + literature_gap_points(literature_gap)
+                    + bridge_bonus
+                    + novelty
+                    - penalty
+                    + nascent,
                     2,
                 ),
             })
@@ -732,6 +755,7 @@ def compute_emerging_gap_opportunities(
     rows.sort(
         key=lambda r: (
             -float(r["opportunity_score"]),
+            0 if r.get("method_maturity") != "established" else 1,
             -int(r.get("surveys_method_paper_cnt") or 0),
         )
     )
@@ -744,6 +768,7 @@ def tool_emerging_gap_opportunities(focus: str | None = None) -> dict[str, Any]:
     desc = (
         "Sparse method×disease transfer candidates requiring an ok Task bridge "
         "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
+        "+ context novelty + nascent bonus − maturity penalty "
         "+ optional binding actionability bump)"
     )
     if focus:
