@@ -35,6 +35,7 @@ from analysis.graph_tools import GAP_TOOLS, GAP_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import build_gap_feasibility_tools
 from analysis.focus_filter import normalize_focus
 from db.schema import db_stats, init_db
+from debate_labels import unwrap_outer_markdown_fence
 
 init_gap_registry()
 GAP_FEASIBILITY_TOOLS, GAP_FEASIBILITY_SCHEMAS = build_gap_feasibility_tools()
@@ -52,8 +53,8 @@ SKEPTIC_TOOL_NAMES = [
     "corpus_focus_coverage",
     "limitation_temporal_profile",
     "author_stated_gaps",
+    "improvement_suggestions_by_topic",
     "execute_kg_sql",
-    "disease_task_coverage",
 ]
 
 MODERATOR_TOOL_NAMES = [
@@ -132,6 +133,11 @@ SQL_FALLBACK_GUIDANCE = """\
 - Use execute_kg_sql only for a custom join, grouped count, year filter, or exact evidence cross-check \
 not exposed by an existing tool.
 - Keep SQL narrow: select explicit columns, use a meaningful WHERE clause, and include LIMIT.
+- When mixing AND with OR in WHERE, always parenthesize groups \
+(e.g. (disease_a OR disease_b) AND (method_x OR method_y)). Bare AND/OR chains are wrong because \
+AND binds tighter than OR and creates false hits.
+- After an empty SQL result, do not rescan with new title/keyword OR clauses; use curated tools \
+or finish with the evidence you already have.
 - Do not query raw document_sections unless exact section text is necessary.
 - When focus is set, pass focus=... into execute_kg_sql and reuse the returned focus_expansion \
 (phrases / suggested_sql_filter) for disease or title filters — never rely on a single spelling.
@@ -154,6 +160,7 @@ Tool-use rules:
 - If a focus is set, the **first tool call must be corpus_focus_coverage**; the summary must distinguish \
 focus_subset.papers from global.papers.
 - Use at most 6 tool calls.
+- Do not call the same tool twice in one phase.
 - Preferred order: corpus_focus_coverage → limitation_temporal_profile → emerging_gap_opportunities → \
 improvement_suggestions_by_topic → recent_highcite_papers → disease_task_coverage.
 - Use emerging_gap_opportunities for task-bridged transfer candidates, not Cartesian coverage holes.
@@ -196,12 +203,15 @@ Review principles:
 """ + SQL_FALLBACK_GUIDANCE + """\
 - Use at most 5 tool calls.
 - Prefer corpus_focus_coverage, limitation_temporal_profile, and author_stated_gaps, in that order.
+- Use improvement_suggestions_by_topic for action_type / follow-up evidence (do not SQL-scan \
+paper_improvement_suggestions for the same).
 - Use execute_kg_sql for targeted verification at most 2 times.
-- Use disease_task_coverage only when a cross-check of task coverage is needed.
 - If focus is set, **call corpus_focus_coverage first** and cite focus_subset size in corpus_limitations.
 - Independently verify the Opportunity Scout’s key quantitative claims.
 - Use limitation_temporal_profile for the temporal dimension.
 - Do not call tools outside your available tool list.
+- Never invent tools. Especially never call a tool named json/markdown/text — \
+JSON is **message content only** (use a ```json fence), not a tool call.
 - Do not label a limitation as a persistent gap if temporal_status=declining and resolution_signal=moderate.
 - May raise confidence if temporal_status=persistent and resolution_signal=none.
 - For each gap, check supporting paper counts, avg_cite, impact_tier; do not over-extrapolate from a single low-cite paper.
@@ -268,7 +278,9 @@ Do **not** guess organ_system (e.g. respiratory for nasopharyngeal / NPC); match
 from catalog results to the focus disease.
 - Do not call tools outside your available tool list.
 - Never invent tools. Especially never call a tool named json/markdown/text — \
-JSON or Markdown are **message content only** (use a fenced code block if needed), not tool calls.
+JSON or Markdown are **message content only**, not tool calls. \
+Revision JSON may use a ```json fence; the final Markdown report must be raw Markdown \
+(start with # or ##) — never wrap the whole report in a ```markdown fence.
 - Keep high-confidence gaps verified by the Evidence Reviewer; drop or downgrade false_gaps.
 - For weak_evidence_gaps, either require softer wording or explicitly mark evidence limits.
 - In Data summary, state corpus size and extracted-paper limits.
@@ -461,6 +473,8 @@ def stream_gap_debate_agent(
             role="optimist",
             max_iters=18,
             temperature=0.45,
+            max_sql_calls=0,
+            disallow_duplicate_tools=True,
         )
         optimist_proposal = last_assistant_content(opt_messages)
         yield {"type": "optimist_proposal", "round": round_num, "content": optimist_proposal}
@@ -472,12 +486,12 @@ def stream_gap_debate_agent(
             f"Cross-check the following Opportunity Scout candidates (round {round_num}):\n\n"
             f"{optimist_proposal}\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
-            + (
-                "Call corpus_focus_coverage first, then at least 3 tools to verify key claims.\n"
-                if focus
-                else "Call at least 3 tools first to verify key claims, "
-            )
-            + "then output the required JSON (verified / weak_evidence / false).",
+            "Follow the Evidence Reviewer budget (≤5 tools; execute_kg_sql at most 2 successful). "
+            "Prefer corpus_focus_coverage → limitation_temporal_profile → author_stated_gaps → "
+            "improvement_suggestions_by_topic; SQL only for targeted checks — not title keyword "
+            "scans or re-aggregating improvement suggestions. "
+            "Then output the required JSON as message content inside a ```json fence "
+            "(never call a tool named json).",
             memory_block,
         )
         ske_messages: list[dict] = [
@@ -491,6 +505,7 @@ def stream_gap_debate_agent(
             role="skeptic",
             max_iters=12,
             temperature=0.3,
+            max_sql_calls=2,
         )
         skeptic_text = last_assistant_content(ske_messages)
         skeptic_review = parse_json_block(
@@ -551,6 +566,7 @@ def stream_gap_debate_agent(
             max_iters=10,
             temperature=0.35,
             max_tokens=max(config.LLM_MAX_TOKENS, 8192),
+            max_sql_calls=2,
         )
         mod_text = last_assistant_content(mod_messages)
         completed_rounds = round_num
@@ -572,7 +588,7 @@ def stream_gap_debate_agent(
             if not is_last and mod_confidence < accept_score:
                 continue
 
-        final_report = mod_text
+        final_report = unwrap_outer_markdown_fence(mod_text)
         final_confidence = mod_confidence if mod_confidence else confidence
 
         if (confidence >= accept_score or is_last or accept or
@@ -581,7 +597,7 @@ def stream_gap_debate_agent(
 
     yield {
         "type": "final",
-        "content": final_report or optimist_proposal,
+        "content": unwrap_outer_markdown_fence(final_report or optimist_proposal),
         "rounds": completed_rounds,
         "confidence": final_confidence,
     }

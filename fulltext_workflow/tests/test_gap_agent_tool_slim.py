@@ -27,6 +27,8 @@ def test_skeptic_bundle_has_sql_not_scanners():
     names = [s["function"]["name"] for s in schemas]
     assert names == SKEPTIC_TOOL_NAMES
     assert "execute_kg_sql" in names
+    assert "improvement_suggestions_by_topic" in names
+    assert "disease_task_coverage" not in names
     assert "method_disease_combo_gap" not in names
     assert not any(n.startswith("graph_") for n in names)
 
@@ -53,6 +55,7 @@ def test_optimist_prompt_uses_budget_not_forced_scan():
     assert "at least 5 tools" not in OPTIMIST_SYSTEM_PROMPT
     assert "graph_*" not in OPTIMIST_SYSTEM_PROMPT
     assert "≤6" in OPTIMIST_SYSTEM_PROMPT or "at most 6" in OPTIMIST_SYSTEM_PROMPT.lower()
+    assert "same tool twice" in OPTIMIST_SYSTEM_PROMPT.lower()
     assert "emerging_gap_opportunities" in OPTIMIST_SYSTEM_PROMPT
     assert "improvement_suggestions_by_topic" in OPTIMIST_SYSTEM_PROMPT
 
@@ -60,6 +63,7 @@ def test_optimist_prompt_uses_budget_not_forced_scan():
 def test_skeptic_prompt_limits_sql_and_scan():
     assert "execute_kg_sql" in SKEPTIC_SYSTEM_PROMPT
     assert "at most 2" in SKEPTIC_SYSTEM_PROMPT.lower() or "max 2" in SKEPTIC_SYSTEM_PROMPT.lower()
+    assert "improvement_suggestions_by_topic" in SKEPTIC_SYSTEM_PROMPT
     assert "method_disease_combo_gap" not in SKEPTIC_SYSTEM_PROMPT
 
 

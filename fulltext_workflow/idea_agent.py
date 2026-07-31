@@ -467,6 +467,7 @@ SQL_FALLBACK_GUIDANCE = """\
 - Use curated tools first for standard topic scoping.
 - Use execute_kg_sql only for a custom join, grouped count, year filter, or exact evidence verification.
 - Keep SQL narrow with explicit columns and LIMIT.
+- When mixing AND with OR, parenthesize groups ((a OR b) AND (c OR d)); AND binds tighter than OR.
 """
 
 
@@ -814,6 +815,7 @@ def stream_idea_agent(
             role="generator",
             max_iters=20,
             temperature=0.45,
+            max_sql_calls=0,
         ):
             if event.get("type") == "error":
                 agent_failed = True
@@ -890,6 +892,7 @@ def stream_idea_agent(
             role="critic",
             max_iters=12,
             temperature=0.3,
+            max_sql_calls=2,
         ):
             if event.get("type") == "error":
                 agent_failed = True

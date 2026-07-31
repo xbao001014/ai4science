@@ -26,7 +26,7 @@ Rules:
 - emerging_gap_opportunities = task-bridged transfer candidates (bridge_task, bridge_mode); do NOT treat unbridged coverage holes as opportunities.
 - Mention exact numbers (recent_cnt, velocity, opportunity_score, bridge_task) from the data.
 - emerging_methods = 新苗头 only (non-established). Do NOT call established baselines (LLM, SVM, CNN, deep learning, etc.) 新兴热点.
-- If mentioning mature methods, only describe them as 情境迁移 / 成熟方法交叉, and only when they appear in emerging_gap_opportunities with method_maturity=established.
+- emerging_gap_opportunities exclude established methods from the heat pool; do not recommend LLM/SVM transfers as 可迁移候选.
 - Prefer nascent/emerging methods in 升温方向.
 - No emoji. Professional tone. ~400-600 Chinese characters total.
 """
@@ -102,6 +102,7 @@ def save_hotspot_brief(
     *,
     window_days: int | None = None,
     prior_days: int | None = None,
+    min_recent: int | None = None,
     persist: bool = True,
 ) -> tuple[str, str, dict[str, Any]]:
     """Compute hotspots, optional persist, LLM brief. Returns (brief_path, brief_text, payload)."""
@@ -113,7 +114,11 @@ def save_hotspot_brief(
         week_id,
     )
 
-    payload = compute_weekly_hotspots(window_days=window_days, prior_days=prior_days)
+    payload = compute_weekly_hotspots(
+        window_days=window_days,
+        prior_days=prior_days,
+        min_recent=min_recent,
+    )
     payload["week_over_week"] = compare_with_previous_week(payload)
     payload["emerging_gap_opportunities"] = compute_emerging_gap_opportunities(
         window_days=window_days,

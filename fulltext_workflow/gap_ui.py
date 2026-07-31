@@ -113,6 +113,7 @@ from debate_labels import (  # noqa: E402
     ROLE_DESCRIPTIONS,
     humanize_debate_report,
     role_display,
+    unwrap_outer_markdown_fence,
 )
 from analysis.gap_tools import tool_method_disease_combo_gap  # noqa: E402
 from utils.tool_result_summary import (  # noqa: E402
@@ -1739,14 +1740,18 @@ def render_gap_visualization_tab(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_weekly_hotspot_payload(_version: int, window_days: int) -> dict:
+def _load_weekly_hotspot_payload(
+    _version: int, window_days: int, min_recent: int
+) -> dict:
     from analysis.weekly_hotspot import (
         compare_with_previous_week,
         compute_emerging_gap_opportunities,
         compute_weekly_hotspots,
     )
 
-    payload = compute_weekly_hotspots(window_days=window_days)
+    payload = compute_weekly_hotspots(
+        window_days=window_days, min_recent=min_recent
+    )
     payload["week_over_week"] = compare_with_previous_week(payload)
     payload["emerging_gap_opportunities"] = compute_emerging_gap_opportunities(
         window_days=window_days,
@@ -1768,8 +1773,9 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
 
     st.subheader("每周研究热点")
     st.caption(
-        f"发表窗口：**{config.HOTSPOT_WINDOW_DAYS} 天**（`papers.pub_date`，"
+        f"默认发表窗口：**{config.HOTSPOT_WINDOW_DAYS} 天**（`papers.pub_date`，"
         "仅 `date_precision` ∈ day/month） · "
+        f"默认最少近窗篇数：**{config.HOTSPOT_MIN_RECENT_PAPERS}** · "
         "年精度日期不进主榜 · 周环比依赖已持久化的快照。"
     )
 
@@ -1781,14 +1787,25 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     c3.metric("当前周", week_id())
     c4.metric("上一快照", weeks[1] if len(weeks) > 1 else "—")
 
-    window_days = st.slider(
-        "发表窗口（天）",
-        7,
-        30,
-        config.HOTSPOT_WINDOW_DAYS,
-        key="hotspot_window_days",
-    )
-    payload = _load_weekly_hotspot_payload(len(weeks), window_days)
+    ctrl1, ctrl2 = st.columns(2)
+    with ctrl1:
+        window_days = st.slider(
+            "发表窗口（天）",
+            7,
+            60,
+            config.HOTSPOT_WINDOW_DAYS,
+            key="hotspot_window_days",
+        )
+    with ctrl2:
+        min_recent = st.slider(
+            "最少近窗篇数（进方法/疾病/任务榜）",
+            1,
+            5,
+            config.HOTSPOT_MIN_RECENT_PAPERS,
+            key="hotspot_min_recent",
+            help="默认 2：同概念至少 2 篇才进主榜。调到 1 可看到更多单篇新苗头（噪声也会增加）。",
+        )
+    payload = _load_weekly_hotspot_payload(len(weeks), window_days, min_recent)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric(
@@ -1828,14 +1845,18 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         brief_btn = st.button("生成 LLM 简报", use_container_width=True)
 
     if save_btn:
-        path, saved = save_hotspot_report(persist=True)
+        path, saved = save_hotspot_report(
+            persist=True, window_days=window_days, min_recent=min_recent
+        )
         st.success(f"已保存 {path}（{saved.get('snapshot_rows', 0)} 行）")
         _load_weekly_hotspot_payload.clear()
         st.rerun()
 
     if brief_btn:
         with st.spinner(f"正在生成简报（{config.LLM_MODEL_AGENT}）…"):
-            brief_path, brief_text, _ = save_hotspot_brief(persist=True)
+            brief_path, brief_text, _ = save_hotspot_brief(
+                persist=True, window_days=window_days, min_recent=min_recent
+            )
         st.session_state["hotspot_brief"] = brief_text
         st.success(f"简报已保存：{brief_path}")
 
@@ -1847,20 +1868,49 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "局限",
     ])
     with tab_m:
-        st.caption("新苗头；已过滤 established（成熟）方法。已按 method synonym 软归并（canonical 聚合）。")
+        st.caption(
+            f"新苗头；已过滤 established（成熟）方法。已按 method synonym 软归并。"
+            f"当前最少近窗篇数 = **{min_recent}**。"
+        )
         safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
         with st.expander("本周活跃（含成熟方法）", expanded=False):
             safe_table(pd.DataFrame(payload.get("active_methods", [])))
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
-        st.caption("成熟度排序优先展示 nascent / emerging 方法组合；established 方法仍保留但后置。")
-        safe_table(pd.DataFrame(payload.get("hot_combos", [])))
+        st.caption(
+            "按方法折叠：同方法多病种合并为一行（diseases 列）；"
+            "recent_cnt 为该方法窗口内不重复论文数。"
+            "成熟度排序优先 nascent / emerging；established 后置。"
+        )
+        by_method = payload.get("hot_combos_by_method") or []
+        if by_method:
+            cols = [
+                "method",
+                "disease_cnt",
+                "diseases",
+                "recent_cnt",
+                "prior_cnt",
+                "velocity",
+                "gap_phase",
+                "emerging_score",
+                "method_maturity",
+                "corpus_paper_cnt",
+            ]
+            df_m = pd.DataFrame(by_method)
+            ordered = [c for c in cols if c in df_m.columns]
+            extra = [c for c in df_m.columns if c not in ordered]
+            safe_table(df_m[ordered + extra])
+        else:
+            safe_table(pd.DataFrame(payload.get("hot_combos", [])))
+        with st.expander("方法×疾病明细（未折叠）", expanded=False):
+            safe_table(pd.DataFrame(payload.get("hot_combos", [])))
     with tab_o:
         opps = payload.get("emerging_gap_opportunities", [])
         st.caption(
             "需合格 Task 桥（bridge_task / bridge_quality=ok）；"
-            "无桥接的文献覆盖空洞不计入；established 方法可出现但已降权，"
+            "无桥接的文献覆盖空洞不计入；"
+            "established 方法（LLM/SVM 等）已从可迁移热池过滤；"
             "列表为空优于假阳性。"
         )
         if opps:
@@ -2118,14 +2168,15 @@ def main() -> None:
                     ):
                         st.markdown(event.get("content", ""))
                 elif etype == "final":
-                    st.session_state["report"] = event.get("content", "")
+                    final_md = unwrap_outer_markdown_fence(event.get("content", ""))
+                    st.session_state["report"] = final_md
                     st.session_state["debate_rounds"] = event.get("rounds", 1)
                     st.session_state["debate_confidence"] = event.get("confidence", 0.0)
-                    if persist_ops_memory_input and event.get("content"):
+                    if persist_ops_memory_input and final_md:
                         from analysis.ops_memory import persist_debate_report  # noqa: E402
 
                         rid = persist_debate_report(
-                            event["content"],
+                            final_md,
                             focus=focus_input or None,
                             source="gap_ui",
                             enabled=True,
@@ -2199,14 +2250,18 @@ def main() -> None:
                         f"机会侦察 — 第 {card['round']} 轮候选",
                         expanded=False,
                     ):
-                        st.markdown(card.get("content", "")[:4000])
+                        st.markdown(
+                            unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
+                        )
                 elif ct == "skeptic_review":
                     with st.expander(
                         f"证据审阅 — 第 {card['round']} 轮 "
                         f"（置信度 {card.get('confidence', 0):.1f}/10）",
                         expanded=False,
                     ):
-                        st.markdown(card.get("content", "")[:4000])
+                        st.markdown(
+                            unwrap_outer_markdown_fence(card.get("content", ""))[:4000]
+                        )
                 elif ct == "debate_feedback":
                     st.warning(
                         f"第 {card['round']} 轮 · 综合终审修订："
@@ -2537,11 +2592,12 @@ def main() -> None:
                     st.warning(
                         "提案看起来不完整。请重新生成，或检查状态日志中的 API / 工具错误。"
                     )
+                display_proposal = unwrap_outer_markdown_fence(proposal)
                 st.markdown("### 最终提案")
-                st.markdown(proposal)
+                st.markdown(display_proposal)
                 st.download_button(
                     "下载提案（Markdown）",
-                    data=proposal.encode("utf-8"),
+                    data=display_proposal.encode("utf-8"),
                     file_name=f"proposal_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
                     mime="text/markdown",
                 )

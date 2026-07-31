@@ -90,14 +90,24 @@ def test_phantom_json_tool_with_payload_recovers_as_content(monkeypatch):
 
 def test_phantom_json_tool_empty_args_gets_corrective_hint(monkeypatch):
     calls = {"n": 0}
+    second_kwargs: dict = {}
+    schema = {
+        "type": "function",
+        "function": {
+            "name": "corpus_focus_coverage",
+            "description": "coverage",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
 
-    def fake_create(**_kwargs):
+    def fake_create(**kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return _completion(
                 _assistant_tool_call("json", "{}"),
                 finish_reason="tool_calls",
             )
+        second_kwargs.update(kwargs)
         # Second turn: model complies with a normal content message
         msg = SimpleNamespace(
             content='```json\n{"accept": false, "overall_confidence": 5.0}\n```',
@@ -120,7 +130,7 @@ def test_phantom_json_tool_empty_args_gets_corrective_hint(monkeypatch):
         run_tool_agent(
             messages=messages,
             tools={"corpus_focus_coverage": lambda: {}},
-            tool_schemas=[],
+            tool_schemas=[schema],
             role="moderator",
             max_iters=3,
         )
@@ -132,3 +142,40 @@ def test_phantom_json_tool_empty_args_gets_corrective_hint(monkeypatch):
     assert tool_msgs
     assert "message content" in tool_msgs[0]["content"].lower()
     assert calls["n"] == 2
+    # Empty phantom → next turn forces text (tools disabled).
+    assert second_kwargs.get("tools") is None
+    assert second_kwargs.get("tool_choice") == "none"
+    assert any(
+        m.get("role") == "user" and "tools are disabled" in m.get("content", "").lower()
+        for m in messages
+    )
+
+
+def test_phantom_json_empty_in_text_only_mode_stops(monkeypatch):
+    """If tools are already off and model still calls json:{}, do not loop forever."""
+    calls = {"n": 0}
+
+    def fake_create(**_kwargs):
+        calls["n"] += 1
+        return _completion(
+            _assistant_tool_call("json", "{}"),
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(
+        agent_utils._client.chat.completions,
+        "create",
+        fake_create,
+    )
+
+    messages = [{"role": "user", "content": "synthesize"}]
+    list(
+        run_tool_agent(
+            messages=messages,
+            tools={},
+            tool_schemas=[],
+            role="skeptic",
+            max_iters=5,
+        )
+    )
+    assert calls["n"] == 1

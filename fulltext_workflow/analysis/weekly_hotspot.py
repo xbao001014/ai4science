@@ -345,6 +345,81 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
     return [str(r["pmid"]) for r in rows if str(r["name"]) == entity_name][:3]
 
 
+def _combo_gap_phase(recent: int, prior: int) -> str:
+    if prior == 0 and recent <= 2:
+        return "nascent"
+    if recent > prior:
+        return "heating"
+    if recent >= 2:
+        return "active"
+    return "stable"
+
+
+def _format_disease_list(diseases: list[str], *, max_show: int = 8) -> str:
+    shown = diseases[:max_show]
+    text = ", ".join(shown)
+    if len(diseases) > max_show:
+        text += f" …(+{len(diseases) - max_show})"
+    return text
+
+
+def group_hot_combos_by_method(combos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse pair rows into one row per method (diseases listed together).
+
+    Prefer payload field ``hot_combos_by_method`` from ``compute_weekly_hotspots``,
+    which uses distinct-PMID unions. This helper is a display fallback that
+    summarizes already-built pair rows (counts taken from the strongest pair).
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for row in combos:
+        method = str(row.get("method") or "")
+        if not method:
+            continue
+        group = groups.get(method)
+        if group is None:
+            group = {
+                "method": method,
+                "diseases_list": [],
+                "recent_cnt": 0,
+                "prior_cnt": 0,
+                "velocity": 0.0,
+                "gap_phase": row.get("gap_phase"),
+                "emerging_score": 0.0,
+                "method_maturity": row.get("method_maturity"),
+                "corpus_paper_cnt": row.get("corpus_paper_cnt"),
+            }
+            groups[method] = group
+        disease = str(row.get("disease") or "").strip()
+        if disease:
+            group["diseases_list"].append(disease)
+        score = float(row.get("emerging_score") or 0)
+        if score >= float(group["emerging_score"] or 0):
+            group["emerging_score"] = row.get("emerging_score")
+            group["recent_cnt"] = int(row.get("recent_cnt") or 0)
+            group["prior_cnt"] = int(row.get("prior_cnt") or 0)
+            group["velocity"] = row.get("velocity")
+            group["gap_phase"] = row.get("gap_phase")
+        if group.get("method_maturity") is None:
+            group["method_maturity"] = row.get("method_maturity")
+        if group.get("corpus_paper_cnt") is None:
+            group["corpus_paper_cnt"] = row.get("corpus_paper_cnt")
+
+    out: list[dict[str, Any]] = []
+    for group in groups.values():
+        diseases = sorted(set(group.pop("diseases_list")))
+        group["disease_cnt"] = len(diseases)
+        group["diseases"] = _format_disease_list(diseases)
+        out.append(group)
+    out.sort(
+        key=lambda r: (
+            0 if r.get("method_maturity") != "established" else 1,
+            -float(r.get("emerging_score") or 0),
+            str(r.get("method") or ""),
+        )
+    )
+    return out
+
+
 def compute_hot_combos(
     *,
     window_days: int | None = None,
@@ -352,6 +427,21 @@ def compute_hot_combos(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Method×disease pairs active in the recent publication window."""
+    pairs, _grouped = compute_hot_combo_boards(
+        window_days=window_days,
+        prior_days=prior_days,
+        limit=limit,
+    )
+    return pairs
+
+
+def compute_hot_combo_boards(
+    *,
+    window_days: int | None = None,
+    prior_days: int | None = None,
+    limit: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (pair rows, method-collapsed rows with distinct-PMID stats)."""
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
@@ -399,28 +489,30 @@ def compute_hot_combos(
             bucket["prior_pmids"].add(str(row["pmid"]))
 
     out: list[dict[str, Any]] = []
+    method_agg: dict[str, dict[str, Any]] = {}
     for (method, disease), bucket in buckets.items():
         recent = len(bucket["recent_pmids"])
-        prior = len(bucket["prior_pmids"])
+        prior_cnt = len(bucket["prior_pmids"])
         if recent <= 0:
             continue
-        if prior == 0 and recent <= 2:
-            phase = "nascent"
-        elif recent > prior:
-            phase = "heating"
-        elif recent >= 2:
-            phase = "active"
-        else:
-            phase = "stable"
+        phase = _combo_gap_phase(recent, prior_cnt)
         out.append({
             "method": method,
             "disease": disease,
             "recent_cnt": recent,
-            "prior_cnt": prior,
-            "velocity": round((recent - prior) / max(prior, 1), 2),
+            "prior_cnt": prior_cnt,
+            "velocity": round((recent - prior_cnt) / max(prior_cnt, 1), 2),
             "gap_phase": phase,
-            "emerging_score": emerging_score(recent, prior, 0, 0, 0),
+            "emerging_score": emerging_score(recent, prior_cnt, 0, 0, 0),
         })
+        agg = method_agg.setdefault(
+            method,
+            {"recent_pmids": set(), "prior_pmids": set(), "diseases": set()},
+        )
+        agg["recent_pmids"].update(bucket["recent_pmids"])
+        agg["prior_pmids"].update(bucket["prior_pmids"])
+        agg["diseases"].add(disease)
+
     out.sort(
         key=lambda r: (
             -float(r["emerging_score"]),
@@ -428,7 +520,32 @@ def compute_hot_combos(
             str(r["disease"]),
         )
     )
-    return out[:top_n]
+
+    grouped: list[dict[str, Any]] = []
+    for method, agg in method_agg.items():
+        recent = len(agg["recent_pmids"])
+        prior_cnt = len(agg["prior_pmids"])
+        if recent <= 0:
+            continue
+        diseases = sorted(agg["diseases"])
+        phase = _combo_gap_phase(recent, prior_cnt)
+        grouped.append({
+            "method": method,
+            "diseases": _format_disease_list(diseases),
+            "disease_cnt": len(diseases),
+            "recent_cnt": recent,
+            "prior_cnt": prior_cnt,
+            "velocity": round((recent - prior_cnt) / max(prior_cnt, 1), 2),
+            "gap_phase": phase,
+            "emerging_score": emerging_score(recent, prior_cnt, 0, 0, 0),
+        })
+    grouped.sort(
+        key=lambda r: (
+            -float(r["emerging_score"]),
+            str(r["method"]),
+        )
+    )
+    return out[:top_n], grouped[:top_n]
 
 
 def compute_emerging_limitations(
@@ -468,18 +585,28 @@ def compute_weekly_hotspots(
     *,
     window_days: int | None = None,
     prior_days: int | None = None,
+    min_recent: int | None = None,
 ) -> dict[str, Any]:
     """Aggregate all weekly hotspot leaderboards."""
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
+    min_r = min_recent if min_recent is not None else config.HOTSPOT_MIN_RECENT_PAPERS
     wid = week_id()
     in_window = count_window_papers(window)
     excluded = count_excluded_low_precision(window)
 
-    methods = compute_emerging_entities("Method", window_days=window, prior_days=prior)
-    diseases = compute_emerging_entities("Disease", window_days=window, prior_days=prior)
-    tasks = compute_emerging_entities("Task", window_days=window, prior_days=prior)
-    combos = compute_hot_combos(window_days=window, prior_days=prior)
+    methods = compute_emerging_entities(
+        "Method", window_days=window, prior_days=prior, min_recent=min_r
+    )
+    diseases = compute_emerging_entities(
+        "Disease", window_days=window, prior_days=prior, min_recent=min_r
+    )
+    tasks = compute_emerging_entities(
+        "Task", window_days=window, prior_days=prior, min_recent=min_r
+    )
+    combos, combos_by_method = compute_hot_combo_boards(
+        window_days=window, prior_days=prior
+    )
     limitations = compute_emerging_limitations(window_days=window)
     counts = corpus_applies_method_counts_canonical()
     annotate_method_rows(methods, counts=counts)
@@ -488,12 +615,13 @@ def compute_weekly_hotspots(
         row for row in methods if row.get("method_maturity") != "established"
     ]
     annotate_method_rows(combos, name_key="method", counts=counts)
-    combos.sort(
-        key=lambda row: (
-            0 if row.get("method_maturity") != "established" else 1,
-            -float(row.get("emerging_score") or 0),
-        )
+    annotate_method_rows(combos_by_method, name_key="method", counts=counts)
+    _maturity_sort = lambda row: (
+        0 if row.get("method_maturity") != "established" else 1,
+        -float(row.get("emerging_score") or 0),
     )
+    combos.sort(key=_maturity_sort)
+    combos_by_method.sort(key=_maturity_sort)
 
     for section in (emerging_methods, diseases, tasks):
         for row in section[:5]:
@@ -506,6 +634,7 @@ def compute_weekly_hotspots(
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "window_days": window,
         "prior_window_days": prior,
+        "min_recent_papers": min_r,
         "time_axis": "pub_date",
         "eligible_precision": list(_ELIGIBLE_PRECISION),
         "papers_in_window": in_window,
@@ -517,6 +646,7 @@ def compute_weekly_hotspots(
         "heating_diseases": diseases,
         "emerging_tasks": tasks,
         "hot_combos": combos,
+        "hot_combos_by_method": combos_by_method,
         "new_limitations": limitations,
     }
 
@@ -719,9 +849,18 @@ def compute_emerging_gap_opportunities(
         window_days=window_days,
         prior_days=prior_days,
     )
+    # Prefer 新苗头 board; never use established methods (LLM/SVM/…) as transfer heat.
+    heat_rows = data.get("emerging_methods") or []
+    if not heat_rows:
+        heat_rows = [
+            row
+            for row in (data.get("active_methods") or [])
+            if row.get("method_maturity") != "established"
+        ]
     method_stats = {
         resolve_method_canonical(str(row["name"])): row
-        for row in (data.get("active_methods") or data.get("emerging_methods", []))[:20]
+        for row in heat_rows[:20]
+        if row.get("method_maturity") != "established"
     }
     method_counts: dict[str, int] | None = None
     hot_methods = set(method_stats)
@@ -893,10 +1032,11 @@ def compute_emerging_gap_opportunities(
 def tool_emerging_gap_opportunities(focus: str | None = None) -> dict[str, Any]:
     rows = compute_emerging_gap_opportunities(focus=focus)
     desc = (
-        "Sparse method×disease transfer candidates requiring an ok Task bridge "
+        "Sparse method×disease transfer candidates from non-established (新苗头) methods "
+        "requiring an ok Task bridge "
         "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
         "+ context novelty + nascent bonus − maturity penalty "
-        "+ optional binding actionability bump)"
+        "+ optional binding actionability bump; established methods like LLM/SVM excluded)"
     )
     if focus:
         desc += f" (focus: {focus})"
@@ -986,6 +1126,8 @@ def generate_hotspot_report(
         "## Window",
         "",
         f"- Publication window: **{data['window_days']} days** (`papers.pub_date`)",
+        f"- Min recent papers (entity boards): "
+        f"**{data.get('min_recent_papers', config.HOTSPOT_MIN_RECENT_PAPERS)}**",
         f"- Eligible date precision: **{', '.join(data.get('eligible_precision') or ['day', 'month'])}** "
         "(year/unknown excluded from main boards)",
         f"- Prior comparison window: **{data['prior_window_days']} days**",
@@ -1040,13 +1182,17 @@ def generate_hotspot_report(
         ),
         "## Hot Method×Disease Combos",
         "",
+        "> Grouped by method (diseases listed together). Pair-level detail retained in snapshots.",
+        "",
         _format_table(
-            data["hot_combos"],
+            data.get("hot_combos_by_method")
+            or group_hot_combos_by_method(data.get("hot_combos") or []),
             [
                 "method",
                 "method_maturity",
                 "corpus_paper_cnt",
-                "disease",
+                "disease_cnt",
+                "diseases",
                 "recent_cnt",
                 "prior_cnt",
                 "velocity",
@@ -1091,12 +1237,14 @@ def save_hotspot_report(
     *,
     window_days: int | None = None,
     prior_days: int | None = None,
+    min_recent: int | None = None,
     persist: bool = True,
 ) -> tuple[str, dict[str, Any]]:
     """Compute hotspots, write markdown, optionally persist snapshot."""
     payload = compute_weekly_hotspots(
         window_days=window_days,
         prior_days=prior_days,
+        min_recent=min_recent,
     )
     wow = compare_with_previous_week(payload)
     payload["week_over_week"] = wow

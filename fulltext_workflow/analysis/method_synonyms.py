@@ -9,11 +9,58 @@ from extractor.entity_normalize import _norm_key
 from analysis.method_maturity import is_established_blacklist
 
 _METHOD_SYNONYMS: dict[str, str] = {
-    # curated human-approved only (seeds)
+    # curated human-approved only (seeds + 2026-07-31 audit batch)
     "llm": "large language model",
     "large language models": "large language model",
     "support vector machines": "support vector machine",
     "svms": "support vector machine",
+    # nnunet family
+    "nnu-net": "nnunet",
+    "3d nnunet": "nnunet",
+    "nnunet v2": "nnunet",
+    "nnunet v2 3d low-resolution": "nnunet",
+    "standard nnu-net": "nnunet",
+    # boosting / classical ML spellings
+    "extreme gradient boosting": "xgboost",
+    "extreme gradient boosting (xgboost)": "xgboost",
+    "extreme gradient boosting (xgboost) classifier": "xgboost",
+    "random forest classifier": "random forest",
+    "random forest classification": "random forest",
+    "random forest model": "random forest",
+    "random forest (rf)": "random forest",
+    "logistic regression model": "logistic regression",
+    "binary logistic regression": "logistic regression",
+    "multivariable logistic regression": "logistic regression",
+    "multivariate logistic regression": "logistic regression",
+    # interpretability / tools
+    "grad-cam interpretability": "grad-cam",
+    "grad-cam interpretability analysis": "grad-cam",
+    "shapley additive explanations": "shap",
+    "shapley additive explanations (shap)": "shap",
+    "shapley additive explanations analysis": "shap",
+    "cellchat analysis": "cellchat",
+    "cellchat cell-cell communication analysis": "cellchat",
+    "cellchat intercellular communication network": "cellchat",
+    # backbone spelling / light wrappers
+    "resnet50": "resnet-50",
+    "resnet18": "resnet-18",
+    "modified resnet-34": "resnet-34",
+    "unet": "u-net",
+    "unet++": "u-net++",
+    "3d cnn": "3d-cnn",
+    "hybrid densenet-u-net framework": "hybrid densenet-u-net",
+    "baseline vision transformer (vit)": "vision transformer (vit)",
+    "modified vision transformer (vit)": "vision transformer (vit)",
+    # chatbot product spellings (hotspot aggregation; not version-fidelity)
+    "chatgpt 4.0": "chatgpt",
+    "chatgpt-4.0": "chatgpt",
+    "chatgpt 4o": "chatgpt",
+    "chatgpt-4o": "chatgpt",
+    "chatgpt 4.1": "chatgpt",
+    "chatgpt 4.5": "chatgpt",
+    "chatgpt o1": "chatgpt",
+    "deep learning models": "deep learning model",
+    "machine learning models": "machine learning model",
 }
 
 _SKELETON_DROP = frozenset({

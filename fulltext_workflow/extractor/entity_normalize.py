@@ -257,6 +257,41 @@ _RADIOLOGY_MODALITY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+# Radiology / imaging Methods — always drop (same Fangxin pathology-only policy).
+_RADIOLOGY_METHODS = frozenset(
+    set(_RADIOLOGY_MODALITIES)
+    | {
+        "pyradiomics",
+        "optical coherence tomography",
+        "endoscopy",
+        "endoscope",
+        "cbct",
+        "oct",
+    }
+)
+
+_RADIOLOGY_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        r"\bradiomics?\b",
+        r"\bpyradiomics\b",
+        r"\bct\b",
+        r"\bmri\b",
+        r"\bpet\b",
+        r"\bcbct\b",
+        r"\boct\b",
+        r"\bultrasound\b",
+        r"\bsonograph",
+        r"\bendoscop",
+        r"\bmammograph",
+        r"\btomograph",
+        r"\bx[\s-]?ray\b",
+        r"\bpet[\s\-/]?ct\b",
+        r"\bradiolog",
+        r"\boptical\s+coherence\s+tomograph",
+    )
+)
+
 _MODALITY_ALIASES: dict[str, str] = {
     "whole slide image": "wsi",
     "whole-slide image": "wsi",
@@ -375,11 +410,13 @@ def is_generic_method(name: str) -> bool:
 
 
 def is_low_value_method(name: str) -> bool:
-    """True for training/engineering routines that are not backbone/contribution Methods."""
+    """True for training/engineering routines or radiology Methods (not contribution Methods)."""
     key = _norm_key(name)
     if key in _LOW_VALUE_METHODS:
         return True
-    return any(p.search(key) for p in _LOW_VALUE_METHOD_PATTERNS)
+    if any(p.search(key) for p in _LOW_VALUE_METHOD_PATTERNS):
+        return True
+    return is_radiology_method(name)
 
 
 def is_generic_disease(name: str) -> bool:
@@ -447,6 +484,14 @@ def is_radiology_modality(name: str) -> bool:
     if key in _RADIOLOGY_MODALITIES:
         return True
     return any(p.search(key) for p in _RADIOLOGY_MODALITY_PATTERNS)
+
+
+def is_radiology_method(name: str) -> bool:
+    """True for radiology/imaging Methods (Fangxin has pathology slides only)."""
+    key = _norm_key(name)
+    if key in _RADIOLOGY_METHODS:
+        return True
+    return any(p.search(key) for p in _RADIOLOGY_METHOD_PATTERNS)
 
 
 def is_generic_task(name: str) -> bool:

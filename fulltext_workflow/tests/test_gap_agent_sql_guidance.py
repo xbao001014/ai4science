@@ -35,3 +35,10 @@ def test_moderator_prompt_limits_sql_to_conflict_resolution():
     assert "execute_kg_sql" in MODERATOR_SYSTEM_PROMPT
     assert "only to resolve conflicts" in MODERATOR_SYSTEM_PROMPT
     assert "focus_expansion" in MODERATOR_SYSTEM_PROMPT
+
+
+def test_sql_fallback_guidance_requires_parens_for_mixed_and_or():
+    for prompt in (SKEPTIC_SYSTEM_PROMPT, MODERATOR_SYSTEM_PROMPT):
+        lower = prompt.lower()
+        assert "parenthes" in lower or "(...)" in prompt
+        assert "and" in lower and "or" in lower

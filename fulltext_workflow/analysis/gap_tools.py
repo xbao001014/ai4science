@@ -639,14 +639,26 @@ _KG_SQL_SCHEMA_HINT = (
     "dataset_entity_id) — join papers.pmid = paper_entity_bindings.source_pmid "
     "(never papers.id = source_pmid); "
     "limitation_temporal(limitation_id, limitation_name, paper_cnt, temporal_status, "
-    "avg_cite, impact_tier) is a cache that may be EMPTY — prefer the curated tool "
-    "limitation_temporal_profile (computes live) instead of SELECT from this table; "
+    "avg_cite, impact_tier) — cache only, NO source_pmid/paper join; prefer curated "
+    "limitation_temporal_profile for focus-scoped live profiles; "
+    "paper_improvement_suggestions(id, source_pmid, action_type, suggestion, "
+    "limitation_entity_id, status, confidence) — always qualify as pis.confidence / "
+    "pis.action_type (papers also have columns that make bare confidence ambiguous); "
+    "column is action_type NOT suggestion_type; "
     "document_sections(id, paper_id, section_type, content). "
     "There is no papers.paper_id or entities.entity_id — use papers.id / papers.pmid "
     "and entities.id. Join bindings via source_pmid (= papers.pmid) and entity id columns. "
     "method_disease_combo_gap is a tool name, not a SQL table. "
     "Improvement suggestions live in paper_improvement_suggestions, not as entity type "
-    "ImprovementSuggestion."
+    "ImprovementSuggestion. "
+    "SQL tip: when WHERE mixes AND with OR, parenthesize groups "
+    "((disease_a OR disease_b) AND (method_x OR method_y)) — AND binds tighter than OR."
+)
+
+_SQL_AND_OR_PAREN_HINT = (
+    "WHERE mixes AND with OR but has no parentheses. "
+    "AND binds tighter than OR, so this often creates false hits. "
+    "Rewrite as ((disease…) OR …) AND ((method…) OR …), then re-check."
 )
 
 
@@ -722,6 +734,44 @@ def _query_needs_limit(sql: str, table: str) -> bool:
     return table.lower() in tokens and "limit" not in keyword_tokens
 
 
+def _where_clause_sql_code(sql: str) -> str:
+    """Return blanked WHERE … clause code (strings/comments removed)."""
+    code = _sql_code(sql).upper()
+    match = re.search(r"\bWHERE\b", code)
+    if not match:
+        return ""
+    where = code[match.end() :]
+    for stopper in (" GROUP BY ", " ORDER BY ", " LIMIT ", " HAVING ", " UNION ", " INTERSECT ", " EXCEPT "):
+        idx = where.find(stopper)
+        if idx >= 0:
+            where = where[:idx]
+    return where
+
+
+def _has_grouping_parens(where: str) -> bool:
+    """True if WHERE has parentheses used for boolean grouping (not FUNC(...))."""
+    for match in re.finditer(r"\(", where):
+        before = where[: match.start()].rstrip()
+        if not before:
+            return True
+        if re.search(r"(?:\bAND|\bOR|\bNOT|\bWHERE|,|\(| = |<>|!=|<=|>=|<|>)\s*$", before, re.I):
+            return True
+        if re.search(r"[A-Za-z0-9_]$", before):
+            continue
+        return True
+    return False
+
+
+def _mixed_and_or_without_parens(sql: str) -> bool:
+    """True when WHERE mixes AND+OR and has no boolean-grouping parentheses."""
+    where = _where_clause_sql_code(sql)
+    if not where:
+        return False
+    if not re.search(r"\bAND\b", where) or not re.search(r"\bOR\b", where):
+        return False
+    return not _has_grouping_parens(where)
+
+
 def _with_focus_expansion(payload: dict, focus: str | None) -> dict:
     expansion = build_focus_expansion(focus)
     if expansion:
@@ -776,6 +826,11 @@ def tool_execute_kg_sql(sql: str, focus: str | None = None) -> dict:
         if truncated:
             result["truncated"] = True
             result["hint"] = f"Results capped at {_SQL_MAX_ROWS} rows. Add LIMIT or narrow WHERE."
+        if _mixed_and_or_without_parens(sql_stripped):
+            result["and_or_precedence_warning"] = True
+            warn = _SQL_AND_OR_PAREN_HINT
+            existing = result.get("hint")
+            result["hint"] = f"{existing} {warn}".strip() if existing else warn
         return _with_focus_expansion(result, focus)
     except Exception as exc:
         err = str(exc)
@@ -1009,10 +1064,11 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "emerging_gap_opportunities",
             "description": (
-                "Sparse method×disease transfer candidates requiring an ok Task bridge "
+                "Sparse method×disease transfer candidates from non-established methods "
+                "requiring an ok Task bridge "
                 "(opportunity_score = emerging_score + literature gap tier + bridge bonus "
                 "+ context novelty + nascent bonus − maturity penalty "
-                "+ optional binding actionability bump)"
+                "+ optional binding actionability bump; established LLM/SVM etc. excluded)"
             ),
             "parameters": {
                 "type": "object",

@@ -1,6 +1,11 @@
 """User-facing labels for Gap Debate roles (Optimist / Skeptic / Moderator)."""
 from __future__ import annotations
 
+import re
+
+# Outer fences that wrap a full Markdown report (not JSON payloads).
+_MARKDOWN_FENCE_LANGS = frozenset({"", "markdown", "md", "text", "txt"})
+
 # Internal agent keys → Chinese UI labels
 ROLE_LABELS: dict[str, str] = {
     "optimist": "机会侦察",
@@ -76,11 +81,38 @@ def role_display(role: str) -> str:
     return ROLE_LABELS.get(key, role)
 
 
+def unwrap_outer_markdown_fence(text: str) -> str:
+    """If the whole text is one markdown/text fence, return the inner body.
+
+    LLMs often wrap the final gap report in ```markdown ... ```. Streamlit's
+    st.markdown then renders that as a code block (raw source) instead of a
+    preview. JSON fences are left untouched.
+    """
+    if not text:
+        return text
+    s = text.strip()
+    if not s.startswith("```"):
+        return text
+    lines = s.splitlines()
+    if len(lines) < 2:
+        return text
+    lang = lines[0].strip()[3:].strip().lower()
+    if lang not in _MARKDOWN_FENCE_LANGS:
+        return text
+    # Prefer a closing fence on the last non-empty line
+    end = len(lines) - 1
+    while end > 0 and not lines[end].strip():
+        end -= 1
+    if end < 1 or not re.match(r"^```\s*$", lines[end].strip()):
+        return text
+    return "\n".join(lines[1:end]).strip()
+
+
 def humanize_debate_report(text: str) -> str:
     """Replace agent role names in Gap Report markdown for UI display."""
     if not text:
         return text
-    out = text
+    out = unwrap_outer_markdown_fence(text)
     for old, new in _REPORT_REPLACEMENTS:
         out = out.replace(old, new)
     return out

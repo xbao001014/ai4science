@@ -160,3 +160,43 @@ def test_execute_kg_sql_schema_error_keeps_focus_expansion():
     assert "no such column" in result["error"].lower()
     assert result["focus_expansion"]["matched_concept"] is True
     assert any("polyp" in p.lower() for p in result["focus_expansion"]["phrases"])
+
+
+def test_execute_kg_sql_warns_on_mixed_and_or_without_parentheses():
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO papers (pmid, title) VALUES (?, ?)",
+            ("p1", "colorectal cancer study"),
+        )
+        conn.execute(
+            "INSERT INTO entities (id, name, type) VALUES (1, 'LLM', 'Method')"
+        )
+        conn.execute(
+            "INSERT INTO paper_entity_bindings "
+            "(source_pmid, method_entity_id, disease_entity_id) VALUES (?, 1, NULL)",
+            ("p1",),
+        )
+
+    buggy = (
+        "SELECT p.pmid FROM papers p "
+        "JOIN paper_entity_bindings peb ON p.pmid = peb.source_pmid "
+        "JOIN entities e ON e.id = peb.method_entity_id "
+        "WHERE LOWER(p.title) LIKE '%colorectal%' "
+        "AND LOWER(e.name) LIKE '%llm%' "
+        "OR LOWER(e.name) LIKE '%large language%' "
+        "LIMIT 20"
+    )
+    result = tool_execute_kg_sql(buggy)
+    assert "error" not in result
+    hint = (result.get("hint") or "").lower()
+    assert "parenthes" in hint
+    assert "and" in hint and "or" in hint
+
+
+def test_execute_kg_sql_no_and_or_warning_when_parentheses_present():
+    result = tool_execute_kg_sql(
+        "SELECT 1 AS value FROM papers "
+        "WHERE (title LIKE '%a%' OR title LIKE '%b%') AND year > 0 LIMIT 1"
+    )
+    hint = (result.get("hint") or "").lower()
+    assert "parenthes" not in hint

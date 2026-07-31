@@ -13,7 +13,7 @@
 | 层 | 位置 | 作用 |
 |----|------|------|
 | Prompt 政策 | `section_extractor._BASE_SYSTEM` / `_SECTION_HINTS` | 引导 LLM 直接产出正确粒度与**本文研究内容** |
-| 后处理 | `entity_normalize.postprocess_triples` | 兜底过滤漏网的伞词、训练套路、过粗 Disease、放射影像 Modality；Method 贡献/对比冲突消解 |
+| 后处理 | `entity_normalize.postprocess_triples` | 兜底过滤漏网的伞词、训练套路、过粗 Disease、放射影像 Modality / Method；Method 贡献/对比冲突消解 |
 
 **原则**：prompt 定意图；名单/规则可维护、可单测。发现线上噪音时，优先补后处理名单，必要时再改 prompt 正反例。
 
@@ -37,6 +37,7 @@
 
 - 领域伞词：`deep learning`、`machine learning`、`AI`、`pathomics`、`digital pathology`…
 - 训练 / 工程套路：`early stopping`、`data augmentation`、`adam`、`learning rate schedule`、`mixup`、`dropout`、`transfer learning`（单独出现）等
+- 放射 / 影像学方法：`radiomics`、`pyradiomics`、含 `ct`/`mri`/`pet`/`ultrasound`/`cbct`/`oct`/`endoscopy` 等线索的 Method（含病理+CT 多模态；方信仅病理切片）
 
 ### 2.2 后处理维护点（`entity_normalize.py`）
 
@@ -45,10 +46,12 @@
 | `_GENERIC_METHODS` | 伞词；若同批已有更具体 Method 则丢弃；若仅有伞词则保留但 `confidence≤0.5` | 新伞词反复出现时追加 |
 | `_LOW_VALUE_METHODS` | 精确匹配；**一律丢弃**（即使是唯一 Method） | 新训练/工程噪音精确名 |
 | `_LOW_VALUE_METHOD_PATTERNS` | 正则匹配；一律丢弃 | 变体拼写（如 `early-stop`、`lr schedule`） |
+| `_RADIOLOGY_METHODS` | 精确匹配影像 Method（含复用 `_RADIOLOGY_MODALITIES` + `pyradiomics` 等）；一律丢弃。裸词 `imaging` 仅精确匹配 | 新影像噪音精确名 |
+| `_RADIOLOGY_METHOD_PATTERNS` | 词边界/词干匹配影像线索；一律丢弃（**不要**加 `\bimaging\b`） | 新影像变体 |
 | `_NO_PAPER_METHOD_SECTIONS` | `discussion` / `future_work` / `introduction` 禁止 `APPLIES_METHOD` 与 `COMPARES_METHOD` | 一般不改 |
 | 贡献优先于对比 | 同名 Method 同时有两列时保留 `APPLIES_METHOD`、丢弃 `COMPARES_METHOD` | 一般不改 |
 
-相关函数：`is_generic_method`、`is_low_value_method`。
+相关函数：`is_generic_method`、`is_low_value_method`、`is_radiology_method`。
 
 ### 2.3 Method 两列
 

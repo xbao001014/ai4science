@@ -16,6 +16,7 @@ from extractor.entity_normalize import (  # noqa: E402
     is_low_value_method,
     is_narrative_task,
     is_organ_level_disease,
+    is_radiology_method,
     is_radiology_modality,
     is_reject_task,
     normalize_entity_name,
@@ -105,6 +106,44 @@ def test_is_low_value_method():
     assert not is_low_value_method("resnet-50")
     assert not is_low_value_method("hover-net")
     assert not is_low_value_method("dual-attention mil")
+
+
+def test_is_radiology_method():
+    assert is_radiology_method("pyradiomics")
+    assert is_radiology_method("Radiomics Model")
+    assert is_radiology_method("ai-assisted cbct")
+    assert is_radiology_method("mri-mba toolkit")
+    assert is_radiology_method("pet assisted reporting system (pars)")
+    assert is_radiology_method("quantitative ultrasound")
+    assert is_radiology_method("ai-enhanced endoscopy")
+    assert is_radiology_method("high-resolution optical coherence tomography")
+    assert is_radiology_method(
+        "cpnet (ct and pathology mutual guidance fusion diagnostic network)"
+    )
+    assert is_radiology_method("radiomics")
+    assert is_radiology_method("imaging")
+    assert not is_radiology_method("hover-net")
+    assert not is_radiology_method("clam")
+    assert not is_radiology_method("dual-attention mil")
+    assert not is_radiology_method("resnet-50")
+
+
+def test_is_low_value_includes_radiology_methods():
+    assert is_low_value_method("pyradiomics")
+    assert is_low_value_method("radiomics model")
+    assert not is_low_value_method("hover-net")
+
+
+def test_postprocess_drops_radiology_methods():
+    triples = [
+        _method_triple("pyradiomics"),
+        _method_triple("radiomics model"),
+        _method_triple("ai-assisted cbct"),
+        _method_triple("clam"),
+    ]
+    out = postprocess_triples(triples, "methods")
+    names = [t.object.name for t in out if t.relation == "APPLIES_METHOD"]
+    assert names == ["clam"]
 
 
 def test_drop_low_value_methods_always():

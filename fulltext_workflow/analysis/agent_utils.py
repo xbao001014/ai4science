@@ -135,7 +135,15 @@ _PHANTOM_TOOL_HINT = (
     "There is no tool named '{name}'. JSON/Markdown/report outputs belong in the "
     "assistant message content (optionally inside a fenced code block), not as a "
     "tool call. Do not invent tools. Call only tools from the provided tool list, "
-    "or finish with a normal message and no tool_calls."
+    "or finish with a normal message and no tool_calls. "
+    "Next turn has tools disabled — write your review/report now as message content."
+)
+
+_PHANTOM_FINISH_HINT = (
+    "Tools are disabled. Do not call any tool (especially not json/markdown/text). "
+    "Write your required output now as assistant message content only. "
+    "For JSON, use a fenced ```json block. For a Markdown report/proposal, write raw "
+    "Markdown starting with # or ## — do not wrap the entire document in a ```markdown fence."
 )
 
 
@@ -161,6 +169,91 @@ def _phantom_payload_as_content(fn_name: str, fn_args: dict[str, Any]) -> str | 
     return f"```json\n{body}\n```"
 
 
+_SQL_BUDGET_BLOCKED = (
+    "SQL call budget exhausted ({used}/{max_calls} successful calls). Do not call "
+    "execute_kg_sql again. Stop title/keyword scanning; use curated tools already "
+    "returned, or finish with your review/report in the assistant message (no tool_calls)."
+)
+
+_SQL_EMPTY_HINT = (
+    "Empty SQL result. Do not keep scanning with new title keywords or loose OR clauses; "
+    "if the prior query mixed AND/OR, fix parentheses first "
+    "((disease…) AND (method…)), then prefer curated tools "
+    "(coverage / limitation_temporal_profile / author_stated_gaps / "
+    "improvement_suggestions_by_topic) or write your verification now."
+)
+
+_SQL_FAILED_NO_BUDGET_HINT = (
+    "SQL failed (schema/runtime). This failed call did NOT consume the successful-SQL "
+    "budget. Qualify ambiguous columns (e.g. pis.confidence) and retry once, or use a "
+    "curated tool instead."
+)
+
+_SQL_FINISH_NOW_HINT = (
+    "SQL budget already exhausted. Do not call execute_kg_sql again. "
+    "Next turn has tools disabled — output your final review/report now."
+)
+
+_DUPLICATE_TOOL_HINT = (
+    "Tool '{name}' was already called in this phase. Do not call the same tool twice; "
+    "use a different curated tool or write your candidate gaps / review now."
+)
+
+
+def _schemas_without_sql(schemas: list[dict]) -> list[dict]:
+    out = []
+    for schema in schemas:
+        name = (schema.get("function") or {}).get("name")
+        if name == "execute_kg_sql":
+            continue
+        out.append(schema)
+    return out
+
+
+def _wrap_execute_kg_sql_budget(
+    fn: Any,
+    max_sql_calls: int,
+    counter: dict[str, int],
+) -> Any:
+    """Hard-cap successful execute_kg_sql calls; schema failures do not consume budget."""
+
+    # Allow a few failed attempts so one bad column name does not burn the quota,
+    # but still bound infinite fail/retry loops.
+    max_attempts = max(max_sql_calls + 2, max_sql_calls * 2)
+
+    def _capped(**kwargs: Any) -> Any:
+        if counter["n"] >= max_sql_calls:
+            return {
+                "error": _SQL_BUDGET_BLOCKED.format(
+                    used=counter["n"], max_calls=max_sql_calls
+                ),
+                "sql_budget_exhausted": True,
+            }
+        if counter.get("attempts", 0) >= max_attempts:
+            return {
+                "error": _SQL_BUDGET_BLOCKED.format(
+                    used=counter["n"], max_calls=max_sql_calls
+                )
+                + f" Also hit max SQL attempts ({max_attempts}).",
+                "sql_budget_exhausted": True,
+            }
+        counter["attempts"] = int(counter.get("attempts", 0)) + 1
+        result = fn(**kwargs)
+        if isinstance(result, dict) and result.get("error"):
+            # Failed query: do not increment successful budget.
+            if not result.get("hint"):
+                result = {**result, "hint": _SQL_FAILED_NO_BUDGET_HINT}
+            return result
+        counter["n"] += 1
+        return result
+
+    try:
+        _capped.__signature__ = inspect.signature(fn)
+    except (TypeError, ValueError):
+        pass
+    return _capped
+
+
 def run_tool_agent(
     messages: list[dict],
     tools: dict[str, Any],
@@ -169,15 +262,47 @@ def run_tool_agent(
     max_iters: int = 15,
     temperature: float = 0.4,
     max_tokens: int | None = None,
+    max_sql_calls: int | None = None,
+    disallow_duplicate_tools: bool = False,
 ) -> Generator[dict, None, None]:
     """
     Run one agent through its tool-calling loop.
     Yields typed events; final assistant message is appended to messages in-place.
+
+    max_sql_calls: hard cap on *successful* execute_kg_sql invocations this phase
+    (None = unlimited). Schema/runtime SQL errors do not consume the cap.
+    After the budget is reached, execute_kg_sql is removed from subsequent tool schemas;
+    a pure post-budget SQL-only turn disables tools on the next iteration to force text.
+
+    disallow_duplicate_tools: when True, a second call to the same tool name in this
+    phase is blocked (useful for Opportunity Scout soft-budget discipline).
     """
     if max_tokens is None:
         max_tokens = config.LLM_MAX_TOKENS
 
+    tools = dict(tools)
+    sql_counter = {"n": 0, "attempts": 0}
+    active_schemas = list(tool_schemas)
+    force_text_next = False
+    called_tool_names: set[str] = set()
+    if max_sql_calls is not None:
+        print(
+            f"[tool-agent] role={role} max_sql_calls={max_sql_calls}",
+            flush=True,
+        )
+        if max_sql_calls <= 0:
+            active_schemas = _schemas_without_sql(active_schemas)
+            tools.pop("execute_kg_sql", None)
+        elif "execute_kg_sql" in tools:
+            tools["execute_kg_sql"] = _wrap_execute_kg_sql_budget(
+                tools["execute_kg_sql"], max_sql_calls, sql_counter
+            )
+
     for iteration in range(max_iters):
+        if force_text_next:
+            active_schemas = []
+            force_text_next = False
+
         yield {
             "type": "llm_request_start",
             "role": role,
@@ -188,8 +313,8 @@ def run_tool_agent(
             response = _client.chat.completions.create(
                 model=config.LLM_MODEL_AGENT,
                 messages=messages,
-                tools=tool_schemas,
-                tool_choice="auto",
+                tools=active_schemas if active_schemas else None,
+                tool_choice="auto" if active_schemas else "none",
                 temperature=temperature,
                 max_tokens=max_tokens,
                 extra_body=llm_extra_body(config.OPENAI_API_BASE),
@@ -213,9 +338,14 @@ def run_tool_agent(
             return
 
         stop_after_tools = False
+        turn_tool_names: list[str] = []
+        turn_budget_blocks = 0
+        turn_unrecovered_phantom = False
+        text_only_this_turn = not active_schemas
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             fn_args = _parse_tool_arguments(tc.function.arguments)
+            turn_tool_names.append(fn_name)
 
             yield {
                 "type": "tool_call",
@@ -233,8 +363,83 @@ def run_tool_agent(
             }
 
             recovered_content: str | None = None
-            if fn_name in tools:
+            budget_blocked = False
+            if (
+                fn_name == "execute_kg_sql"
+                and max_sql_calls is not None
+                and (
+                    sql_counter["n"] >= max_sql_calls
+                    or "execute_kg_sql" not in tools
+                )
+            ):
+                err = _SQL_BUDGET_BLOCKED.format(
+                    used=sql_counter["n"], max_calls=max_sql_calls
+                )
+                result = {
+                    "error": err,
+                    "sql_budget_exhausted": True,
+                    "hint": _SQL_FINISH_NOW_HINT,
+                }
+                result_str = json.dumps(result, ensure_ascii=False)
+                budget_blocked = True
+                turn_budget_blocks += 1
+                yield {
+                    "type": "tool_error",
+                    "role": role,
+                    "name": fn_name,
+                    "error": err,
+                    "call_id": tc.id,
+                }
+            elif (
+                disallow_duplicate_tools
+                and fn_name in called_tool_names
+                and fn_name in tools
+            ):
+                err = _DUPLICATE_TOOL_HINT.format(name=fn_name)
+                result = {
+                    "error": err,
+                    "duplicate_tool_blocked": True,
+                    "hint": err,
+                }
+                result_str = json.dumps(result, ensure_ascii=False)
+                yield {
+                    "type": "tool_error",
+                    "role": role,
+                    "name": fn_name,
+                    "error": err,
+                    "call_id": tc.id,
+                }
+            elif fn_name in tools:
                 result = _safe_invoke_tool(tools[fn_name], fn_args)
+                called_tool_names.add(fn_name)
+                if (
+                    fn_name == "execute_kg_sql"
+                    and isinstance(result, dict)
+                    and result.get("sql_budget_exhausted")
+                ):
+                    active_schemas = _schemas_without_sql(active_schemas)
+                    budget_blocked = True
+                    turn_budget_blocks += 1
+                    if not result.get("hint"):
+                        result = {**result, "hint": _SQL_FINISH_NOW_HINT}
+                elif (
+                    fn_name == "execute_kg_sql"
+                    and isinstance(result, dict)
+                    and "error" not in result
+                    and int(result.get("row_count") or 0) == 0
+                ):
+                    existing = (result.get("hint") or "").strip()
+                    if "Empty SQL result" not in existing:
+                        result = {
+                            **result,
+                            "hint": f"{existing} {_SQL_EMPTY_HINT}".strip(),
+                        }
+                if (
+                    max_sql_calls is not None
+                    and max_sql_calls > 0
+                    and sql_counter["n"] >= max_sql_calls
+                ):
+                    active_schemas = _schemas_without_sql(active_schemas)
                 if "error" in result:
                     result_str = json.dumps(result, ensure_ascii=False, indent=2)
                     yield {
@@ -267,7 +472,13 @@ def run_tool_agent(
                     err = _PHANTOM_TOOL_HINT.format(name=fn_name)
                     if recovered_content:
                         err += " Recovered your tool arguments as message content."
-                    result = {"error": err, "recovered": bool(recovered_content)}
+                    else:
+                        turn_unrecovered_phantom = True
+                    result = {
+                        "error": err,
+                        "recovered": bool(recovered_content),
+                        "hint": _PHANTOM_FINISH_HINT,
+                    }
                 else:
                     err = f"Unknown tool: {fn_name}"
                     result = {"error": err}
@@ -289,6 +500,26 @@ def run_tool_agent(
             if recovered_content:
                 messages.append({"role": "assistant", "content": recovered_content})
                 stop_after_tools = True
+
+        # Pure post-budget SQL thrash → disable tools next turn to force text output.
+        if (
+            max_sql_calls is not None
+            and sql_counter["n"] >= max_sql_calls
+            and turn_tool_names
+            and all(name == "execute_kg_sql" for name in turn_tool_names)
+            and turn_budget_blocks == len(turn_tool_names)
+        ):
+            force_text_next = True
+            active_schemas = _schemas_without_sql(active_schemas)
+
+        # Empty phantom format tools (e.g. json:{}) → disable tools and nudge finish.
+        if turn_unrecovered_phantom and not stop_after_tools:
+            force_text_next = True
+            active_schemas = []
+            messages.append({"role": "user", "content": _PHANTOM_FINISH_HINT})
+            # Already in text-only mode and still invented a format tool → stop looping.
+            if text_only_this_turn:
+                return
 
         if stop_after_tools:
             return

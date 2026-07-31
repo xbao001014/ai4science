@@ -75,6 +75,36 @@ def test_two_aliases_merge_to_pass_min_recent(monkeypatch):
     assert emerging["niche-tool"]["aliases"] == "niche-tool, niche-tool-v2"
 
 
+def test_hot_combos_group_by_method_collapses_same_paper_diseases(monkeypatch):
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "HOTSPOT_MIN_RECENT_PAPERS", 1)
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "3d nnunet", "Method")
+    for disease in (
+        "intramuscular myxoma",
+        "leiomyosarcoma",
+        "myxofibrosarcoma",
+        "myxoid liposarcoma",
+        "soft tissue sarcoma",
+        "undifferentiated pleomorphic sarcoma",
+    ):
+        _edge("1", p1, "TARGETS_DISEASE", disease, "Disease")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    pairs = [
+        row for row in payload["hot_combos"] if row["method"] == "nnunet"
+    ]
+    grouped = [
+        row for row in payload["hot_combos_by_method"] if row["method"] == "nnunet"
+    ]
+
+    assert len(pairs) == 6
+    assert len(grouped) == 1
+    assert grouped[0]["disease_cnt"] == 6
+    assert grouped[0]["recent_cnt"] == 1
+    assert "leiomyosarcoma" in grouped[0]["diseases"]
+
+
 def test_hot_combos_merge_method_aliases_before_snapshot_persist(monkeypatch):
     _tmp_db(monkeypatch)
     monkeypatch.setattr(config, "HOTSPOT_MIN_RECENT_PAPERS", 1)
