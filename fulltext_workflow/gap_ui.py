@@ -78,8 +78,6 @@ except ModuleNotFoundError:
     )
     st.stop()
 
-from gap_agent import stream_gap_debate_agent  # noqa: E402
-from idea_agent import stream_idea_agent, IDEA_TOOLS  # noqa: E402
 import config  # noqa: E402
 from db.schema import (  # noqa: E402
     db_stats,
@@ -89,6 +87,9 @@ from db.schema import (  # noqa: E402
     list_active_improvement_suggestions,
     list_active_improvement_suggestions_for_limitations,
 )
+
+init_db()
+
 from analysis.feasibility_tools import (  # noqa: E402
     FEASIBILITY_TOOLS,
     tool_attribute_distribution,
@@ -134,8 +135,12 @@ from viz.gap_viz import (  # noqa: E402
     build_subtype_bar,
     plotly_available,
 )
-
-init_db()
+from viz.evidence_viewer import (  # noqa: E402
+    ViewerLoadError,
+    load_paper_for_viewer,
+    render_evidence_viewer_html,
+    resolve_focus_extraction,
+)
 
 ROLE_COLOR = {
     "optimist": "#2ca02c",
@@ -1144,6 +1149,17 @@ def render_tool_result(name: str, result: dict) -> None:
     st.json(result)
 
 
+def make_evidence_viewer_selection(
+    pmid: str | None,
+    focus_quote: str | None = None,
+) -> dict | None:
+    pid = str(pmid or "").strip()
+    if not pid:
+        return None
+    fq = str(focus_quote).strip() if focus_quote else None
+    return {"pmid": pid, "focus_quote": fq or None}
+
+
 def extract_evidence(events: list[dict]) -> list[dict]:
     rows: list[dict] = []
     seen: set[str] = set()
@@ -1167,7 +1183,7 @@ def extract_evidence(events: list[dict]) -> list[dict]:
                         "PMID": pmid,
                         "标题/实体": str(title)[:80],
                         "证据章节": item.get("evidence_section") or item.get("sections", ""),
-                        "摘录": str(quote)[:120] if quote else "",
+                        "摘录": str(quote)[:240] if quote else "",
                         "工具": TOOL_META.get(ev.get("name", ""), {}).get("label", ev.get("name", "")),
                     })
     return rows
@@ -1234,6 +1250,106 @@ def resolve_evidence_literature_papers(
         else strategy
     )
     return _format_corpus_paper_rows(raw, found_via=label), strategy
+
+
+def render_evidence_literature_section(
+    events: list[dict],
+    focus: str | None,
+) -> None:
+    evidence = extract_evidence(events)
+    papers, lit_strategy = resolve_evidence_literature_papers(
+        events,
+        focus,
+        limit=50,
+    )
+
+    st.subheader(f"全文证据（{len(evidence)} 行）")
+    if evidence:
+        safe_table(pd.DataFrame(evidence))
+    else:
+        st.info("尚未抽取证据摘录。")
+
+    evidence_choices = [
+        row for row in evidence if str(row.get("PMID") or "").strip()
+    ]
+    if evidence_choices:
+        evidence_index = st.selectbox(
+            "选择证据溯源",
+            range(len(evidence_choices)),
+            format_func=lambda i: (
+                f"{evidence_choices[i]['PMID']} · "
+                f"{str(evidence_choices[i].get('标题/实体') or '')[:40]} · "
+                f"{str(evidence_choices[i].get('摘录') or '')[:40]}"
+            ),
+            key="evidence_viewer_evidence_pick",
+        )
+        if st.button("查看溯源（证据）", key="open_evidence_viewer_evidence"):
+            row = evidence_choices[evidence_index]
+            st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
+                row.get("PMID"),
+                row.get("摘录"),
+            )
+
+    st.divider()
+    st.subheader(f"论文（{len(papers)}）")
+    if papers:
+        if lit_strategy.startswith("corpus_"):
+            st.caption(
+                f"辩论工具未返回论文标题；显示焦点「{focus}」的语料匹配 "
+                f"（{lit_strategy}）。"
+            )
+        safe_table(pd.DataFrame(papers))
+    else:
+        st.info("工具结果或语料焦点匹配中无论文元数据。")
+
+    paper_choices = [
+        row for row in papers if str(row.get("PMID") or "").strip()
+    ]
+    if paper_choices:
+        paper_index = st.selectbox(
+            "选择论文溯源",
+            range(len(paper_choices)),
+            format_func=lambda i: (
+                f"{paper_choices[i]['PMID']} · "
+                f"{str(paper_choices[i].get('标题') or '')[:40]}"
+            ),
+            key="evidence_viewer_paper_pick",
+        )
+        if st.button("查看溯源（论文）", key="open_evidence_viewer_paper"):
+            row = paper_choices[paper_index]
+            st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
+                row.get("PMID"),
+            )
+
+    selection = st.session_state.get("evidence_viewer")
+    if not selection:
+        return
+
+    st.divider()
+    st.subheader("证据溯源")
+    if st.button("关闭溯源", key="close_evidence_viewer"):
+        st.session_state.pop("evidence_viewer", None)
+        st.rerun()
+
+    pmid = str(selection.get("pmid") or "").strip()
+    focus_quote = selection.get("focus_quote")
+    try:
+        paper = load_paper_for_viewer(pmid)
+    except ViewerLoadError as err:
+        st.warning(err.message_zh)
+        return
+
+    idx = resolve_focus_extraction(paper, focus_quote)
+    unmatched = bool(focus_quote) and idx is None
+    if unmatched:
+        st.caption("所选证据未精确匹配到抽取卡，将在全文中尝试定位原文。")
+    html = render_evidence_viewer_html(
+        paper,
+        initial_extraction_index=idx,
+        focus_quote=focus_quote if unmatched else None,
+        unmatched_focus=unmatched,
+    )
+    components.html(html, height=720, scrolling=True)
 
 
 def compute_stats(events: list[dict]) -> dict:
@@ -1785,654 +1901,635 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.markdown(generate_hotspot_report(payload, wow=wow))
 
 
-# Session state
-for _k, _v in [
-    ("events", []), ("report", ""), ("run_focus", ""), ("run_top_n", 3),
-    ("debate_rounds", 0), ("debate_confidence", 0.0),
-    ("idea_events", []), ("proposal", ""), ("proposal_gap_text", ""),
-    ("proposal_rounds", []), ("final_rounds", 1), ("final_score", 0.0),
-    ("landscape_msg", ""),
-    ("hotspot_brief", ""),
-]:
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+def main() -> None:
+    from gap_agent import stream_gap_debate_agent
+    from idea_agent import IDEA_TOOLS, stream_idea_agent
 
-# Sidebar
-with st.sidebar:
-    st.title("研究空白分析")
-    stats = db_stats()
-    _sub_l, _sub_r = st.columns([4, 3], vertical_alignment="center")
-    with _sub_l:
-        st.caption("病理组学全文分析")
-    with _sub_r:
-        with st.popover("语料库"):
-            st.caption(
-                "  \n".join(
-                    [
-                        f"论文总数：{stats['papers']}　|　已抽取：{stats['extracted']}",
-                        f"抽取实体：{stats.get('entities', 0)}　|　全文关系：{stats['relations_fulltext']}",
-                        f"引用已补全：{stats.get('s2_enriched', 0)}",
-                        f"期刊影响因子库：{stats.get('journals_with_if', 0)} 种",
-                        f"疾病分布图谱：{landscape_count()} 种疾病",
-                    ]
-                )
-            )
-    st.divider()
+    # Session state
+    for _k, _v in [
+        ("events", []), ("report", ""), ("run_focus", ""), ("run_top_n", 3),
+        ("debate_rounds", 0), ("debate_confidence", 0.0),
+        ("idea_events", []), ("proposal", ""), ("proposal_gap_text", ""),
+        ("proposal_rounds", []), ("final_rounds", 1), ("final_score", 0.0),
+        ("landscape_msg", ""),
+        ("hotspot_brief", ""),
+        ("evidence_viewer", None),
+    ]:
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
-    focus_input = st.text_input(
-        "研究焦点",
-        placeholder="例如 breast cancer, radiomics, 肠息肉",
-        help="疾病/主题焦点。支持中文别名（如 肠息肉 → colorectal polyp）。",
-    )
-    _foc_norm = normalize_focus(focus_input)
-    if _foc_norm:
-        from analysis.disease_synonyms import resolve_disease_concept  # noqa: E402
-
-        _resolved = resolve_disease_concept(_foc_norm)
-        if _resolved:
-            _fx = (
-                f" · 方信 {_resolved.fangxin_disease_code}"
-                if _resolved.fangxin_disease_code
-                else ""
-            )
-            _cui = f" · CUI {_resolved.umls_cui}" if _resolved.umls_cui else ""
-            st.caption(f"已解析：{_resolved.canonical}{_fx}{_cui}")
-        elif any("\u4e00" <= ch <= "\u9fff" for ch in _foc_norm):
-            st.caption("无同义词映射 — 可试英文疾病名")
-    top_n_input = st.slider(
-        "推荐研究空白条数",
-        3,
-        10,
-        3,
-        help="一次辩论中希望输出的研究空白候选数量",
-    )
-    debate_rounds_input = st.slider(
-        "空白辩论轮次上限",
-        1,
-        3,
-        2,
-        help="机会侦察 → 证据审阅 → 综合终审 可重复的最大轮数",
-    )
-    proposal_rounds_input = st.slider(
-        "研究提案迭代轮次上限",
-        1,
-        5,
-        2,
-        help="在「研究提案」页中，生成与评审交替迭代的最大轮数",
-    )
-    verbose_input = st.checkbox("显示 LLM 推理过程")
-    use_ops_memory_input = st.checkbox(
-        "使用运维记忆",
-        value=True,
-        help="注入该焦点最近 4 条已报告空白，软性回避相近方向",
-    )
-    persist_ops_memory_input = st.checkbox(
-        "记忆本次运行",
-        value=True,
-        help="辩论或提案成功后写入 ops_runs 与空白条目",
-    )
-    with st.expander("当前焦点的运维记忆", expanded=False):
-        from analysis.ops_memory import load_recent_gaps  # noqa: E402
-
-        mem = load_recent_gaps(focus_input or None)
-        if not mem.items:
-            st.caption("暂无记忆")
-        else:
-            for it in mem.items[:40]:
-                st.markdown(f"- `{it.week_id}` {it.title}")
-    st.divider()
-    run_button = st.button("运行空白辩论", type="primary", use_container_width=True)
-
-    if st.session_state["events"]:
-        s = compute_stats(st.session_state["events"])
-        st.divider()
-        st.markdown("**会话统计**")
-        for label, val in [
-            ("工具调用", s["tools_called"]),
-            ("记录数", s["records_retrieved"]),
-            ("摘要结果", s["summary_results"]),
-            ("证据行数", s["evidence_rows"]),
-        ]:
-            st.metric(label, val)
-
-st.title("病理 AI · 研究空白分析")
-focus_label = f"焦点：*{focus_input}*" if focus_input else "全库"
-st.caption(
-    f"机会侦察 × 证据审阅 × 综合终审  |  "
-    f"全文知识图谱  |  {focus_label}"
-)
-render_debate_role_guide(compact=True)
-st.divider()
-
-if run_button:
-    st.session_state.update({
-        "events": [], "report": "", "run_focus": focus_input or "全部",
-        "run_top_n": top_n_input, "debate_confidence": 0.0,
-    })
-    live_events: list[dict] = []
-    tool_step = 0
-    current_role = ""
-
-    with st.status(
-        "正在辩论：机会侦察 → 证据审阅 → 综合终审 …",
-        expanded=True,
-    ) as sw:
-        for event in stream_gap_debate_agent(
-            focus=focus_input or None,
-            top_n=top_n_input,
-            max_debate_rounds=debate_rounds_input,
-            use_ops_memory=use_ops_memory_input,
-        ):
-            live_events.append(event)
-            st.session_state["events"] = list(live_events)
-            etype = event.get("type", "")
-
-            if etype == "debate_round_start":
-                st.markdown(f"**辩论轮次 {event['round']} / {event['max_rounds']}**")
-            elif etype == "phase_start":
-                current_role = event.get("role", "")
-                st.markdown(
-                    f"{role_badge(current_role)} 阶段开始",
-                    unsafe_allow_html=True,
-                )
-            elif etype == "llm_request_start":
+    # Sidebar
+    with st.sidebar:
+        st.title("研究空白分析")
+        stats = db_stats()
+        _sub_l, _sub_r = st.columns([4, 3], vertical_alignment="center")
+        with _sub_l:
+            st.caption("病理组学全文分析")
+        with _sub_r:
+            with st.popover("语料库"):
                 st.caption(
-                    f"等待 {role_display(event.get('role', ''))} LLM "
-                    f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
-                )
-            elif etype == "tool_call":
-                tool_step += 1
-                role = event.get("role", "")
-                role_lbl = role_display(role)
-                meta = TOOL_META.get(event["name"], {"label": event["name"]})
-                args = event.get("args") or {}
-                st.write(
-                    f"  步骤 {tool_step} [{role_lbl}] {meta.get('label', event['name'])} "
-                    f"· `{args}`"
-                )
-            elif etype == "tool_running":
-                meta = TOOL_META.get(event["name"], {"label": event["name"]})
-                st.caption(f"    … 正在运行 {meta.get('label', event['name'])}")
-            elif etype == "tool_result":
-                r = event.get("result", {})
-                summary = format_tool_result_summary(event.get("name", ""), r)
-                st.write(f"    → {summary}")
-            elif etype == "tool_error":
-                st.warning(f"[{event.get('role')}] {event['name']}: {event.get('error')}")
-            elif etype == "optimist_proposal":
-                st.success(
-                    f"机会侦察候选（第 {event['round']} 轮）："
-                    f"{len(event['content'])} 字符"
-                )
-            elif etype == "skeptic_review":
-                st.info(
-                    f"证据审阅置信度：{event['confidence']:.1f}/10  "
-                    f"（核实={event['verified_count']}，伪空白={event['false_count']}）"
-                )
-            elif etype == "debate_feedback":
-                st.warning(
-                    f"综合终审修订请求："
-                    f"{event.get('revision_priority', '')[:120]}"
-                )
-            elif etype == "thinking" and verbose_input:
-                with st.expander(
-                    f"推理 [{role_display(event.get('role', '?'))}]",
-                    expanded=False,
-                ):
-                    st.markdown(event.get("content", ""))
-            elif etype == "final":
-                st.session_state["report"] = event.get("content", "")
-                st.session_state["debate_rounds"] = event.get("rounds", 1)
-                st.session_state["debate_confidence"] = event.get("confidence", 0.0)
-                if persist_ops_memory_input and event.get("content"):
-                    from analysis.ops_memory import persist_debate_report  # noqa: E402
-
-                    rid = persist_debate_report(
-                        event["content"],
-                        focus=focus_input or None,
-                        source="gap_ui",
-                        enabled=True,
+                    "  \n".join(
+                        [
+                            f"论文总数：{stats['papers']}　|　已抽取：{stats['extracted']}",
+                            f"抽取实体：{stats.get('entities', 0)}　|　全文关系：{stats['relations_fulltext']}",
+                            f"引用已补全：{stats.get('s2_enriched', 0)}",
+                            f"期刊影响因子库：{stats.get('journals_with_if', 0)} 种",
+                            f"疾病分布图谱：{landscape_count()} 种疾病",
+                        ]
                     )
-                    if rid:
-                        st.session_state["ops_run_id"] = rid
-                sw.update(
-                    label=(
-                        f"辩论完成 — {tool_step} 次工具调用，"
-                        f"审阅置信度 {event.get('confidence', 0):.1f}/10"
-                    ),
-                    state="complete",
-                    expanded=False,
                 )
-            elif etype == "error":
-                st.error(event.get("content"))
-                sw.update(label="辩论失败", state="error")
+        st.divider()
 
-st.divider()
-
-bootstrap_main_tab_state()
-
-tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs(
-    MAIN_TAB_LABELS
-)
-render_main_tab_sync()
-
-if not st.session_state["events"]:
-    with tab_debate:
-        st.info(
-            "在侧栏设置焦点并点击 **运行空白辩论**。"
-            "系统将依次运行 **机会侦察** → **证据审阅** → **综合终审**。"
+        focus_input = st.text_input(
+            "研究焦点",
+            placeholder="例如 breast cancer, radiomics, 肠息肉",
+            help="疾病/主题焦点。支持中文别名（如 肠息肉 → colorectal polyp）。",
         )
-        render_debate_role_guide()
-    with tab_hotspot:
-        render_weekly_hotspot_tab(focus_hint=focus_input)
-    with tab_viz:
-        render_gap_visualization_tab([], focus_hint=focus_input)
-    with tab_evidence:
-        foc = normalize_focus(focus_input)
-        if foc:
-            papers, strategy = resolve_evidence_literature_papers([], foc, limit=50)
-            st.subheader(f"论文（{len(papers)}）")
-            if papers:
-                st.caption(
-                    f"按焦点「{foc}」经 {strategy} 匹配 "
-                    "（运行空白辩论还可收集证据摘录）。"
+        _foc_norm = normalize_focus(focus_input)
+        if _foc_norm:
+            from analysis.disease_synonyms import resolve_disease_concept  # noqa: E402
+
+            _resolved = resolve_disease_concept(_foc_norm)
+            if _resolved:
+                _fx = (
+                    f" · 方信 {_resolved.fangxin_disease_code}"
+                    if _resolved.fangxin_disease_code
+                    else ""
                 )
-                safe_table(pd.DataFrame(papers))
+                _cui = f" · CUI {_resolved.umls_cui}" if _resolved.umls_cui else ""
+                st.caption(f"已解析：{_resolved.canonical}{_fx}{_cui}")
+            elif any("\u4e00" <= ch <= "\u9fff" for ch in _foc_norm):
+                st.caption("无同义词映射 — 可试英文疾病名")
+        top_n_input = st.slider(
+            "推荐研究空白条数",
+            3,
+            10,
+            3,
+            help="一次辩论中希望输出的研究空白候选数量",
+        )
+        debate_rounds_input = st.slider(
+            "空白辩论轮次上限",
+            1,
+            3,
+            2,
+            help="机会侦察 → 证据审阅 → 综合终审 可重复的最大轮数",
+        )
+        proposal_rounds_input = st.slider(
+            "研究提案迭代轮次上限",
+            1,
+            5,
+            2,
+            help="在「研究提案」页中，生成与评审交替迭代的最大轮数",
+        )
+        verbose_input = st.checkbox("显示 LLM 推理过程")
+        use_ops_memory_input = st.checkbox(
+            "使用运维记忆",
+            value=True,
+            help="注入该焦点最近 4 条已报告空白，软性回避相近方向",
+        )
+        persist_ops_memory_input = st.checkbox(
+            "记忆本次运行",
+            value=True,
+            help="辩论或提案成功后写入 ops_runs 与空白条目",
+        )
+        with st.expander("当前焦点的运维记忆", expanded=False):
+            from analysis.ops_memory import load_recent_gaps  # noqa: E402
+
+            mem = load_recent_gaps(focus_input or None)
+            if not mem.items:
+                st.caption("暂无记忆")
             else:
-                st.info(f"语料中无论文匹配焦点「{foc}」。")
-        else:
-            st.info("请运行空白辩论以填充证据与文献，或设置研究焦点。")
-    with tab_report:
-        st.info("请运行空白辩论以生成研究空白报告。")
-        s = db_stats()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("论文", s["papers"])
-        c2.metric("已抽取", s["extracted"])
-        c3.metric("全文可用", s["fulltext_available"])
-        c4.metric("知识图谱 + 可行性工具", len(IDEA_TOOLS))
-    with tab_data:
-        render_data_feasibility_tab(focus_hint=focus_input)
-    with tab_proposal:
-        st.info("请先完成空白辩论，或使用 **数据可行性** 页测试 API。")
-
-elif st.session_state["events"]:
-    with tab_debate:
-        st.subheader("辩论轨迹")
-        render_debate_role_guide(compact=True)
+                for it in mem.items[:40]:
+                    st.markdown(f"- `{it.week_id}` {it.title}")
         st.divider()
-        pairs = group_call_result_pairs(st.session_state["events"])
-        debate_cards = [
-            e for e in st.session_state["events"]
-            if e.get("type") in ("optimist_proposal", "skeptic_review", "debate_feedback")
-        ]
-        for card in debate_cards:
-            ct = card["type"]
-            if ct == "optimist_proposal":
-                with st.expander(
-                    f"机会侦察 — 第 {card['round']} 轮候选",
-                    expanded=False,
-                ):
-                    st.markdown(card.get("content", "")[:4000])
-            elif ct == "skeptic_review":
-                with st.expander(
-                    f"证据审阅 — 第 {card['round']} 轮 "
-                    f"（置信度 {card.get('confidence', 0):.1f}/10）",
-                    expanded=False,
-                ):
-                    st.markdown(card.get("content", "")[:4000])
-            elif ct == "debate_feedback":
-                st.warning(
-                    f"第 {card['round']} 轮 · 综合终审修订："
-                    f"{card.get('revision_priority', '')}"
-                )
+        run_button = st.button("运行空白辩论", type="primary", use_container_width=True)
 
-        st.divider()
-        for i, pair in enumerate(pairs, 1):
-            call = pair.get("tool_call", {})
-            res = pair.get("tool_result")
-            err = pair.get("tool_error")
-            name = call.get("name", "?")
-            role = call.get("role", "")
-            meta = TOOL_META.get(name, {"label": name, "category": "其他"})
-            feas_lbl = IDEA_TOOL_META.get(name)
-            label = feas_lbl or meta.get("label", name)
-            role_lbl = role_display(role)
-            with st.expander(f"步骤 {i}：[{role_lbl}] {label}", expanded=False):
-                st.markdown(role_badge(role), unsafe_allow_html=True)
-                if err:
-                    st.error(err.get("error"))
-                elif res:
-                    rdict = res.get("result", {})
-                    if name in FEASIBILITY_TOOLS:
-                        render_feasibility_result(rdict)
-                    else:
-                        render_tool_result(name, rdict)
-
-    with tab_hotspot:
-        render_weekly_hotspot_tab(
-            focus_hint=st.session_state.get("run_focus") or focus_input,
-        )
-
-    with tab_viz:
-        render_gap_visualization_tab(
-            st.session_state["events"],
-            report_text=st.session_state.get("report", ""),
-            focus_hint=st.session_state.get("run_focus") or focus_input,
-        )
-
-    with tab_evidence:
-        evidence = extract_evidence(st.session_state["events"])
-        focus_lit = (
-            normalize_focus(st.session_state.get("run_focus"))
-            or normalize_focus(focus_input)
-        )
-        papers, lit_strategy = resolve_evidence_literature_papers(
-            st.session_state["events"],
-            focus_lit,
-            limit=50,
-        )
-        st.subheader(f"全文证据（{len(evidence)} 行）")
-        if evidence:
-            safe_table(pd.DataFrame(evidence))
-        else:
-            st.info("尚未抽取证据摘录。")
-        st.divider()
-        st.subheader(f"论文（{len(papers)}）")
-        if papers:
-            if lit_strategy.startswith("corpus_"):
-                st.caption(
-                    f"辩论工具未返回论文标题；显示焦点「{focus_lit}」的语料匹配 "
-                    f"（{lit_strategy}）。"
-                )
-            safe_table(pd.DataFrame(papers))
-        else:
-            st.info("工具结果或语料焦点匹配中无论文元数据。")
-
-    with tab_report:
-        report_text = st.session_state.get("report", "")
-        if not report_text:
-            st.info("请运行空白辩论以生成报告。")
-        else:
-            display_report = humanize_debate_report(report_text)
+        if st.session_state["events"]:
             s = compute_stats(st.session_state["events"])
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("焦点", st.session_state.get("run_focus", "全部"))
-            c2.metric("辩论轮数", st.session_state.get("debate_rounds", 1))
-            c3.metric("审阅置信度", f"{st.session_state.get('debate_confidence', 0):.1f}/10")
-            c4.metric("工具调用", s["tools_called"])
-            st.caption(
-                "报告由 **综合终审** 产出。下文中的角色名已替换为 "
-                "机会侦察 / 证据审阅 / 综合终审。"
-            )
             st.divider()
-            st.markdown(display_report)
-            header = (
-                f"# 病理组学/影像组学研究空白报告\n\n"
-                f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-                f"> 焦点：{st.session_state.get('run_focus')}\n"
-                f"> 流程：机会侦察 → 证据审阅 → 综合终审\n\n---\n\n"
+            st.markdown("**会话统计**")
+            for label, val in [
+                ("工具调用", s["tools_called"]),
+                ("记录数", s["records_retrieved"]),
+                ("摘要结果", s["summary_results"]),
+                ("证据行数", s["evidence_rows"]),
+            ]:
+                st.metric(label, val)
+
+    st.title("病理 AI · 研究空白分析")
+    focus_label = f"焦点：*{focus_input}*" if focus_input else "全库"
+    st.caption(
+        f"机会侦察 × 证据审阅 × 综合终审  |  "
+        f"全文知识图谱  |  {focus_label}"
+    )
+    render_debate_role_guide(compact=True)
+    st.divider()
+
+    if run_button:
+        st.session_state.update({
+            "events": [], "report": "", "run_focus": focus_input or "全部",
+            "run_top_n": top_n_input, "debate_confidence": 0.0,
+        })
+        live_events: list[dict] = []
+        tool_step = 0
+        current_role = ""
+
+        with st.status(
+            "正在辩论：机会侦察 → 证据审阅 → 综合终审 …",
+            expanded=True,
+        ) as sw:
+            for event in stream_gap_debate_agent(
+                focus=focus_input or None,
+                top_n=top_n_input,
+                max_debate_rounds=debate_rounds_input,
+                use_ops_memory=use_ops_memory_input,
+            ):
+                live_events.append(event)
+                st.session_state["events"] = list(live_events)
+                etype = event.get("type", "")
+
+                if etype == "debate_round_start":
+                    st.markdown(f"**辩论轮次 {event['round']} / {event['max_rounds']}**")
+                elif etype == "phase_start":
+                    current_role = event.get("role", "")
+                    st.markdown(
+                        f"{role_badge(current_role)} 阶段开始",
+                        unsafe_allow_html=True,
+                    )
+                elif etype == "llm_request_start":
+                    st.caption(
+                        f"等待 {role_display(event.get('role', ''))} LLM "
+                        f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
+                    )
+                elif etype == "tool_call":
+                    tool_step += 1
+                    role = event.get("role", "")
+                    role_lbl = role_display(role)
+                    meta = TOOL_META.get(event["name"], {"label": event["name"]})
+                    args = event.get("args") or {}
+                    st.write(
+                        f"  步骤 {tool_step} [{role_lbl}] {meta.get('label', event['name'])} "
+                        f"· `{args}`"
+                    )
+                elif etype == "tool_running":
+                    meta = TOOL_META.get(event["name"], {"label": event["name"]})
+                    st.caption(f"    … 正在运行 {meta.get('label', event['name'])}")
+                elif etype == "tool_result":
+                    r = event.get("result", {})
+                    summary = format_tool_result_summary(event.get("name", ""), r)
+                    st.write(f"    → {summary}")
+                elif etype == "tool_error":
+                    st.warning(f"[{event.get('role')}] {event['name']}: {event.get('error')}")
+                elif etype == "optimist_proposal":
+                    st.success(
+                        f"机会侦察候选（第 {event['round']} 轮）："
+                        f"{len(event['content'])} 字符"
+                    )
+                elif etype == "skeptic_review":
+                    st.info(
+                        f"证据审阅置信度：{event['confidence']:.1f}/10  "
+                        f"（核实={event['verified_count']}，伪空白={event['false_count']}）"
+                    )
+                elif etype == "debate_feedback":
+                    st.warning(
+                        f"综合终审修订请求："
+                        f"{event.get('revision_priority', '')[:120]}"
+                    )
+                elif etype == "thinking" and verbose_input:
+                    with st.expander(
+                        f"推理 [{role_display(event.get('role', '?'))}]",
+                        expanded=False,
+                    ):
+                        st.markdown(event.get("content", ""))
+                elif etype == "final":
+                    st.session_state["report"] = event.get("content", "")
+                    st.session_state["debate_rounds"] = event.get("rounds", 1)
+                    st.session_state["debate_confidence"] = event.get("confidence", 0.0)
+                    if persist_ops_memory_input and event.get("content"):
+                        from analysis.ops_memory import persist_debate_report  # noqa: E402
+
+                        rid = persist_debate_report(
+                            event["content"],
+                            focus=focus_input or None,
+                            source="gap_ui",
+                            enabled=True,
+                        )
+                        if rid:
+                            st.session_state["ops_run_id"] = rid
+                    sw.update(
+                        label=(
+                            f"辩论完成 — {tool_step} 次工具调用，"
+                            f"审阅置信度 {event.get('confidence', 0):.1f}/10"
+                        ),
+                        state="complete",
+                        expanded=False,
+                    )
+                elif etype == "error":
+                    st.error(event.get("content"))
+                    sw.update(label="辩论失败", state="error")
+
+    st.divider()
+
+    bootstrap_main_tab_state()
+
+    tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs(
+        MAIN_TAB_LABELS
+    )
+    render_main_tab_sync()
+
+    if not st.session_state["events"]:
+        with tab_debate:
+            st.info(
+                "在侧栏设置焦点并点击 **运行空白辩论**。"
+                "系统将依次运行 **机会侦察** → **证据审阅** → **综合终审**。"
             )
-            st.download_button(
-                "下载报告（Markdown）",
-                data=(header + display_report).encode("utf-8"),
-                file_name=f"gap_debate_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                mime="text/markdown",
+            render_debate_role_guide()
+        with tab_hotspot:
+            render_weekly_hotspot_tab(focus_hint=focus_input)
+        with tab_viz:
+            render_gap_visualization_tab([], focus_hint=focus_input)
+        with tab_evidence:
+            render_evidence_literature_section(
+                [],
+                normalize_focus(focus_input),
+            )
+        with tab_report:
+            st.info("请运行空白辩论以生成研究空白报告。")
+            s = db_stats()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("论文", s["papers"])
+            c2.metric("已抽取", s["extracted"])
+            c3.metric("全文可用", s["fulltext_available"])
+            c4.metric("知识图谱 + 可行性工具", len(IDEA_TOOLS))
+        with tab_data:
+            render_data_feasibility_tab(focus_hint=focus_input)
+        with tab_proposal:
+            st.info("请先完成空白辩论，或使用 **数据可行性** 页测试 API。")
+
+    elif st.session_state["events"]:
+        with tab_debate:
+            st.subheader("辩论轨迹")
+            render_debate_role_guide(compact=True)
+            st.divider()
+            pairs = group_call_result_pairs(st.session_state["events"])
+            debate_cards = [
+                e for e in st.session_state["events"]
+                if e.get("type") in ("optimist_proposal", "skeptic_review", "debate_feedback")
+            ]
+            for card in debate_cards:
+                ct = card["type"]
+                if ct == "optimist_proposal":
+                    with st.expander(
+                        f"机会侦察 — 第 {card['round']} 轮候选",
+                        expanded=False,
+                    ):
+                        st.markdown(card.get("content", "")[:4000])
+                elif ct == "skeptic_review":
+                    with st.expander(
+                        f"证据审阅 — 第 {card['round']} 轮 "
+                        f"（置信度 {card.get('confidence', 0):.1f}/10）",
+                        expanded=False,
+                    ):
+                        st.markdown(card.get("content", "")[:4000])
+                elif ct == "debate_feedback":
+                    st.warning(
+                        f"第 {card['round']} 轮 · 综合终审修订："
+                        f"{card.get('revision_priority', '')}"
+                    )
+
+            st.divider()
+            for i, pair in enumerate(pairs, 1):
+                call = pair.get("tool_call", {})
+                res = pair.get("tool_result")
+                err = pair.get("tool_error")
+                name = call.get("name", "?")
+                role = call.get("role", "")
+                meta = TOOL_META.get(name, {"label": name, "category": "其他"})
+                feas_lbl = IDEA_TOOL_META.get(name)
+                label = feas_lbl or meta.get("label", name)
+                role_lbl = role_display(role)
+                with st.expander(f"步骤 {i}：[{role_lbl}] {label}", expanded=False):
+                    st.markdown(role_badge(role), unsafe_allow_html=True)
+                    if err:
+                        st.error(err.get("error"))
+                    elif res:
+                        rdict = res.get("result", {})
+                        if name in FEASIBILITY_TOOLS:
+                            render_feasibility_result(rdict)
+                        else:
+                            render_tool_result(name, rdict)
+
+        with tab_hotspot:
+            render_weekly_hotspot_tab(
+                focus_hint=st.session_state.get("run_focus") or focus_input,
             )
 
-    with tab_data:
-        render_data_feasibility_tab(
-            focus_hint=st.session_state.get("run_focus") or focus_input,
-        )
+        with tab_viz:
+            render_gap_visualization_tab(
+                st.session_state["events"],
+                report_text=st.session_state.get("report", ""),
+                focus_hint=st.session_state.get("run_focus") or focus_input,
+            )
 
-    with tab_proposal:
-        st.subheader("研究提案生成器")
-        report_for_parse = st.session_state.get("report", "")
-        parsed = parse_gap_titles(report_for_parse) if report_for_parse else []
+        with tab_evidence:
+            focus_lit = (
+                normalize_focus(st.session_state.get("run_focus"))
+                or normalize_focus(focus_input)
+            )
+            render_evidence_literature_section(
+                st.session_state["events"],
+                focus_lit,
+            )
 
-        gap_source = st.radio(
-            "空白来源",
-            ["从报告选择", "手动输入"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="gap_source",
-            on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
-        )
-        if gap_source == "从报告选择":
-            gap_input = (
-                st.selectbox(
-                    "选择空白",
-                    parsed,
-                    key="gap_sel",
+        with tab_report:
+            report_text = st.session_state.get("report", "")
+            if not report_text:
+                st.info("请运行空白辩论以生成报告。")
+            else:
+                display_report = humanize_debate_report(report_text)
+                s = compute_stats(st.session_state["events"])
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("焦点", st.session_state.get("run_focus", "全部"))
+                c2.metric("辩论轮数", st.session_state.get("debate_rounds", 1))
+                c3.metric("审阅置信度", f"{st.session_state.get('debate_confidence', 0):.1f}/10")
+                c4.metric("工具调用", s["tools_called"])
+                st.caption(
+                    "报告由 **综合终审** 产出。下文中的角色名已替换为 "
+                    "机会侦察 / 证据审阅 / 综合终审。"
+                )
+                st.divider()
+                st.markdown(display_report)
+                header = (
+                    f"# 病理组学/影像组学研究空白报告\n\n"
+                    f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"> 焦点：{st.session_state.get('run_focus')}\n"
+                    f"> 流程：机会侦察 → 证据审阅 → 综合终审\n\n---\n\n"
+                )
+                st.download_button(
+                    "下载报告（Markdown）",
+                    data=(header + display_report).encode("utf-8"),
+                    file_name=f"gap_debate_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
+                )
+
+        with tab_data:
+            render_data_feasibility_tab(
+                focus_hint=st.session_state.get("run_focus") or focus_input,
+            )
+
+        with tab_proposal:
+            st.subheader("研究提案生成器")
+            report_for_parse = st.session_state.get("report", "")
+            parsed = parse_gap_titles(report_for_parse) if report_for_parse else []
+
+            gap_source = st.radio(
+                "空白来源",
+                ["从报告选择", "手动输入"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="gap_source",
+                on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
+            )
+            if gap_source == "从报告选择":
+                gap_input = (
+                    st.selectbox(
+                        "选择空白",
+                        parsed,
+                        key="gap_sel",
+                        on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
+                    )
+                    if parsed
+                    else ""
+                )
+                if not parsed:
+                    st.info("请先运行空白辩论以填充空白标题。")
+            else:
+                gap_input = st.text_area(
+                    "自定义空白",
+                    height=120,
+                    key="gap_manual",
                     on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
                 )
-                if parsed
-                else ""
-            )
-            if not parsed:
-                st.info("请先运行空白辩论以填充空白标题。")
-        else:
-            gap_input = st.text_area(
-                "自定义空白",
-                height=120,
-                key="gap_manual",
+
+            target_difficulty_input = st.selectbox(
+                "目标难度",
+                options=["easy", "moderate", "hard"],
+                index=1,
+                format_func=lambda x: _DIFFICULTY_LABELS.get(x, x),
+                key="proposal_target_difficulty",
+                help=(
+                    "引导提案雄心；评估难度另行计算并以颜色标注。"
+                ),
                 on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
             )
 
-        target_difficulty_input = st.selectbox(
-            "目标难度",
-            options=["easy", "moderate", "hard"],
-            index=1,
-            format_func=lambda x: _DIFFICULTY_LABELS.get(x, x),
-            key="proposal_target_difficulty",
-            help=(
-                "引导提案雄心；评估难度另行计算并以颜色标注。"
-            ),
-            on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
-        )
-
-        gen_btn = st.button(
-            "生成研究提案",
-            type="primary",
-            disabled=not (gap_input and str(gap_input).strip()),
-            on_click=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
-        )
-
-        if gen_btn and gap_input:
-            support_pmids = support_pmids_from_evidence(
-                extract_evidence(st.session_state.get("events") or [])
+            gen_btn = st.button(
+                "生成研究提案",
+                type="primary",
+                disabled=not (gap_input and str(gap_input).strip()),
+                on_click=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
             )
-            proposal_gap_data = (
-                {"support_pmids": support_pmids} if support_pmids else None
-            )
-            st.session_state.update({
-                "idea_events": [], "proposal": "",
-                "proposal_gap_text": str(gap_input).strip(),
-                "proposal_rounds": [],
-                "proposal_result_target_difficulty": None,
-                "proposal_assessed_difficulty": None,
-                "proposal_difficulty_delta": None,
-                "proposal_difficulty_color": None,
-                "proposal_difficulty_summary": None,
-                "proposal_q_coverage_low": False,
-                "proposal_difficulty_breakdown": {},
-            })
-            idea_events: list[dict] = []
-            with st.status("生成器 × 评审循环 …", expanded=True) as psw:
-                for event in stream_idea_agent(
-                    gap_text=str(gap_input).strip(),
-                    gap_data=proposal_gap_data,
-                    max_rounds=proposal_rounds_input,
-                    target_difficulty=target_difficulty_input,
-                ):
-                    idea_events.append(event)
-                    st.session_state["idea_events"] = list(idea_events)
-                    et = event.get("type")
-                    if et in {"difficulty_assessed", "final"}:
-                        st.session_state.update({
-                            "proposal_result_target_difficulty": event.get(
-                                "target_difficulty"
-                            ),
-                            "proposal_assessed_difficulty": event.get(
-                                "assessed_difficulty"
-                            ),
-                            "proposal_difficulty_delta": event.get(
-                                "difficulty_delta"
-                            ),
-                            "proposal_difficulty_color": event.get(
-                                "difficulty_color", event.get("color")
-                            ),
-                            "proposal_difficulty_summary": event.get(
-                                "difficulty_summary", event.get("summary_line")
-                            ),
-                            "proposal_q_coverage_low": bool(
-                                event.get("q_coverage_low")
-                            ),
-                            "proposal_difficulty_breakdown": event.get(
-                                "difficulty_breakdown", event.get("breakdown")
-                            ) or {},
-                        })
-                    if et == "round_start":
-                        st.markdown(f"#### 第 {event['round']} / {event['max_rounds']} 轮")
-                    elif et == "tool_call":
-                        role = event.get("role", "")
-                        lbl = IDEA_TOOL_META.get(event["name"], event["name"])
-                        st.write(f"  [{role}] {lbl} · `{event.get('args', {})}`")
-                    elif et == "finalizing_draft":
-                        st.caption(event.get("message", "正在生成完整提案…"))
-                    elif et == "draft":
-                        st.success(f"草稿 v{event['round']} — {len(event['content'])} 字符")
-                        rl = st.session_state.get("proposal_rounds", [])
-                        rl.append({"round": event["round"], "draft": event["content"], "feedback": None})
-                        st.session_state["proposal_rounds"] = rl
-                    elif et == "feedback":
-                        st.markdown(f"评审：**{event['score']:.1f}/10** 接受={event['accept']}")
-                        rl = st.session_state.get("proposal_rounds", [])
-                        if rl and rl[-1]["round"] == event["round"]:
-                            rl[-1]["feedback"] = event
-                            st.session_state["proposal_rounds"] = rl
-                    elif et == "final":
-                        st.session_state["proposal"] = event.get("content", "")
-                        st.session_state["final_rounds"] = event.get("rounds", 1)
-                        st.session_state["final_score"] = event.get("final_score", 0.0)
-                        feas_score = event.get("feasibility_score")
-                        st.session_state["proposal_feasibility_score"] = feas_score
-                        if persist_ops_memory_input and event.get("content"):
-                            from analysis.ops_memory import (  # noqa: E402
-                                create_ops_run,
-                                finalize_ops_run,
-                                persist_proposal,
-                            )
 
-                            rid = st.session_state.get("ops_run_id")
-                            if not rid:
-                                rid = create_ops_run(focus_input or None, "gap_ui")
-                                finalize_ops_run(rid)
-                                st.session_state["ops_run_id"] = rid
-                            gap_title = (
-                                st.session_state.get("proposal_gap_text")
-                                or str(gap_input).strip()
-                            )
-                            persist_proposal(
-                                rid,
-                                gap_title=gap_title,
-                                proposal_md=event.get("content", ""),
-                                feasibility_score=(
-                                    float(feas_score)
-                                    if feas_score is not None
-                                    else None
+            if gen_btn and gap_input:
+                support_pmids = support_pmids_from_evidence(
+                    extract_evidence(st.session_state.get("events") or [])
+                )
+                proposal_gap_data = (
+                    {"support_pmids": support_pmids} if support_pmids else None
+                )
+                st.session_state.update({
+                    "idea_events": [], "proposal": "",
+                    "proposal_gap_text": str(gap_input).strip(),
+                    "proposal_rounds": [],
+                    "proposal_result_target_difficulty": None,
+                    "proposal_assessed_difficulty": None,
+                    "proposal_difficulty_delta": None,
+                    "proposal_difficulty_color": None,
+                    "proposal_difficulty_summary": None,
+                    "proposal_q_coverage_low": False,
+                    "proposal_difficulty_breakdown": {},
+                })
+                idea_events: list[dict] = []
+                with st.status("生成器 × 评审循环 …", expanded=True) as psw:
+                    for event in stream_idea_agent(
+                        gap_text=str(gap_input).strip(),
+                        gap_data=proposal_gap_data,
+                        max_rounds=proposal_rounds_input,
+                        target_difficulty=target_difficulty_input,
+                    ):
+                        idea_events.append(event)
+                        st.session_state["idea_events"] = list(idea_events)
+                        et = event.get("type")
+                        if et in {"difficulty_assessed", "final"}:
+                            st.session_state.update({
+                                "proposal_result_target_difficulty": event.get(
+                                    "target_difficulty"
                                 ),
-                                critic_score=(
-                                    float(event.get("final_score"))
-                                    if event.get("final_score") is not None
-                                    else None
-                                ),
-                                status="generated",
-                                target_difficulty=event.get("target_difficulty"),
-                                assessed_difficulty=event.get(
+                                "proposal_assessed_difficulty": event.get(
                                     "assessed_difficulty"
                                 ),
-                                difficulty_delta=event.get("difficulty_delta"),
-                                difficulty_breakdown_json=json.dumps(
-                                    event.get("difficulty_breakdown") or {},
-                                    ensure_ascii=False,
+                                "proposal_difficulty_delta": event.get(
+                                    "difficulty_delta"
                                 ),
-                            )
-                        psw.update(
-                            label=f"完成 — {event.get('rounds', 1)} 轮，得分 {event.get('final_score', 0):.1f}/10",
-                            state="complete",
-                            expanded=False,
-                        )
+                                "proposal_difficulty_color": event.get(
+                                    "difficulty_color", event.get("color")
+                                ),
+                                "proposal_difficulty_summary": event.get(
+                                    "difficulty_summary", event.get("summary_line")
+                                ),
+                                "proposal_q_coverage_low": bool(
+                                    event.get("q_coverage_low")
+                                ),
+                                "proposal_difficulty_breakdown": event.get(
+                                    "difficulty_breakdown", event.get("breakdown")
+                                ) or {},
+                            })
+                        if et == "round_start":
+                            st.markdown(f"#### 第 {event['round']} / {event['max_rounds']} 轮")
+                        elif et == "tool_call":
+                            role = event.get("role", "")
+                            lbl = IDEA_TOOL_META.get(event["name"], event["name"])
+                            st.write(f"  [{role}] {lbl} · `{event.get('args', {})}`")
+                        elif et == "finalizing_draft":
+                            st.caption(event.get("message", "正在生成完整提案…"))
+                        elif et == "draft":
+                            st.success(f"草稿 v{event['round']} — {len(event['content'])} 字符")
+                            rl = st.session_state.get("proposal_rounds", [])
+                            rl.append({"round": event["round"], "draft": event["content"], "feedback": None})
+                            st.session_state["proposal_rounds"] = rl
+                        elif et == "feedback":
+                            st.markdown(f"评审：**{event['score']:.1f}/10** 接受={event['accept']}")
+                            rl = st.session_state.get("proposal_rounds", [])
+                            if rl and rl[-1]["round"] == event["round"]:
+                                rl[-1]["feedback"] = event
+                                st.session_state["proposal_rounds"] = rl
+                        elif et == "final":
+                            st.session_state["proposal"] = event.get("content", "")
+                            st.session_state["final_rounds"] = event.get("rounds", 1)
+                            st.session_state["final_score"] = event.get("final_score", 0.0)
+                            feas_score = event.get("feasibility_score")
+                            st.session_state["proposal_feasibility_score"] = feas_score
+                            if persist_ops_memory_input and event.get("content"):
+                                from analysis.ops_memory import (  # noqa: E402
+                                    create_ops_run,
+                                    finalize_ops_run,
+                                    persist_proposal,
+                                )
 
-        proposal = st.session_state.get("proposal", "")
-        if proposal:
-            st.divider()
-            # Soft chips: dark text on tinted bg (readable in light/dark Streamlit themes)
-            _difficulty_chip_styles = {
-                "green": "background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7;",
-                "amber": "background:#fff3e0;color:#e65100;border:1px solid #ffcc80;",
-                "red": "background:#ffebee;color:#b71c1c;border:1px solid #ef9a9a;",
-            }
-            _difficulty_chip = _difficulty_chip_styles.get(
-                st.session_state.get("proposal_difficulty_color") or "green",
-                _difficulty_chip_styles["green"],
-            )
-            _target_difficulty = difficulty_display_target(st.session_state)
-            _assessed_difficulty = st.session_state.get(
-                "proposal_assessed_difficulty"
-            )
-            if _target_difficulty and _assessed_difficulty:
-                _chip = (
-                    "display:inline-block;padding:4px 10px;border-radius:999px;"
-                    "font-size:0.9rem;font-weight:500;"
+                                rid = st.session_state.get("ops_run_id")
+                                if not rid:
+                                    rid = create_ops_run(focus_input or None, "gap_ui")
+                                    finalize_ops_run(rid)
+                                    st.session_state["ops_run_id"] = rid
+                                gap_title = (
+                                    st.session_state.get("proposal_gap_text")
+                                    or str(gap_input).strip()
+                                )
+                                persist_proposal(
+                                    rid,
+                                    gap_title=gap_title,
+                                    proposal_md=event.get("content", ""),
+                                    feasibility_score=(
+                                        float(feas_score)
+                                        if feas_score is not None
+                                        else None
+                                    ),
+                                    critic_score=(
+                                        float(event.get("final_score"))
+                                        if event.get("final_score") is not None
+                                        else None
+                                    ),
+                                    status="generated",
+                                    target_difficulty=event.get("target_difficulty"),
+                                    assessed_difficulty=event.get(
+                                        "assessed_difficulty"
+                                    ),
+                                    difficulty_delta=event.get("difficulty_delta"),
+                                    difficulty_breakdown_json=json.dumps(
+                                        event.get("difficulty_breakdown") or {},
+                                        ensure_ascii=False,
+                                    ),
+                                )
+                            psw.update(
+                                label=f"完成 — {event.get('rounds', 1)} 轮，得分 {event.get('final_score', 0):.1f}/10",
+                                state="complete",
+                                expanded=False,
+                            )
+
+            proposal = st.session_state.get("proposal", "")
+            if proposal:
+                st.divider()
+                # Soft chips: dark text on tinted bg (readable in light/dark Streamlit themes)
+                _difficulty_chip_styles = {
+                    "green": "background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7;",
+                    "amber": "background:#fff3e0;color:#e65100;border:1px solid #ffcc80;",
+                    "red": "background:#ffebee;color:#b71c1c;border:1px solid #ef9a9a;",
+                }
+                _difficulty_chip = _difficulty_chip_styles.get(
+                    st.session_state.get("proposal_difficulty_color") or "green",
+                    _difficulty_chip_styles["green"],
                 )
-                st.markdown(
-                    '<div style="display:flex;gap:8px;align-items:center;'
-                    'flex-wrap:wrap;margin:8px 0;">'
-                    f'<span style="{_chip}background:#f5f5f5;color:#212121;'
-                    'border:1px solid #bdbdbd;">'
-                    f"目标：<b>{_DIFFICULTY_LABELS.get(_target_difficulty, _target_difficulty)}</b></span>"
-                    f'<span style="{_chip}{_difficulty_chip}">'
-                    f"评估：<b>{_DIFFICULTY_LABELS.get(_assessed_difficulty, _assessed_difficulty)}</b></span>"
-                    + (
-                        f'<span style="{_chip}background:#eceff1;color:#37474f;'
-                        'border:1px solid #b0bec5;">Q 覆盖偏低</span>'
-                        if st.session_state.get("proposal_q_coverage_low")
-                        else ""
+                _target_difficulty = difficulty_display_target(st.session_state)
+                _assessed_difficulty = st.session_state.get(
+                    "proposal_assessed_difficulty"
+                )
+                if _target_difficulty and _assessed_difficulty:
+                    _chip = (
+                        "display:inline-block;padding:4px 10px;border-radius:999px;"
+                        "font-size:0.9rem;font-weight:500;"
                     )
-                    + "</div>",
-                    unsafe_allow_html=True,
+                    st.markdown(
+                        '<div style="display:flex;gap:8px;align-items:center;'
+                        'flex-wrap:wrap;margin:8px 0;">'
+                        f'<span style="{_chip}background:#f5f5f5;color:#212121;'
+                        'border:1px solid #bdbdbd;">'
+                        f"目标：<b>{_DIFFICULTY_LABELS.get(_target_difficulty, _target_difficulty)}</b></span>"
+                        f'<span style="{_chip}{_difficulty_chip}">'
+                        f"评估：<b>{_DIFFICULTY_LABELS.get(_assessed_difficulty, _assessed_difficulty)}</b></span>"
+                        + (
+                            f'<span style="{_chip}background:#eceff1;color:#37474f;'
+                            'border:1px solid #b0bec5;">Q 覆盖偏低</span>'
+                            if st.session_state.get("proposal_q_coverage_low")
+                            else ""
+                        )
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        st.session_state.get("proposal_difficulty_summary") or ""
+                    )
+                p1, p2, p3 = st.columns(3)
+                p1.metric("最终得分", f"{st.session_state.get('final_score', 0):.1f}/10")
+                p2.metric("轮数", st.session_state.get("final_rounds", 1))
+                _pfs = st.session_state.get("proposal_feasibility_score")
+                p3.metric(
+                    "可行性",
+                    f"{float(_pfs):.2f}" if _pfs is not None else "无",
                 )
-                st.caption(
-                    st.session_state.get("proposal_difficulty_summary") or ""
+                if len(proposal.strip()) < 400 or not any(
+                    m in proposal
+                    for m in (
+                        "## 1.",
+                        "## 1 ",
+                        "## Background",
+                        "REVISION_NOTE",
+                        "Fangxin Data Integration",
+                        "## 一",
+                        "研究背景",
+                    )
+                ):
+                    st.warning(
+                        "提案看起来不完整。请重新生成，或检查状态日志中的 API / 工具错误。"
+                    )
+                st.markdown("### 最终提案")
+                st.markdown(proposal)
+                st.download_button(
+                    "下载提案（Markdown）",
+                    data=proposal.encode("utf-8"),
+                    file_name=f"proposal_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
                 )
-            p1, p2, p3 = st.columns(3)
-            p1.metric("最终得分", f"{st.session_state.get('final_score', 0):.1f}/10")
-            p2.metric("轮数", st.session_state.get("final_rounds", 1))
-            _pfs = st.session_state.get("proposal_feasibility_score")
-            p3.metric(
-                "可行性",
-                f"{float(_pfs):.2f}" if _pfs is not None else "无",
-            )
-            if len(proposal.strip()) < 400 or not any(
-                m in proposal
-                for m in (
-                    "## 1.",
-                    "## 1 ",
-                    "## Background",
-                    "REVISION_NOTE",
-                    "Fangxin Data Integration",
-                    "## 一",
-                    "研究背景",
-                )
-            ):
-                st.warning(
-                    "提案看起来不完整。请重新生成，或检查状态日志中的 API / 工具错误。"
-                )
-            st.markdown("### 最终提案")
-            st.markdown(proposal)
-            st.download_button(
-                "下载提案（Markdown）",
-                data=proposal.encode("utf-8"),
-                file_name=f"proposal_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                mime="text/markdown",
-            )
+
+
+if st.runtime.exists():
+    main()
