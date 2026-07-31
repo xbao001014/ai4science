@@ -397,6 +397,28 @@ def cmd_task_quality_audit(args: argparse.Namespace) -> None:
             print(f"  {line.strip()}")
 
 
+def cmd_method_cluster_audit(args: argparse.Namespace) -> None:
+    import os
+    from datetime import datetime
+
+    from analysis.method_synonyms import run_method_cluster_audit
+    from db.schema import init_db
+
+    init_db()
+    report = run_method_cluster_audit(limit=args.limit)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    out = args.output or os.path.join(
+        config.OUTPUT_DIR,
+        f"method_cluster_audit_{datetime.now().strftime('%Y%m%d')}.md",
+    )
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(report)
+    print(f"[Method-Cluster-Audit] Saved to {out}")
+    for line in report.splitlines():
+        if line.startswith("- Method entities:") or line.startswith("- Suggested candidates shown:"):
+            print(f"  {line}")
+
+
 def cmd_run_all(args: argparse.Namespace) -> None:
     print("=" * 60)
     print(f"  Full-Text Workflow — {config.search_scope_label()}")
@@ -624,6 +646,23 @@ def main() -> None:
         help="Max examples per tier in the report (default: 20)",
     )
 
+    p_method_audit = sub.add_parser(
+        "method-cluster-audit",
+        help="Read-only Method synonym cluster audit (markdown report)",
+    )
+    p_method_audit.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output path (default: output/method_cluster_audit_{YYYYMMDD}.md)",
+    )
+    p_method_audit.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Max near-duplicate candidates in the report (default: 50)",
+    )
+
     p_debate = sub.add_parser("gap-debate", help="LLM debate multi-agent gap analysis")
     p_debate.add_argument("--focus", "-f", default=None)
     p_debate.add_argument("--top", "-n", type=int, default=6)
@@ -774,6 +813,7 @@ def main() -> None:
         "hotspot-report": cmd_hotspot_report,
         "hotspot-brief": cmd_hotspot_brief,
         "task-quality-audit": cmd_task_quality_audit,
+        "method-cluster-audit": cmd_method_cluster_audit,
         "gap-debate": cmd_gap_debate,
         "bootstrap-landscape": cmd_bootstrap_landscape,
         "idea-pipeline": cmd_idea_pipeline,

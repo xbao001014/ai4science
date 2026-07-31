@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from extractor.entity_normalize import _norm_key, is_generic_method
@@ -93,14 +94,10 @@ def near_duplicate_method_candidates(
 ) -> list[dict[str, Any]]:
     from rapidfuzz import fuzz
 
-    established = established_method_aliases()
     uniq = sorted({_norm_key(n) for n in names if n and str(n).strip()})
     # skip pairs already co-resolved
     out: list[dict[str, Any]] = []
     for i, a in enumerate(uniq):
-        if is_generic_method(a) or a in established and len(a.split()) <= 3:
-            # still allow pairing non-umbrella with umbrella only as audit skip
-            pass
         sa = method_skeleton(a)
         ta = frozenset(sa.split())
         for b in uniq[i + 1 :]:
@@ -137,3 +134,62 @@ def near_duplicate_method_candidates(
             })
     out.sort(key=lambda r: (-float(r["score"]), r["alias"]))
     return out[:limit]
+
+
+def _fetch_method_rows() -> list[dict[str, Any]]:
+    """Load every Method entity with its distinct active APPLIES_METHOD paper count."""
+    from db.schema import get_conn
+
+    sql = """
+        SELECT e.name AS name, COUNT(DISTINCT r.source_pmid) AS paper_cnt
+        FROM entities e
+        LEFT JOIN relations r
+          ON r.object_id = e.id
+         AND r.relation = 'APPLIES_METHOD'
+         AND COALESCE(r.status, 'active') = 'active'
+        WHERE e.type = 'Method'
+        GROUP BY e.id, e.name
+        ORDER BY paper_cnt DESC, e.name ASC
+    """
+    with get_conn() as conn:
+        return [dict(row) for row in conn.execute(sql).fetchall()]
+
+
+def run_method_cluster_audit(limit: int = 50) -> str:
+    """Return a read-only markdown report of suggested Method synonym clusters."""
+    rows = _fetch_method_rows()
+    counts = {str(row["name"]): int(row["paper_cnt"] or 0) for row in rows}
+    candidates = near_duplicate_method_candidates(list(counts), limit=max(0, limit))
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    parts = [
+        "# Method Cluster Audit",
+        "",
+        f"Generated: {generated}",
+        "",
+        "This report is read-only. Review candidates and curate into "
+        "`_METHOD_SYNONYMS` manually; it does not change entity names or write mappings.",
+        "",
+        "## Summary",
+        "",
+        f"- Method entities: {len(rows)}",
+        f"- Suggested candidates shown: {len(candidates)}",
+        "",
+        "## Near-duplicate candidates",
+        "",
+    ]
+    if not candidates:
+        parts.append("_None._")
+    else:
+        parts.extend([
+            "| Alias | Suggested canonical | Papers | Score | Reason |",
+            "| --- | --- | ---: | ---: | --- |",
+        ])
+        for candidate in candidates:
+            alias = str(candidate["alias"])
+            canonical = str(candidate["suggested_canonical"])
+            parts.append(
+                f"| {alias} | {canonical} | {counts.get(alias, 0)} | "
+                f"{candidate['score']} | {candidate['reason']} |"
+            )
+    return "\n".join(parts) + "\n"

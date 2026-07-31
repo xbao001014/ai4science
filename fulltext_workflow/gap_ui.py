@@ -1715,7 +1715,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "局限",
     ])
     with tab_m:
-        st.caption("新苗头；已过滤 established（成熟）方法。")
+        st.caption("新苗头；已过滤 established（成熟）方法。已按 method synonym 软归并（canonical 聚合）。")
         safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
         with st.expander("本周活跃（含成熟方法）", expanded=False):
             safe_table(pd.DataFrame(payload.get("active_methods", [])))

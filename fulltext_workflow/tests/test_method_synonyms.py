@@ -11,6 +11,7 @@ if str(_ROOT) not in sys.path:
 from analysis.method_synonyms import (  # noqa: E402
     method_skeleton,
     near_duplicate_method_candidates,
+    run_method_cluster_audit,
     resolve_method_canonical,
 )
 
@@ -59,3 +60,23 @@ def test_near_duplicate_candidates_suggest_but_do_not_resolve():
     assert any("drugreflector" in a and "drugreflector" in b for a, b in pairs)
     # unresolved until curated
     assert resolve_method_canonical("drugreflector framework") == "drugreflector framework"
+
+
+def test_run_method_cluster_audit_formats_ranked_candidates(monkeypatch):
+    import analysis.method_synonyms as ms
+
+    monkeypatch.setattr(
+        ms,
+        "_fetch_method_rows",
+        lambda: [
+            {"name": "drugreflector", "paper_cnt": 3},
+            {"name": "drugreflector framework", "paper_cnt": 2},
+        ],
+    )
+
+    report = run_method_cluster_audit(limit=10)
+
+    assert "# Method Cluster Audit" in report
+    assert "| Alias | Suggested canonical | Papers | Score | Reason |" in report
+    assert "| drugreflector framework | drugreflector | 2 | 1.0 | skeleton |" in report
+    assert "curate into `_METHOD_SYNONYMS` manually" in report
