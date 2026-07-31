@@ -1,8 +1,11 @@
 import gap_agent
 
 from gap_agent import (
+    MODERATOR_SYSTEM_PROMPT,
     MODERATOR_TOOL_NAMES,
+    OPTIMIST_SYSTEM_PROMPT,
     OPTIMIST_TOOL_NAMES,
+    SKEPTIC_SYSTEM_PROMPT,
     SKEPTIC_TOOL_NAMES,
     build_role_tool_bundle,
 )
@@ -44,6 +47,26 @@ def test_build_role_tool_bundle_unknown_role():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_optimist_prompt_uses_budget_not_forced_scan():
+    assert "at least 5 tools" not in OPTIMIST_SYSTEM_PROMPT
+    assert "graph_*" not in OPTIMIST_SYSTEM_PROMPT
+    assert "≤6" in OPTIMIST_SYSTEM_PROMPT or "at most 6" in OPTIMIST_SYSTEM_PROMPT.lower()
+    assert "emerging_gap_opportunities" in OPTIMIST_SYSTEM_PROMPT
+    assert "improvement_suggestions_by_topic" in OPTIMIST_SYSTEM_PROMPT
+
+
+def test_skeptic_prompt_limits_sql_and_scan():
+    assert "execute_kg_sql" in SKEPTIC_SYSTEM_PROMPT
+    assert "at most 2" in SKEPTIC_SYSTEM_PROMPT.lower() or "max 2" in SKEPTIC_SYSTEM_PROMPT.lower()
+    assert "method_disease_combo_gap" not in SKEPTIC_SYSTEM_PROMPT
+
+
+def test_moderator_prompt_prefers_feasibility_tools():
+    assert "literature_data_cross_matrix" in MODERATOR_SYSTEM_PROMPT
+    assert "pathology_disease_catalog" in MODERATOR_SYSTEM_PROMPT
+    assert "at most 4" in MODERATOR_SYSTEM_PROMPT.lower() or "≤4" in MODERATOR_SYSTEM_PROMPT
 
 
 def test_stream_gap_debate_agent_uses_matching_role_bundles(monkeypatch):

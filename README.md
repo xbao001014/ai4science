@@ -16,9 +16,11 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 
-# 全文 PDF / MinerU 回退（可选）
-pip install scansci-pdf "mineru[core]"
+# 单测 / PPTX 导出（可选）
+pip install -r requirements-dev.txt
 ```
+
+建议 Python **3.10–3.12**。`mineru` / `scansci-pdf` 已含在主依赖中（体积较大）。
 
 ### 2. 配置
 
@@ -48,7 +50,8 @@ cd fulltext_workflow
 build_kg_paper/
 ├── README.md                 ← 本文件（最外层入口）
 ├── .env.example
-├── requirements.txt
+├── requirements.txt          # 核心 + Gap UI + ScanSci/MinerU
+├── requirements-dev.txt      # 可选：pytest / python-pptx
 ├── search_queries.py         # PubMed 检索组与年份
 ├── llm_utils.py
 ├── api_document.md           # 方信 LIS API

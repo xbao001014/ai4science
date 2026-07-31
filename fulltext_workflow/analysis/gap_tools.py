@@ -6,7 +6,12 @@ import re
 from typing import Any, Callable
 
 import config
-from analysis.focus_filter import focus_pmid_in_clause, focus_sql_clause, normalize_focus
+from analysis.focus_filter import (
+    build_focus_expansion,
+    focus_pmid_in_clause,
+    focus_sql_clause,
+    normalize_focus,
+)
 from analysis.impact_scoring import aggregate_paper_impact
 from db.schema import get_conn
 
@@ -26,7 +31,9 @@ def _focus_clause(column: str, focus: str | None) -> str:
 
 
 def tool_author_stated_gaps(focus: str | None = None) -> dict:
-    fc = _focus_clause("e.name", focus)
+    # Focus must filter papers (PMID), not limitation entity names — names are
+    # usually generic ("small sample size"), never the disease string.
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", focus)
     rows = _q(f"""
         SELECT e.name AS limitation,
                COUNT(DISTINCT r.source_pmid) AS paper_cnt,
@@ -34,10 +41,9 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
                GROUP_CONCAT(DISTINCT r.evidence_quote) AS quotes
         FROM relations r
         JOIN entities e ON r.object_id = e.id
-        WHERE (r.relation IN ('REPORTS_LIMITATION')
-           OR (e.type='Limitation' AND r.relation='REPORTS_LIMITATION'))
+        WHERE r.relation = 'REPORTS_LIMITATION'
            AND COALESCE(r.status, 'active') = 'active'
-           {fc}
+           {pmid_fc}
         GROUP BY e.id
         ORDER BY paper_cnt DESC
         LIMIT {config.TOOL_TOP_N}
@@ -52,7 +58,7 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
             JOIN entities e ON r.object_id = e.id
             WHERE e.type='Limitation'
               AND COALESCE(r.status, 'active') = 'active'
-              {fc}
+              {pmid_fc}
             GROUP BY e.id
             ORDER BY paper_cnt DESC
             LIMIT {config.TOOL_TOP_N}
@@ -60,7 +66,7 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
     desc = "Author-stated research limitations/gaps from full-text extraction"
     if focus:
         desc += f" (focus: {focus})"
-    return {"description": desc, "data": rows}
+    return {"description": desc, "count": len(rows), "data": rows}
 
 
 def tool_improvement_suggestions_by_topic(focus: str | None = None) -> dict:
@@ -332,7 +338,8 @@ def tool_method_disease_combo_gap(focus: str | None = None) -> dict:
 
 
 def tool_metric_evidence_quality(focus: str | None = None) -> dict:
-    fc = _focus_clause("e.name", focus)
+    # Focus filters papers, not metric entity names (AUC/F1 never contain disease text).
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", focus)
     rows = _q(f"""
         SELECT e.name AS metric,
                r.metric_value,
@@ -343,7 +350,7 @@ def tool_metric_evidence_quality(focus: str | None = None) -> dict:
         FROM relations r
         JOIN entities e ON r.object_id=e.id
         WHERE r.relation='ACHIEVES_METRIC' AND e.type='Metric'
-          AND r.evidence_section='results' {fc}
+          AND r.evidence_section='results' {pmid_fc}
         ORDER BY r.source_pmid
         LIMIT {config.TOOL_TOP_N}
     """)
@@ -355,7 +362,7 @@ def tool_metric_evidence_quality(focus: str | None = None) -> dict:
                r.source_pmid
         FROM relations r
         JOIN entities e ON r.object_id=e.id
-        WHERE r.relation='ACHIEVES_METRIC' AND e.type='Metric' {fc}
+        WHERE r.relation='ACHIEVES_METRIC' AND e.type='Metric' {pmid_fc}
         LIMIT {config.TOOL_TOP_N}
     """)
     desc = "Results-section backed metrics vs all extracted metrics"
@@ -427,7 +434,8 @@ def _paper_impact_join() -> str:
 
 def tool_limitation_impact_rank(focus: str | None = None) -> dict:
     """Author-stated limitations ranked by paper count and citation/IF impact."""
-    fc = _focus_clause("e.name", focus)
+    # Focus filters papers (PMID), not limitation names (usually generic phrases).
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", focus)
     rows = _q(f"""
         SELECT e.name AS limitation,
                COUNT(DISTINCT r.source_pmid) AS paper_cnt,
@@ -439,10 +447,9 @@ def tool_limitation_impact_rank(focus: str | None = None) -> dict:
         FROM relations r
         JOIN entities e ON r.object_id = e.id
         {_paper_impact_join()}
-        WHERE (r.relation = 'REPORTS_LIMITATION'
-           OR (e.type = 'Limitation' AND r.relation = 'REPORTS_LIMITATION'))
+        WHERE r.relation = 'REPORTS_LIMITATION'
           AND COALESCE(r.status, 'active') = 'active'
-          {fc}
+          {pmid_fc}
         GROUP BY e.id
         HAVING paper_cnt >= 1
         ORDER BY paper_cnt * AVG(COALESCE(p.citation_count, 0)) DESC
@@ -491,7 +498,8 @@ def tool_study_type_relation_stats() -> dict:
 
 
 def tool_hotspot_entities(focus: str | None = None) -> dict:
-    fc = _focus_clause("e.name", focus)
+    # Focus filters papers; entity names (Method/Metric/Limitation) rarely contain the disease.
+    pmid_fc = focus_pmid_in_clause("r.source_pmid", focus)
     # Method heat uses APPLIES_METHOD only (exclude RELATED_TO umbrella co-mentions).
     rows = _q(f"""
         SELECT e.name, e.type,
@@ -503,7 +511,7 @@ def tool_hotspot_entities(focus: str | None = None) -> dict:
         JOIN entities e ON r.object_id = e.id
         LEFT JOIN papers p ON r.source_pmid = p.pmid
         LEFT JOIN journals j ON p.journal_id = j.id
-        WHERE 1=1 {fc}
+        WHERE 1=1 {pmid_fc}
           AND (e.type != 'Method' OR r.relation = 'APPLIES_METHOD')
         GROUP BY e.id
         HAVING paper_cnt >= 2
@@ -628,13 +636,17 @@ _KG_SQL_SCHEMA_HINT = (
     "relations(id, subject_type, subject_id, relation, object_type, object_id, "
     "source_pmid, evidence_section, evidence_quote, status); "
     "paper_entity_bindings(id, source_pmid, method_entity_id, disease_entity_id, "
-    "dataset_entity_id); "
+    "dataset_entity_id) — join papers.pmid = paper_entity_bindings.source_pmid "
+    "(never papers.id = source_pmid); "
     "limitation_temporal(limitation_id, limitation_name, paper_cnt, temporal_status, "
-    "avg_cite, impact_tier); "
+    "avg_cite, impact_tier) is a cache that may be EMPTY — prefer the curated tool "
+    "limitation_temporal_profile (computes live) instead of SELECT from this table; "
     "document_sections(id, paper_id, section_type, content). "
     "There is no papers.paper_id or entities.entity_id — use papers.id / papers.pmid "
-    "and entities.id. Join bindings via source_pmid and entity id columns. "
-    "method_disease_combo_gap is a tool name, not a SQL table."
+    "and entities.id. Join bindings via source_pmid (= papers.pmid) and entity id columns. "
+    "method_disease_combo_gap is a tool name, not a SQL table. "
+    "Improvement suggestions live in paper_improvement_suggestions, not as entity type "
+    "ImprovementSuggestion."
 )
 
 
@@ -710,6 +722,13 @@ def _query_needs_limit(sql: str, table: str) -> bool:
     return table.lower() in tokens and "limit" not in keyword_tokens
 
 
+def _with_focus_expansion(payload: dict, focus: str | None) -> dict:
+    expansion = build_focus_expansion(focus)
+    if expansion:
+        payload = {**payload, "focus_expansion": expansion}
+    return payload
+
+
 def tool_execute_kg_sql(sql: str, focus: str | None = None) -> dict:
     """Execute a read-only SQL query against the KG database.
 
@@ -724,20 +743,27 @@ def tool_execute_kg_sql(sql: str, focus: str | None = None) -> dict:
     tokens = _sql_tokens(sql_stripped)
     first_word = tokens[0].upper() if tokens else ""
     if first_word not in _ALLOWED_SQL_PREFIXES:
-        return {"error": f"Only SELECT/WITH/EXPLAIN allowed, got: {first_word}"}
+        return _with_focus_expansion(
+            {"error": f"Only SELECT/WITH/EXPLAIN allowed, got: {first_word}"},
+            focus,
+        )
     if _WRITE_SQL_KEYWORDS.intersection(token.upper() for token in tokens):
-        return {"error": "Only read-only SELECT/WITH/EXPLAIN queries are allowed."}
+        return _with_focus_expansion(
+            {"error": "Only read-only SELECT/WITH/EXPLAIN queries are allowed."},
+            focus,
+        )
     if _query_needs_limit(sql_stripped, "document_sections"):
-        return {
-            "error": (
-                "Queries touching document_sections must include LIMIT "
-                "to avoid dumping raw section text."
-            ),
-            "sql": sql_stripped,
-        }
+        return _with_focus_expansion(
+            {
+                "error": (
+                    "Queries touching document_sections must include LIMIT "
+                    "to avoid dumping raw section text."
+                ),
+                "sql": sql_stripped,
+            },
+            focus,
+        )
 
-    # Inject focus filter hint if caller provides focus but SQL lacks it
-    # (agent should handle this itself, but we log a hint)
     try:
         with get_conn() as conn:
             conn.execute("PRAGMA query_only = ON")
@@ -750,14 +776,14 @@ def tool_execute_kg_sql(sql: str, focus: str | None = None) -> dict:
         if truncated:
             result["truncated"] = True
             result["hint"] = f"Results capped at {_SQL_MAX_ROWS} rows. Add LIMIT or narrow WHERE."
-        return result
+        return _with_focus_expansion(result, focus)
     except Exception as exc:
         err = str(exc)
         payload: dict = {"error": err, "sql": sql_stripped}
         low = err.lower()
         if "no such column" in low or "no such table" in low:
             payload["hint"] = _KG_SQL_SCHEMA_HINT
-        return payload
+        return _with_focus_expansion(payload, focus)
 
 
 # ── Tool registry for LLM agents ─────────────────────────────────────────────
@@ -793,6 +819,9 @@ TOOL_SCHEMAS: list[dict] = [
                 "Use when pre-built tools cannot answer your question or you need custom "
                 "joins, aggregations, year filters, or exact verification. "
                 f"{_KG_SQL_SCHEMA_HINT} "
+                "When focus is provided, the response includes focus_expansion "
+                "(concept phrases or token synonyms + suggested_sql_filter) — reuse it "
+                "for disease/title filters instead of one spelling. "
                 "Returns up to 100 rows. Prefer this for exploratory/validation queries."
             ),
             "parameters": {
@@ -812,7 +841,10 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                     "focus": {
                         "type": "string",
-                        "description": "Optional focus context (not auto-injected into SQL).",
+                        "description": (
+                            "Optional research focus. Not auto-injected into SQL, but "
+                            "returns focus_expansion with synonym phrases for any disease/topic."
+                        ),
                     },
                 },
                 "required": ["sql"],

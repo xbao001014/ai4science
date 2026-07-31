@@ -75,6 +75,79 @@ def focus_sql_clause(column: str, focus: str | None) -> str:
     return " AND (" + " OR ".join(clauses) + ")"
 
 
+def build_focus_expansion(
+    focus: str | None,
+    *,
+    column: str = "e.name",
+    max_phrases: int = 16,
+) -> dict | None:
+    """Structured synonym card for any focus (concept table or token fallback).
+
+    Used by execute_kg_sql so free-form SQL can reuse the same expansions as
+    curated tools — not disease-specific hardcoding.
+    """
+    focus = normalize_focus(focus)
+    if not focus:
+        return None
+
+    from analysis.disease_synonyms import expand_focus_terms, resolve_disease_concept
+
+    concept = resolve_disease_concept(focus)
+    phrases: list[str] = []
+    if concept:
+        exp = expand_focus_terms(focus)
+        seen: set[str] = set()
+        for p in [
+            exp.get("canonical") or "",
+            *(exp.get("phrases") or []),
+            *(exp.get("abbreviations") or []),
+            *(exp.get("zh") or []),
+        ]:
+            key = str(p).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                phrases.append(str(p).strip())
+        matched = True
+        concept_id = exp.get("concept_id")
+        canonical = exp.get("canonical")
+        mode = "disease_concept"
+    else:
+        matched = False
+        concept_id = None
+        canonical = None
+        mode = "token_synonyms"
+        seen = {focus.lower()}
+        phrases = [focus]
+        tokens = [
+            t for t in focus.lower().split()
+            if len(t) >= 2 and t not in _KEYWORD_STOPWORDS
+        ]
+        for token in tokens:
+            for alt in _TOKEN_SYNONYMS.get(token, [token]):
+                if alt not in seen:
+                    seen.add(alt)
+                    phrases.append(alt)
+
+    capped = phrases[: max(1, int(max_phrases))]
+    like_parts = [
+        f"LOWER({column}) LIKE LOWER('%{_escape_sql_like(p)}%')"
+        for p in capped
+    ]
+    return {
+        "raw": focus,
+        "mode": mode,
+        "matched_concept": matched,
+        "concept_id": concept_id,
+        "canonical": canonical,
+        "phrases": capped,
+        "suggested_sql_filter": f"({' OR '.join(like_parts)})" if like_parts else "",
+        "usage": (
+            "Reuse these phrases / suggested_sql_filter for disease or title filters "
+            "instead of a single spelling. Same expansion path as curated focus tools."
+        ),
+    }
+
+
 def focus_pmid_in_clause(pmid_column: str, focus: str | None) -> str:
     """
     Restrict to PMIDs whose paper targets a matching Disease entity or title.

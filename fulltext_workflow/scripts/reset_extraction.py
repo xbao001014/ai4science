@@ -1,7 +1,11 @@
 """Reset completed LLM extractions so papers can be re-extracted.
 
-Deletes relations for selected papers, removes orphan entities, clears
-limitation lifecycle tables, and sets extraction_done=0.
+Deletes KG extraction artifacts for selected papers (relations, Pass2 bindings /
+improvement suggestions), clears limitation lifecycle tables, removes orphan
+entities, and resets extraction_done + reconcile_status.
+
+Preserves: papers metadata, sections, fulltext caches, citations/IF, ops memory,
+weekly hotspot snapshots (recompute after re-extract if needed).
 
 Skips errata/correction notices (same rules as reset_empty_extraction.py).
 """
@@ -29,6 +33,18 @@ def _is_skippable(row) -> bool:
     return bool(skip_extraction_reason(row["title"] or "", row["abstract"] or "", pub_types))
 
 
+def _count_for_pmids(conn, table: str, pmids: list[str]) -> int:
+    if not pmids:
+        return 0
+    placeholders = ",".join("?" * len(pmids))
+    return int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE source_pmid IN ({placeholders})",
+            pmids,
+        ).fetchone()[0]
+    )
+
+
 def reset_extractions(*, dry_run: bool = False) -> dict:
     init_db()
     with get_conn() as conn:
@@ -44,19 +60,27 @@ def reset_extractions(*, dry_run: bool = False) -> dict:
         to_reset = [r for r in rows if not _is_skippable(r)]
         skipped = [r for r in rows if _is_skippable(r)]
         pmids = [r["pmid"] for r in to_reset if r["pmid"]]
-        rel_count = 0
-        if pmids:
-            placeholders = ",".join("?" * len(pmids))
-            rel_count = conn.execute(
-                f"SELECT COUNT(*) FROM relations WHERE source_pmid IN ({placeholders})",
-                pmids,
-            ).fetchone()[0]
+        placeholders = ",".join("?" * len(pmids)) if pmids else ""
+
+        rel_count = _count_for_pmids(conn, "relations", pmids)
+        bind_count = _count_for_pmids(conn, "paper_entity_bindings", pmids)
+        sugg_count = _count_for_pmids(conn, "paper_improvement_suggestions", pmids)
 
         orphan_entities = 0
         if not dry_run and pmids:
-            placeholders = ",".join("?" * len(pmids))
             conn.execute(
                 f"DELETE FROM relations WHERE source_pmid IN ({placeholders})",
+                pmids,
+            )
+            conn.execute(
+                f"DELETE FROM paper_entity_bindings WHERE source_pmid IN ({placeholders})",
+                pmids,
+            )
+            conn.execute(
+                f"""
+                DELETE FROM paper_improvement_suggestions
+                WHERE source_pmid IN ({placeholders})
+                """,
                 pmids,
             )
             conn.execute("DELETE FROM limitation_resolution_signals")
@@ -68,6 +92,18 @@ def reset_extractions(*, dry_run: bool = False) -> dict:
                     SELECT object_id FROM relations
                     UNION
                     SELECT subject_id FROM relations WHERE subject_type != 'Paper'
+                    UNION
+                    SELECT method_entity_id FROM paper_entity_bindings
+                        WHERE method_entity_id IS NOT NULL
+                    UNION
+                    SELECT disease_entity_id FROM paper_entity_bindings
+                        WHERE disease_entity_id IS NOT NULL
+                    UNION
+                    SELECT dataset_entity_id FROM paper_entity_bindings
+                        WHERE dataset_entity_id IS NOT NULL
+                    UNION
+                    SELECT limitation_entity_id FROM paper_improvement_suggestions
+                        WHERE limitation_entity_id IS NOT NULL
                 )
                 """
             ).rowcount
@@ -75,7 +111,11 @@ def reset_extractions(*, dry_run: bool = False) -> dict:
             id_ph = ",".join("?" * len(ids))
             conn.execute(
                 f"""
-                UPDATE papers SET extraction_done = 0, study_type = NULL
+                UPDATE papers
+                SET extraction_done = 0,
+                    study_type = NULL,
+                    reconcile_status = 'pending',
+                    reconcile_at = NULL
                 WHERE id IN ({id_ph})
                 """,
                 ids,
@@ -85,6 +125,8 @@ def reset_extractions(*, dry_run: bool = False) -> dict:
         "reset_papers": len(to_reset),
         "skipped_errata": len(skipped),
         "deleted_relations": rel_count,
+        "deleted_bindings": bind_count,
+        "deleted_suggestions": sugg_count,
         "deleted_orphan_entities": orphan_entities if not dry_run else None,
         "sample_pmids": pmids[:10],
     }
@@ -100,6 +142,8 @@ def main() -> None:
     print(f"{action} {stats['reset_papers']} paper(s)")
     print(f"Skipped errata/non-extractable: {stats['skipped_errata']}")
     print(f"Relations affected: {stats['deleted_relations']}")
+    print(f"Pass2 bindings affected: {stats['deleted_bindings']}")
+    print(f"Improvement suggestions affected: {stats['deleted_suggestions']}")
     if stats["deleted_orphan_entities"] is not None:
         print(f"Orphan entities removed: {stats['deleted_orphan_entities']}")
     if stats["sample_pmids"]:

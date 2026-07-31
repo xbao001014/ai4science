@@ -232,6 +232,65 @@ PUBMED_QUERY_GROUPS: list[dict] = [
             " OR machine learning[Title/Abstract] OR neural network[Title/Abstract])"
         ),
     },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 以下为对齐方信 Landscape 病种的定向补齐查询组
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── 鼻咽癌病理 AI（方信 BY_BNAI，华南高发癌种）──────────────────────────
+    {
+        "name": "nasopharyngeal_carcinoma_pathology_ai",
+        "enabled": True,
+        "query": (
+            "(nasopharyngeal carcinoma[Title/Abstract] OR nasopharyngeal cancer[Title/Abstract]"
+            " OR nasopharynx[Title/Abstract] OR NPC[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR histology[Title/Abstract] OR whole slide image[Title/Abstract]"
+            " OR digital pathology[Title/Abstract])"
+            " AND (deep learning[Title/Abstract] OR artificial intelligence[Title/Abstract]"
+            " OR machine learning[Title/Abstract] OR neural network[Title/Abstract])"
+        ),
+    },
+
+    # ── 肺癌 / 胃癌 / 肠癌病理 AI（方信 F_FA / W_WA / C_CA）──────────────
+    {
+        "name": "lung_gastric_colorectal_cancer_pathology_ai",
+        "enabled": True,
+        "query": (
+            "(lung cancer[Title/Abstract] OR non-small cell lung cancer[Title/Abstract]"
+            " OR NSCLC[Title/Abstract] OR lung adenocarcinoma[Title/Abstract]"
+            " OR gastric cancer[Title/Abstract] OR stomach cancer[Title/Abstract]"
+            " OR gastric adenocarcinoma[Title/Abstract]"
+            " OR colorectal cancer[Title/Abstract] OR colon cancer[Title/Abstract]"
+            " OR rectal cancer[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR histology[Title/Abstract] OR whole slide image[Title/Abstract]"
+            " OR digital pathology[Title/Abstract])"
+            " AND (deep learning[Title/Abstract] OR artificial intelligence[Title/Abstract]"
+            " OR machine learning[Title/Abstract] OR neural network[Title/Abstract])"
+        ),
+    },
+
+    # ── GIST / 淋巴瘤 / 神经内分泌肿瘤病理 AI（方信 W_WJJYXZL / C_JZL /
+    #    C_CDLBL / W_LBL / C_SJNFMZL）─────────────────────────────────────
+    {
+        "name": "gist_lymphoma_net_pathology_ai",
+        "enabled": True,
+        "query": (
+            "(gastrointestinal stromal tumor[Title/Abstract] OR GIST[Title/Abstract]"
+            " OR gastrointestinal stromal tumour[Title/Abstract]"
+            " OR gastrointestinal lymphoma[Title/Abstract]"
+            " OR gastric lymphoma[Title/Abstract] OR intestinal lymphoma[Title/Abstract]"
+            " OR MALT lymphoma[Title/Abstract]"
+            " OR neuroendocrine tumor[Title/Abstract] OR neuroendocrine tumour[Title/Abstract]"
+            " OR neuroendocrine neoplasm[Title/Abstract] OR NET[Title/Abstract] OR NEN[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR histology[Title/Abstract] OR whole slide image[Title/Abstract]"
+            " OR digital pathology[Title/Abstract])"
+            " AND (deep learning[Title/Abstract] OR artificial intelligence[Title/Abstract]"
+            " OR machine learning[Title/Abstract] OR neural network[Title/Abstract])"
+        ),
+    },
 ]
 
 

@@ -1,4 +1,8 @@
-# Pathology AI Knowledge Graph — Dependencies
+# Pathology AI Knowledge Graph — core + Gap UI + full-text fetch
+# Python >=3.10,<3.13 recommended
+#
+#   pip install -r requirements.txt
+# Dev / tests / PPTX export:  pip install -r requirements-dev.txt
 
 # Core
 biopython>=1.83
@@ -6,30 +10,21 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 tqdm>=4.66.0
 pandas>=2.2.0
-openpyxl>=3.1.0          # Excel import
+openpyxl>=3.1.0          # Excel IF import (pandas.read_excel)
 pydantic>=2.7.0
+rapidfuzz>=3.9.0         # journal name normalization
 
 # LLM / extraction
 openai>=1.30.0
-langchain>=0.3.0
-langchain-openai>=0.3.0
-
-# NLP / NER
-spacy>=3.7.0
-# scispaCy model installed separately — see README
 
 # Graph
 networkx>=3.3
-neo4j>=5.20.0             # optional, only needed if USE_NEO4J=true
+pyvis>=0.3.2             # KG HTML export (visualize)
 
-# Visualization
-pyvis>=0.3.2
+# Gap UI
+streamlit>=1.32.0
 plotly>=5.22.0
-streamlit>=1.32.0  # Gap UI (gap_ui.py)
 
-# Full-text workflow (optional — fetch-fulltext tier 2)
+# Full-text PDF / MinerU (fetch-fulltext tier 2; may pull torch)
 scansci-pdf>=0.1.0
 mineru[core]>=2.0.0
-
-# Fuzzy matching (journal name normalization)
-rapidfuzz>=3.9.0

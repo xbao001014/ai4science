@@ -115,6 +115,52 @@ def _safe_invoke_tool(fn: Any, fn_args: dict[str, Any]) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+# Models sometimes emit a fake tool named after the desired output format
+# (e.g. "json") instead of writing that format in the assistant message.
+_PHANTOM_FORMAT_TOOLS = frozenset(
+    {
+        "json",
+        "markdown",
+        "md",
+        "text",
+        "output",
+        "response",
+        "final_answer",
+        "answer",
+        "report",
+    }
+)
+
+_PHANTOM_TOOL_HINT = (
+    "There is no tool named '{name}'. JSON/Markdown/report outputs belong in the "
+    "assistant message content (optionally inside a fenced code block), not as a "
+    "tool call. Do not invent tools. Call only tools from the provided tool list, "
+    "or finish with a normal message and no tool_calls."
+)
+
+
+def _phantom_payload_as_content(fn_name: str, fn_args: dict[str, Any]) -> str | None:
+    """If a phantom tool call carries the intended payload, turn it into message text."""
+    if not fn_args:
+        return None
+    if fn_name in {"markdown", "md", "text", "report", "final_answer", "answer", "output", "response"}:
+        for key in ("content", "text", "markdown", "report", "answer", "output"):
+            val = fn_args.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        # Single string-like dump
+        if len(fn_args) == 1:
+            only = next(iter(fn_args.values()))
+            if isinstance(only, str) and only.strip():
+                return only.strip()
+        return None
+    # json / generic structured payload
+    if "content" in fn_args and isinstance(fn_args["content"], str) and fn_args["content"].strip():
+        return fn_args["content"].strip()
+    body = json.dumps(fn_args, ensure_ascii=False, indent=2)
+    return f"```json\n{body}\n```"
+
+
 def run_tool_agent(
     messages: list[dict],
     tools: dict[str, Any],
@@ -166,6 +212,7 @@ def run_tool_agent(
         if not msg.tool_calls or finish == "stop":
             return
 
+        stop_after_tools = False
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             fn_args = _parse_tool_arguments(tc.function.arguments)
@@ -185,6 +232,7 @@ def run_tool_agent(
                 "call_id": tc.id,
             }
 
+            recovered_content: str | None = None
             if fn_name in tools:
                 result = _safe_invoke_tool(tools[fn_name], fn_args)
                 if "error" in result:
@@ -211,12 +259,24 @@ def run_tool_agent(
                         "call_id": tc.id,
                     }
             else:
-                result_str = json.dumps({"error": f"Unknown tool: {fn_name}"})
+                phantom = fn_name.strip().lower() in _PHANTOM_FORMAT_TOOLS
+                if phantom:
+                    recovered_content = _phantom_payload_as_content(
+                        fn_name.strip().lower(), fn_args
+                    )
+                    err = _PHANTOM_TOOL_HINT.format(name=fn_name)
+                    if recovered_content:
+                        err += " Recovered your tool arguments as message content."
+                    result = {"error": err, "recovered": bool(recovered_content)}
+                else:
+                    err = f"Unknown tool: {fn_name}"
+                    result = {"error": err}
+                result_str = json.dumps(result, ensure_ascii=False)
                 yield {
                     "type": "tool_error",
                     "role": role,
                     "name": fn_name,
-                    "error": f"Unknown tool: {fn_name}",
+                    "error": err,
                     "call_id": tc.id,
                 }
 
@@ -225,6 +285,13 @@ def run_tool_agent(
                 "tool_call_id": tc.id,
                 "content": result_str,
             })
+
+            if recovered_content:
+                messages.append({"role": "assistant", "content": recovered_content})
+                stop_after_tools = True
+
+        if stop_after_tools:
+            return
 
 
 def best_assistant_content(

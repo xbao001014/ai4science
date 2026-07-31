@@ -72,6 +72,45 @@ def test_limitation_temporal_uses_disease_focus_not_limitation_name():
     assert any(r["limitation_name"] == "small sample size" for r in rows)
 
 
+def test_author_stated_gaps_uses_paper_focus_not_limitation_name():
+    from analysis.gap_tools import tool_author_stated_gaps
+
+    _setup()
+    _seed_npc_fixture()
+    out = tool_author_stated_gaps(focus="nasopharyngeal carcinoma")
+    names = [r["limitation"] for r in out["data"]]
+    assert "small sample size" in names
+    # Chinese focus alias must also hit papers, not require 鼻咽 in limitation text
+    zh = tool_author_stated_gaps(focus="鼻咽癌")
+    assert any(r["limitation"] == "small sample size" for r in zh["data"])
+
+
+def test_limitation_impact_and_metrics_use_paper_focus_not_entity_name():
+    from analysis.gap_tools import (
+        tool_limitation_impact_rank,
+        tool_metric_evidence_quality,
+    )
+
+    _setup()
+    _seed_npc_fixture()
+    paper_id = upsert_paper({"pmid": "91000001", "title": "CLAM for nasopharyngeal carcinoma on WSI"})
+    metric_id = upsert_entity("auc", "Metric")
+    insert_relation(
+        "Paper",
+        paper_id,
+        "ACHIEVES_METRIC",
+        "Metric",
+        metric_id,
+        source_pmid="91000001",
+        evidence_section="results",
+        metric_value="0.91",
+    )
+    impact = tool_limitation_impact_rank(focus="鼻咽癌")
+    assert any(r["limitation"] == "small sample size" for r in impact["data"])
+    metrics = tool_metric_evidence_quality(focus="nasopharyngeal carcinoma")
+    assert any(r["metric"] == "auc" for r in metrics["results_backed"])
+
+
 def test_combo_gap_temporal_finds_methods_on_focus_papers():
     _setup()
     _seed_npc_fixture()

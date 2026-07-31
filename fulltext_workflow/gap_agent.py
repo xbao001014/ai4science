@@ -133,6 +133,8 @@ SQL_FALLBACK_GUIDANCE = """\
 not exposed by an existing tool.
 - Keep SQL narrow: select explicit columns, use a meaningful WHERE clause, and include LIMIT.
 - Do not query raw document_sections unless exact section text is necessary.
+- When focus is set, pass focus=... into execute_kg_sql and reuse the returned focus_expansion \
+(phrases / suggested_sql_filter) for disease or title filters — never rely on a single spelling.
 """
 
 
@@ -149,17 +151,14 @@ Prefer gaps grounded in WSI / histopathology / cytopathology / IHC rather than C
 Language: write all candidate gap Markdown in **English**.
 
 Tool-use rules:
-""" + SQL_FALLBACK_GUIDANCE + """\
 - If a focus is set, the **first tool call must be corpus_focus_coverage**; the summary must distinguish \
 focus_subset.papers from global.papers.
-- Call at least 5 tools, including at least 1 graph_* traversal tool.
-- Prefer limitation_temporal_profile / limitation_gap_status (limitation timeline + follow-up signals).
-- Pair with author_stated_gaps / limitation_impact_rank (author limitations + citation impact).
-- Use combo_gap_temporal to find method×disease combos with later follow-up.
-- Use hotspot_entities and recent_highcite_papers for high-impact frontier directions.
-- Use emerging_gap_opportunities for task-bridged transfer candidates (weekly heating × sparse combo × ok Task bridge); not Cartesian coverage holes.
-- Use study_type_relation_stats for QA counts of SURVEYS_METHOD / COVERS_DISEASE / RELEASES_DATASET / PRETRAINS_ON (not applied-method heat).
-- Covered combo gaps (gap_kind=covered) use COVERS_DISEASE mentions, not APPLIES×TARGETS co-occurrence; SURVEYS_METHOD is survey mention for secondary ranking only, not APPLIES_METHOD heat.
+- Use at most 6 tool calls.
+- Preferred order: corpus_focus_coverage → limitation_temporal_profile → emerging_gap_opportunities → \
+improvement_suggestions_by_topic → recent_highcite_papers → disease_task_coverage.
+- Use emerging_gap_opportunities for task-bridged transfer candidates, not Cartesian coverage holes.
+- Do not treat coverage holes as research opportunities.
+- Do not call tools outside your available tool list.
 - Every quantitative claim must cite exact tool values (including first_year, recent_ratio, \
 resolution_signal, avg_cite, impact_score).
 - If focus_subset.papers < 30, do not claim persistent temporal trends or cite full-corpus scale; \
@@ -195,10 +194,14 @@ Language: JSON string field values must be in **English**.
 
 Review principles:
 """ + SQL_FALLBACK_GUIDANCE + """\
-- Prefer execute_kg_sql for targeted verification when a Scout claim cannot be checked exactly with a curated tool.
+- Use at most 5 tool calls.
+- Prefer corpus_focus_coverage, limitation_temporal_profile, and author_stated_gaps, in that order.
+- Use execute_kg_sql for targeted verification at most 2 times.
+- Use disease_task_coverage only when a cross-check of task coverage is needed.
 - If focus is set, **call corpus_focus_coverage first** and cite focus_subset size in corpus_limitations.
-- Independently call KG tools (at least 3) to verify Opportunity Scout’s key quantitative claims.
-- Must call limitation_temporal_profile and limitation_gap_status for the temporal dimension.
+- Independently verify the Opportunity Scout’s key quantitative claims.
+- Use limitation_temporal_profile for the temporal dimension.
+- Do not call tools outside your available tool list.
 - Do not label a limitation as a persistent gap if temporal_status=declining and resolution_signal=moderate.
 - May raise confidence if temporal_status=persistent and resolution_signal=none.
 - For each gap, check supporting paper counts, avg_cite, impact_tier; do not over-extrapolate from a single low-cite paper.
@@ -208,7 +211,7 @@ Review principles:
 
 Classification (strict):
 - **false_gaps**: Scout numbers contradict tool results; or full-corpus scale used as focus evidence; \
-or directly refuted by tools such as graph_disease_method_reach.
+or directly refuted by tool evidence.
 - **weak_evidence_gaps**: Clinically plausible, but focus subset too small, tools sparse, or inference \
 only from “not found”; do not mark as false.
 - **verified_gaps**: Every quantitative Scout claim has a matching field in this round’s tool outputs.
@@ -217,7 +220,8 @@ only from “not found”; do not mark as false.
 - Prefer pathology-native gaps (WSI / histopathology / cytopathology / IHC). Put CT/MRI radiomics-only \
 directions in false_gaps or weak_evidence_gaps (Fangxin has pathology slides, not radiology imaging).
 
-Output format (strict JSON inside a ```json ... ``` fence):
+Output format (strict JSON inside a ```json ... ``` fence in the **message content**; \
+never call a tool named json):
 
 ```json
 {
@@ -253,11 +257,22 @@ Language: write the entire final report in **English**.
 
 Synthesis principles:
 """ + SQL_FALLBACK_GUIDANCE + """\
+- Use at most 4 tool calls.
+- Prefer literature_data_cross_matrix and pathology_disease_catalog, in that order.
+- Use corpus_focus_coverage only when needed for scale statements.
 - Use execute_kg_sql only to resolve conflicts between Scout claims, Reviewer findings, and curated-tool evidence.
+- Prefer limitation_temporal_profile / author_stated_gaps over SELECT limitation_temporal \
+(that cache table is often empty).
+- Call pathology_disease_catalog **without** organ_system first (or with a known-correct organ). \
+Do **not** guess organ_system (e.g. respiratory for nasopharyngeal / NPC); match disease_id \
+from catalog results to the focus disease.
+- Do not call tools outside your available tool list.
+- Never invent tools. Especially never call a tool named json/markdown/text — \
+JSON or Markdown are **message content only** (use a fenced code block if needed), not tool calls.
 - Keep high-confidence gaps verified by the Evidence Reviewer; drop or downgrade false_gaps.
 - For weak_evidence_gaps, either require softer wording or explicitly mark evidence limits.
 - In Data summary, state corpus size and extracted-paper limits.
-- **Must** call literature_data_cross_matrix (or literature_impact_priority_matrix) and pathology_disease_catalog; \
+- **Must** call literature_data_cross_matrix and pathology_disease_catalog; \
 append “Fangxin data support” and “Literature impact” (avg_cite, impact_tier, cross_priority_score) to each gap.
 - Prefer crossings of “literature gap + adequate Fangxin data + impact_tier High/Medium”.
 - Prefer pathology-native directions; deprioritize radiology-only (CT/MRI radiomics) gaps.
@@ -299,7 +314,8 @@ If overall_confidence >= 7.5 or this is the last debate round, output the full f
 [Key Scout vs Reviewer disagreements and Final Synthesizer rulings]
 
 ---
-If confidence is insufficient and this is not the last round, output JSON (```json ... ```):
+If confidence is insufficient and this is not the last round, output JSON in the message \
+content (```json ... ``` fence; never call a tool named json):
 ```json
 {
   "accept": false,
@@ -416,8 +432,8 @@ def stream_gap_debate_agent(
                 f"Identify {top_n} pathology AI / digital pathology research-gap candidates in English.\n"
                 f"{coverage_first}"
                 f"{focus_hint}\n{corpus_ctx}\n"
-                "Then call at least 5 tools (including 1 graph_*), "
-                "and finally output the candidate-gap Markdown.",
+                "Follow the preferred tool order (at most 6 calls), "
+                "then output candidate-gap Markdown.",
                 memory_block,
             )
         else:

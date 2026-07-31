@@ -124,3 +124,39 @@ def test_execute_kg_sql_schema_error_includes_column_hint():
     assert "hint" in result
     assert "papers(id, pmid" in result["hint"]
     assert "There is no papers.paper_id" in result["hint"]
+
+
+def test_execute_kg_sql_focus_expansion_uses_disease_concept():
+    result = tool_execute_kg_sql(
+        "SELECT 1 AS value",
+        focus="nasopharyngeal carcinoma",
+    )
+    exp = result["focus_expansion"]
+    assert exp["matched_concept"] is True
+    assert exp["mode"] == "disease_concept"
+    assert exp["canonical"]
+    assert any("nasopharyngeal" in p.lower() for p in exp["phrases"])
+    assert "OR" in exp["suggested_sql_filter"]
+
+
+def test_execute_kg_sql_focus_expansion_falls_back_to_token_synonyms():
+    result = tool_execute_kg_sql(
+        "SELECT 1 AS value",
+        focus="hepatic tumor imaging",
+    )
+    exp = result["focus_expansion"]
+    assert exp["matched_concept"] is False
+    assert exp["mode"] == "token_synonyms"
+    joined = " ".join(exp["phrases"]).lower()
+    assert "liver" in joined or "hepatic" in joined
+    assert "cancer" in joined or "tumor" in joined or "carcinoma" in joined
+
+
+def test_execute_kg_sql_schema_error_keeps_focus_expansion():
+    result = tool_execute_kg_sql(
+        "SELECT p.paper_id FROM papers p LIMIT 1",
+        focus="肠息肉",
+    )
+    assert "no such column" in result["error"].lower()
+    assert result["focus_expansion"]["matched_concept"] is True
+    assert any("polyp" in p.lower() for p in result["focus_expansion"]["phrases"])

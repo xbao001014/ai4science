@@ -978,7 +978,15 @@ def clear_paper_kg_extractions(pmid: str) -> None:
         conn.execute("DELETE FROM relations WHERE source_pmid=?", (pmid,))
         conn.execute("DELETE FROM paper_entity_bindings WHERE source_pmid=?", (pmid,))
         conn.execute(
-            """UPDATE papers SET extraction_done=0, reconcile_status='pending'
+            "DELETE FROM paper_improvement_suggestions WHERE source_pmid=?",
+            (pmid,),
+        )
+        conn.execute(
+            """UPDATE papers
+               SET extraction_done=0,
+                   study_type=NULL,
+                   reconcile_status='pending',
+                   reconcile_at=NULL
                WHERE pmid=?""",
             (pmid,),
         )

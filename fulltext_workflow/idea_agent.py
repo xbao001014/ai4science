@@ -21,7 +21,9 @@ from analysis.agent_utils import (
     looks_like_proposal,
     parse_json_block,
     run_tool_agent,
+    select_tool_bundle,
 )
+from analysis.gap_tools import TOOL_SCHEMAS as GAP_TOOL_SCHEMAS, tool_execute_kg_sql
 from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
 from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
@@ -221,6 +223,7 @@ _SQL_IDEA_TOOLS: dict[str, Any] = {
 }
 
 IDEA_TOOLS: dict[str, Any] = {**_SQL_IDEA_TOOLS, **GRAPH_TOOLS, **FEASIBILITY_TOOLS}
+IDEA_TOOLS["execute_kg_sql"] = tool_execute_kg_sql
 
 _KEYWORD_SCHEMA = {
     "type": "string",
@@ -230,7 +233,14 @@ _KEYWORD_SCHEMA = {
     ),
 }
 
+_SQL_FALLBACK_TOOL_SCHEMA = next(
+    schema
+    for schema in GAP_TOOL_SCHEMAS
+    if schema["function"]["name"] == "execute_kg_sql"
+)
+
 _IDEA_TOOL_SCHEMAS: list[dict] = [
+    _SQL_FALLBACK_TOOL_SCHEMA,
     {"type": "function", "function": {
         "name": "related_papers",
         "description": "Retrieve papers related to a research gap keyword (multi-level match).",
@@ -286,6 +296,34 @@ _IDEA_TOOL_SCHEMAS: list[dict] = [
 ]
 
 IDEA_TOOL_SCHEMAS: list[dict] = _IDEA_TOOL_SCHEMAS + GRAPH_TOOL_SCHEMAS + FEASIBILITY_TOOL_SCHEMAS
+
+GENERATOR_TOOL_NAMES = [
+    "recent_papers_for_topic",
+    "methods_for_topic",
+    "datasets_for_topic",
+    "metrics_for_topic",
+    "improvement_suggestions_for_topic",
+    "public_dataset_assess",
+    "pathology_disease_catalog",
+]
+
+CRITIC_TOOL_NAMES = [
+    "feasibility_assess",
+    "public_dataset_assess",
+    "metrics_for_topic",
+    "execute_kg_sql",
+    "text_disease_matches",
+]
+
+
+def build_idea_role_tool_bundle(role: str) -> tuple[dict[str, Any], list[dict]]:
+    role = role.lower().strip()
+    if role == "generator":
+        return select_tool_bundle(GENERATOR_TOOL_NAMES, IDEA_TOOLS, IDEA_TOOL_SCHEMAS)
+    if role == "critic":
+        return select_tool_bundle(CRITIC_TOOL_NAMES, IDEA_TOOLS, IDEA_TOOL_SCHEMAS)
+    raise ValueError(f"Unknown idea role: {role}")
+
 
 _GAP_ANCHOR_RULES = """\
 [Anchored research gap — do not change the topic]
@@ -425,6 +463,13 @@ def _system_with_gap_anchor(base: str, gap_text: str, *, role: str) -> str:
     return base + "\n\n" + extra
 
 
+SQL_FALLBACK_GUIDANCE = """\
+- Use curated tools first for standard topic scoping.
+- Use execute_kg_sql only for a custom join, grouped count, year filter, or exact evidence verification.
+- Keep SQL narrow with explicit columns and LIMIT.
+"""
+
+
 GENERATOR_SYSTEM_PROMPT = """\
 You are an expert pathology AI / digital pathology research-proposal designer. You combine \
 histopathology/WSI/cytopathology (and optional genomics) with deep learning to produce clinically \
@@ -440,15 +485,19 @@ Language:
 - Tool arguments may use English disease/topic keywords matching the gap.
 
 Tool-use rules:
-- Call SQL tools + graph_* tools + Fangxin feasibility tools (at least 5 tools, including 1 graph_*).
+- Budget: at most 7 tool calls while drafting (≤7).
+- Ordered preference: recent_papers_for_topic → methods_for_topic → datasets_for_topic → \
+metrics_for_topic → improvement_suggestions_for_topic → public_dataset_assess → \
+pathology_disease_catalog (when disease_id is unmapped).
+- Do not call graph scanners (PageRank / community / reach) or free-form SQL.
 - Prefer metrics_for_topic (with evidence_quote) and improvement_suggestions_for_topic
-  for actionable next steps; use author_limitations_for_topic as the problem statement
-  when suggestions are sparse.
-- **Must** call public_dataset_assess (V-03) once to list recommended public datasets for the gap.
+  for actionable next steps; if suggestions are sparse, state limitation uncertainty from
+  metrics/papers rather than inventing.
+- **Must** call public_dataset_assess (V-03) once when discussing external/public data or \
+drafting the data plan.
 - Call datasets_for_topic when discussing external data; respect access_class \
 (public|private|unknown). Prefer V-03 recommended_public when labeling public datasets.
-- Use pathology_disease_catalog / pathology_tasks_for_disease / text_disease_matches to confirm \
-Fangxin data support (disease must match the gap).
+- Use pathology_disease_catalog to confirm Fangxin disease support when disease_id is unclear.
 - The final reply must be the **full proposal Markdown** (all sections). Do not stop after \
 "let me call a tool" without writing the proposal.
 - After tool calls finish, send one final message **without tool_calls** containing the full Markdown.
@@ -495,7 +544,11 @@ You are a strict pathology AI / digital pathology peer reviewer (Critic Agent).
 Flag proposals that depend on radiology imaging data unavailable in Fangxin.
 
 Review rules:
-- Call KG tools to verify data claims (at least 2 tools).
+""" + SQL_FALLBACK_GUIDANCE + """\
+- Budget: at most 5 tool calls (≤5); execute_kg_sql at most 2 (targeted verification only).
+- Ordered preference: feasibility_assess → public_dataset_assess → metrics_for_topic → \
+execute_kg_sql (if needed) → text_disease_matches (if disease_id disputed/unmapped).
+- Do not call graph scanners (PageRank / community / reach).
 - **Must** call feasibility_assess (V-01) to check disease_id / task_type / label requirements.
 - **Must** call public_dataset_assess (V-03) when the proposal cites public datasets or omits them.
 - If feasibility_score < 0.5, technical_feasibility must be ≤ 5 and accept must be false.
@@ -508,7 +561,8 @@ entirely or use unlabeled public data as the sole cohort.
 feasibility, clinical value, innovation, completeness.
 - Below 7 requires substantive revision; 8+ may accept.
 
-Output strict JSON (```json ... ```). Field values (issues, suggestions, verification text) \
+Output strict JSON in the **message content** (```json ... ``` fence; never call a tool \
+named json). Field values (issues, suggestions, verification text) \
 must be in **English**:
 {
   "overall_score": <float, 0-10>,
@@ -629,7 +683,10 @@ def stream_idea_agent(
             f"```json\n{json.dumps(gap_data, ensure_ascii=False, indent=2)[:2000]}\n```"
         )
 
-    idea_tools = bind_idea_tools(IDEA_TOOLS, gap_text)
+    gen_tools_raw, gen_schemas = build_idea_role_tool_bundle("generator")
+    crit_tools_raw, crit_schemas = build_idea_role_tool_bundle("critic")
+    gen_tools = bind_idea_tools(gen_tools_raw, gap_text)
+    crit_tools = bind_idea_tools(crit_tools_raw, gap_text)
     anchor_block = _gap_anchor_block(gap_text)
 
     current_draft = ""
@@ -716,7 +773,9 @@ def stream_idea_agent(
                 f"{anchor_block}\n\n"
                 f"**Research gap**:\n{gap_text}\n{gap_context}\n\n"
                 f"{_difficulty_steering_text(target_difficulty)}\n\n"
-                "Call at least 5 tools (including 1 graph_* and public_dataset_assess), "
+                "Follow the Generator tool budget (≤7): recent papers → methods → datasets → "
+                "metrics → improvement suggestions → public_dataset_assess "
+                "(+ pathology_disease_catalog if disease_id unmapped), "
                 "then output the full English proposal."
             )
         else:
@@ -750,8 +809,8 @@ def stream_idea_agent(
         agent_failed = False
         for event in run_tool_agent(
             messages=gen_messages,
-            tools=idea_tools,
-            tool_schemas=IDEA_TOOL_SCHEMAS,
+            tools=gen_tools,
+            tool_schemas=gen_schemas,
             role="generator",
             max_iters=20,
             temperature=0.45,
@@ -811,8 +870,8 @@ def stream_idea_agent(
             f"**Original gap (must not drift)**:\n{gap_text}\n\n"
             f"**Proposal**:\n{current_draft}\n\n"
             f"{feas_hint}"
-            "First call feasibility_assess and public_dataset_assess, then at least one KG tool "
-            "to verify key claims, "
+            "Follow the Critic tool budget (≤5): feasibility_assess → public_dataset_assess → "
+            "metrics_for_topic (and execute_kg_sql / text_disease_matches only if needed), "
             "then output the JSON review (English field values)."
         )
         critic_messages: list[dict] = [
@@ -826,8 +885,8 @@ def stream_idea_agent(
         ]
         for event in run_tool_agent(
             messages=critic_messages,
-            tools=idea_tools,
-            tool_schemas=IDEA_TOOL_SCHEMAS,
+            tools=crit_tools,
+            tool_schemas=crit_schemas,
             role="critic",
             max_iters=12,
             temperature=0.3,

@@ -1,7 +1,7 @@
 # Gap Debate Tool-Pack Soft Slim Design
 
 **Date:** 2026-07-30  
-**Status:** Proposed, awaiting review  
+**Status:** Implemented (soft slim landed; awaiting user runtime confirmation)  
 **Scope:** Soft-slim the gap-debate tool surface by role (Optimist / Skeptic / Moderator). Keep all tool implementations; restrict which schemas each role sees and rewrite prompt quotas.
 
 ## Problem summary

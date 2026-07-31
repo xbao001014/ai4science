@@ -15,9 +15,7 @@
 cd D:\agent\prototype\build_kg_paper
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
-
-# 全文抓取额外依赖（PDF/MinerU 回退）
-.\.venv\Scripts\pip install scansci-pdf "mineru[core]"
+# 已含 scansci-pdf / mineru[core]（体积较大）
 ```
 
 `.env`（仓库根目录）最少需要：

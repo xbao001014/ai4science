@@ -15,22 +15,23 @@ from gap_agent import (  # noqa: E402
 )
 
 
-def test_optimist_prompt_says_curated_tools_first():
-    assert "Use curated tools first" in OPTIMIST_SYSTEM_PROMPT
-    assert "execute_kg_sql" in OPTIMIST_SYSTEM_PROMPT
+def test_optimist_prompt_does_not_offer_sql_fallback():
+    assert "execute_kg_sql" not in OPTIMIST_SYSTEM_PROMPT
 
 
-def test_optimist_prompt_study_type_downstream_guidance():
-    assert "gap_kind=covered" in OPTIMIST_SYSTEM_PROMPT
-    assert "COVERS_DISEASE" in OPTIMIST_SYSTEM_PROMPT
-    assert "SURVEYS_METHOD" in OPTIMIST_SYSTEM_PROMPT
+def test_optimist_prompt_stays_within_available_tools():
+    assert "emerging_gap_opportunities" in OPTIMIST_SYSTEM_PROMPT
+    assert "improvement_suggestions_by_topic" in OPTIMIST_SYSTEM_PROMPT
+    assert "study_type_relation_stats" not in OPTIMIST_SYSTEM_PROMPT
 
 
 def test_skeptic_prompt_prefers_sql_for_targeted_verification():
     assert "execute_kg_sql" in SKEPTIC_SYSTEM_PROMPT
     assert "targeted verification" in SKEPTIC_SYSTEM_PROMPT
+    assert "focus_expansion" in SKEPTIC_SYSTEM_PROMPT
 
 
 def test_moderator_prompt_limits_sql_to_conflict_resolution():
     assert "execute_kg_sql" in MODERATOR_SYSTEM_PROMPT
     assert "only to resolve conflicts" in MODERATOR_SYSTEM_PROMPT
+    assert "focus_expansion" in MODERATOR_SYSTEM_PROMPT
