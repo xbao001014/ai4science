@@ -27,6 +27,10 @@ _ESTABLISHED_METHOD_ALIASES = frozenset({
 })
 
 
+def established_method_aliases() -> frozenset[str]:
+    return _ESTABLISHED_METHOD_ALIASES
+
+
 def is_established_blacklist(name: str) -> bool:
     key = _norm_key(name)
     if key in _ESTABLISHED_METHOD_ALIASES:
