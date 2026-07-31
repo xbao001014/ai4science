@@ -12,10 +12,11 @@ if str(_ROOT) not in sys.path:
 
 import config  # noqa: E402
 from analysis.weekly_hotspot import (  # noqa: E402
+    _top_pmids_for_entity,
     compute_emerging_gap_opportunities,
     compute_weekly_hotspots,
 )
-from db.schema import init_db, insert_relation, upsert_entity, upsert_paper  # noqa: E402
+from db.schema import get_conn, init_db, insert_relation, upsert_entity, upsert_paper  # noqa: E402
 
 
 def _tmp_db(monkeypatch) -> Path:
@@ -70,6 +71,38 @@ def test_two_aliases_merge_to_pass_min_recent(monkeypatch):
     assert emerging["niche-tool"]["corpus_paper_cnt"] == 2
     assert emerging["niche-tool"]["alias_count"] == 2
     assert emerging["niche-tool"]["aliases"] == "niche-tool, niche-tool-v2"
+
+
+def _set_citation_count(pmid: str, citation_count: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE papers SET citation_count = ? WHERE pmid = ?",
+            (citation_count, pmid),
+        )
+
+
+def test_top_pmids_dedupes_canonical_method_aliases(monkeypatch):
+    _tmp_db(monkeypatch)
+    import analysis.method_synonyms as ms
+
+    monkeypatch.setitem(ms._METHOD_SYNONYMS, "niche-tool-v2", "niche-tool")
+    p1 = _paper("1", 2)
+    _edge("1", p1, "APPLIES_METHOD", "niche-tool", "Method")
+    _edge("1", p1, "APPLIES_METHOD", "niche-tool-v2", "Method")
+    _set_citation_count("1", 100)
+    p2 = _paper("2", 3)
+    _edge("2", p2, "APPLIES_METHOD", "niche-tool", "Method")
+    _set_citation_count("2", 50)
+    p3 = _paper("3", 4)
+    _edge("3", p3, "APPLIES_METHOD", "niche-tool-v2", "Method")
+    _set_citation_count("3", 40)
+    p4 = _paper("4", 5)
+    _edge("4", p4, "APPLIES_METHOD", "niche-tool", "Method")
+    _set_citation_count("4", 30)
+
+    assert _top_pmids_for_entity("niche-tool", "Method", window_days=14) == [
+        "1", "2", "3",
+    ]
 
 
 def test_transfer_pairing_resolves_hot_and_edge_method_aliases(monkeypatch):

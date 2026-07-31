@@ -321,11 +321,19 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
         (entity_type, recent_start),
     )
     if entity_type == "Method":
-        return [
-            str(row["pmid"])
-            for row in rows
-            if resolve_method_canonical(str(row["name"])) == entity_name
-        ][:3]
+        seen: set[str] = set()
+        out: list[str] = []
+        for row in rows:
+            if resolve_method_canonical(str(row["name"])) != entity_name:
+                continue
+            pmid = str(row["pmid"])
+            if pmid in seen:
+                continue
+            seen.add(pmid)
+            out.append(pmid)
+            if len(out) >= 3:
+                break
+        return out
     return [str(r["pmid"]) for r in rows if str(r["name"]) == entity_name][:3]
 
 
