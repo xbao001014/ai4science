@@ -87,6 +87,116 @@ def test_extract_evidence_keeps_full_title():
     assert rows[0]["标题/实体"] == long_title
 
 
+def test_render_evidence_literature_uses_row_buttons_not_selectbox(monkeypatch):
+    import gap_ui
+
+    buttons = []
+    selectbox_calls = []
+
+    class FakeStreamlit:
+        session_state = {}
+
+        @staticmethod
+        def subheader(*_a, **_k):
+            pass
+
+        @staticmethod
+        def info(*_a, **_k):
+            pass
+
+        @staticmethod
+        def caption(*_a, **_k):
+            pass
+
+        @staticmethod
+        def divider():
+            pass
+
+        @staticmethod
+        def markdown(*_a, **_k):
+            pass
+
+        @staticmethod
+        def columns(spec):
+            class _Col:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    return False
+
+            n = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+            return [_Col() for _ in range(n)]
+
+        @staticmethod
+        def button(label, **kwargs):
+            buttons.append({"label": label, "key": kwargs.get("key")})
+            return False
+
+        @staticmethod
+        def selectbox(*_a, **_k):
+            selectbox_calls.append(True)
+            raise AssertionError("selectbox must not be used for provenance pickers")
+
+        @staticmethod
+        def expander(_label, **_k):
+            class _Exp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    return False
+
+            return _Exp()
+
+    evidence = [
+        {
+            "PMID": "123",
+            "标题/实体": "Full evidence title without clipping",
+            "证据章节": "discussion",
+            "摘录": "long quote text",
+            "工具": "作者自述空白",
+        },
+        {
+            "PMID": "",
+            "标题/实体": "No pmid row",
+            "证据章节": "",
+            "摘录": "x",
+            "工具": "t",
+        },
+    ]
+    papers = [
+        {
+            "PMID": "456",
+            "标题": "A complete paper title that must remain intact",
+            "年份": 2025,
+            "期刊": "J",
+            "研究类型": "ai_algorithm",
+            "来源": "语料焦点匹配",
+        }
+    ]
+    monkeypatch.setattr(gap_ui, "st", FakeStreamlit)
+    monkeypatch.setattr(gap_ui, "extract_evidence", lambda _events: evidence)
+    monkeypatch.setattr(
+        gap_ui,
+        "resolve_evidence_literature_papers",
+        lambda _events, _focus, limit: (papers, "corpus_focus"),
+    )
+
+    gap_ui.render_evidence_literature_section([], "breast")
+
+    assert not selectbox_calls
+    assert any(button["label"] == "溯源" for button in buttons)
+    assert any(
+        button["key"] and str(button["key"]).startswith("open_evidence_")
+        for button in buttons
+    )
+    assert any(
+        button["key"] and str(button["key"]).startswith("open_paper_")
+        for button in buttons
+    )
+
+
 def test_viewer_load_warning_includes_error_code(monkeypatch):
     import gap_ui
 

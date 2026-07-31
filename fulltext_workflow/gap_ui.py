@@ -1270,6 +1270,69 @@ def resolve_evidence_literature_papers(
     return _format_corpus_paper_rows(raw, found_via=label), strategy
 
 
+def _render_evidence_rows(rows: list[dict], *, key_prefix: str) -> None:
+    for row in rows:
+        pmid = str(row.get("PMID") or "").strip()
+        title = str(row.get("标题/实体") or "")
+        quote = str(row.get("摘录") or "")
+        left, right = st.columns([5, 1])
+        with left:
+            st.markdown(f"**{title}**" if title else "_（无标题）_")
+            meta = " · ".join(
+                part
+                for part in [
+                    f"PMID `{pmid}`" if pmid else "",
+                    str(row.get("工具") or ""),
+                    str(row.get("证据章节") or ""),
+                ]
+                if part
+            )
+            if meta:
+                st.caption(meta)
+            if quote:
+                st.markdown(quote)
+            if not pmid:
+                st.caption("缺 PMID，无法溯源")
+        with right:
+            if pmid:
+                button_key = provenance_row_key(key_prefix, pmid, title, quote)
+                if st.button("溯源", key=f"open_{button_key}"):
+                    st.session_state["evidence_viewer"] = (
+                        make_evidence_viewer_selection(pmid, quote)
+                    )
+
+
+def _render_paper_rows(rows: list[dict]) -> None:
+    for row in rows:
+        pmid = str(row.get("PMID") or "").strip()
+        title = str(row.get("标题") or "")
+        left, right = st.columns([5, 1])
+        with left:
+            st.markdown(f"**{title}**" if title else "_（无标题）_")
+            meta = " · ".join(
+                str(value)
+                for value in [
+                    f"PMID `{pmid}`" if pmid else "",
+                    row.get("年份") or "",
+                    row.get("期刊") or "",
+                    row.get("研究类型") or "",
+                    row.get("来源") or "",
+                ]
+                if value
+            )
+            if meta:
+                st.caption(meta)
+            if not pmid:
+                st.caption("缺 PMID，无法溯源")
+        with right:
+            if pmid:
+                button_key = provenance_row_key("paper", pmid, title)
+                if st.button("溯源", key=f"open_{button_key}"):
+                    st.session_state["evidence_viewer"] = (
+                        make_evidence_viewer_selection(pmid)
+                    )
+
+
 def render_evidence_literature_section(
     events: list[dict],
     focus: str | None,
@@ -1283,38 +1346,22 @@ def render_evidence_literature_section(
 
     st.subheader(f"全文证据（{len(evidence)} 行）")
     if evidence:
-        safe_table(pd.DataFrame(evidence))
+        evidence_with_pmid = [
+            row for row in evidence if str(row.get("PMID") or "").strip()
+        ]
+        evidence_without_pmid = [
+            row for row in evidence if not str(row.get("PMID") or "").strip()
+        ]
+        evidence_head, evidence_tail = partition_provenance_rows(
+            evidence_with_pmid
+        )
+        _render_evidence_rows(evidence_head, key_prefix="evidence")
+        if evidence_tail:
+            with st.expander(f"更多证据（{len(evidence_tail)}）"):
+                _render_evidence_rows(evidence_tail, key_prefix="evidence")
+        _render_evidence_rows(evidence_without_pmid, key_prefix="evidence")
     else:
         st.info("尚未抽取证据摘录。")
-
-    evidence_choices = [
-        row for row in evidence if str(row.get("PMID") or "").strip()
-    ]
-    if evidence_choices:
-        evidence_by_id = {
-            (
-                f"{str(row['PMID']).strip()}\x1f"
-                f"{str(row.get('标题/实体') or '')}\x1f"
-                f"{str(row.get('摘录') or '')}"
-            ): row
-            for row in evidence_choices
-        }
-        evidence_id = st.selectbox(
-            "选择证据溯源",
-            list(evidence_by_id),
-            format_func=lambda choice_id: (
-                f"{evidence_by_id[choice_id]['PMID']} · "
-                f"{str(evidence_by_id[choice_id].get('标题/实体') or '')[:40]} · "
-                f"{str(evidence_by_id[choice_id].get('摘录') or '')[:40]}"
-            ),
-            key="evidence_viewer_evidence_pick",
-        )
-        if st.button("查看溯源（证据）", key="open_evidence_viewer_evidence"):
-            row = evidence_by_id[evidence_id]
-            st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
-                row.get("PMID"),
-                row.get("摘录"),
-            )
 
     st.divider()
     st.subheader(f"论文（{len(papers)}）")
@@ -1324,32 +1371,20 @@ def render_evidence_literature_section(
                 f"辩论工具未返回论文标题；显示焦点「{focus}」的语料匹配 "
                 f"（{lit_strategy}）。"
             )
-        safe_table(pd.DataFrame(papers))
+        papers_with_pmid = [
+            row for row in papers if str(row.get("PMID") or "").strip()
+        ]
+        papers_without_pmid = [
+            row for row in papers if not str(row.get("PMID") or "").strip()
+        ]
+        papers_head, papers_tail = partition_provenance_rows(papers_with_pmid)
+        _render_paper_rows(papers_head)
+        if papers_tail:
+            with st.expander(f"更多论文（{len(papers_tail)}）"):
+                _render_paper_rows(papers_tail)
+        _render_paper_rows(papers_without_pmid)
     else:
         st.info("工具结果或语料焦点匹配中无论文元数据。")
-
-    paper_choices = [
-        row for row in papers if str(row.get("PMID") or "").strip()
-    ]
-    if paper_choices:
-        paper_by_id = {
-            str(row["PMID"]).strip(): row
-            for row in paper_choices
-        }
-        paper_id = st.selectbox(
-            "选择论文溯源",
-            list(paper_by_id),
-            format_func=lambda choice_id: (
-                f"{paper_by_id[choice_id]['PMID']} · "
-                f"{str(paper_by_id[choice_id].get('标题') or '')[:40]}"
-            ),
-            key="evidence_viewer_paper_pick",
-        )
-        if st.button("查看溯源（论文）", key="open_evidence_viewer_paper"):
-            row = paper_by_id[paper_id]
-            st.session_state["evidence_viewer"] = make_evidence_viewer_selection(
-                row.get("PMID"),
-            )
 
     selection = st.session_state.get("evidence_viewer")
     if not selection:
