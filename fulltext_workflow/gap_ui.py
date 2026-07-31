@@ -10,6 +10,7 @@ Plain `streamlit run gap_ui.py` works too if that streamlit belongs to the proje
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -1158,6 +1159,25 @@ def make_evidence_viewer_selection(
     return {"pmid": pid, "focus_quote": fq or None}
 
 
+PROVENANCE_LIST_LIMIT = 30
+
+
+def provenance_row_key(kind: str, pmid: str, *parts: str) -> str:
+    pid = str(pmid or "").strip()
+    digest = hashlib.sha1(
+        "\x1f".join(str(p) for p in parts).encode("utf-8", errors="replace")
+    ).hexdigest()[:10]
+    return f"{kind}_{pid}_{digest}"
+
+
+def partition_provenance_rows(
+    rows: list[dict],
+    *,
+    limit: int = PROVENANCE_LIST_LIMIT,
+) -> tuple[list[dict], list[dict]]:
+    return rows[:limit], rows[limit:]
+
+
 def extract_evidence(events: list[dict]) -> list[dict]:
     rows: list[dict] = []
     seen: set[str] = set()
@@ -1179,7 +1199,7 @@ def extract_evidence(events: list[dict]) -> list[dict]:
                 if pmid or quote or title:
                     rows.append({
                         "PMID": pmid,
-                        "标题/实体": str(title)[:80],
+                        "标题/实体": str(title),
                         "证据章节": item.get("evidence_section") or item.get("sections", ""),
                         "摘录": str(quote)[:240] if quote else "",
                         "工具": TOOL_META.get(ev.get("name", ""), {}).get("label", ev.get("name", "")),

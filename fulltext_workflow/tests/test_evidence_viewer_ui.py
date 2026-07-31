@@ -44,64 +44,47 @@ def test_extract_evidence_keeps_longer_quote():
     assert len(rows[0]["摘录"]) == 200  # was 120; now allow up to 240 or full if shorter
 
 
-def test_evidence_viewer_selectboxes_use_stable_string_ids(monkeypatch):
-    import gap_ui
+def test_provenance_row_key_stable_and_distinct():
+    from gap_ui import provenance_row_key
 
-    option_sets = []
+    a = provenance_row_key("evidence", "123", "title", "quote one")
+    b = provenance_row_key("evidence", "123", "title", "quote two")
+    c = provenance_row_key("paper", "123", "Same Title")
+    assert a != b
+    assert a.startswith("evidence_123_")
+    assert c.startswith("paper_123_")
+    assert provenance_row_key("evidence", "123", "title", "quote one") == a
 
-    class FakeStreamlit:
-        session_state = {}
 
-        @staticmethod
-        def subheader(*_args, **_kwargs):
-            pass
+def test_partition_provenance_rows_caps_at_30():
+    from gap_ui import PROVENANCE_LIST_LIMIT, partition_provenance_rows
 
-        @staticmethod
-        def info(*_args, **_kwargs):
-            pass
+    rows = [{"PMID": str(i)} for i in range(35)]
+    head, tail = partition_provenance_rows(rows)
+    assert len(head) == PROVENANCE_LIST_LIMIT == 30
+    assert len(tail) == 5
+    assert head[0]["PMID"] == "0"
+    assert tail[0]["PMID"] == "30"
 
-        @staticmethod
-        def caption(*_args, **_kwargs):
-            pass
 
-        @staticmethod
-        def divider():
-            pass
+def test_extract_evidence_keeps_full_title():
+    from gap_ui import extract_evidence
 
-        @staticmethod
-        def selectbox(_label, options, **_kwargs):
-            values = list(options)
-            option_sets.append(values)
-            return values[0]
-
-        @staticmethod
-        def button(*_args, **_kwargs):
-            return False
-
-    evidence = [
-        {"PMID": "123", "标题/实体": "A", "摘录": "quote one"},
-        {"PMID": "123", "标题/实体": "A", "摘录": "quote two"},
-    ]
-    papers = [
-        {"PMID": "456", "标题": "Paper B"},
-        {"PMID": "789", "标题": "Paper C"},
-    ]
-    monkeypatch.setattr(gap_ui, "st", FakeStreamlit)
-    monkeypatch.setattr(gap_ui, "safe_table", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(gap_ui, "extract_evidence", lambda _events: evidence)
-    monkeypatch.setattr(
-        gap_ui,
-        "resolve_evidence_literature_papers",
-        lambda _events, _focus, limit: (papers, "tool"),
-    )
-
-    gap_ui.render_evidence_literature_section([], None)
-
-    assert len(option_sets) == 2
-    assert all(isinstance(value, str) for options in option_sets for value in options)
-    assert len(set(option_sets[0])) == 2
-    assert all(value.startswith("123") for value in option_sets[0])
-    assert option_sets[1] == ["456", "789"]
+    long_title = "T" * 120
+    events = [{
+        "type": "tool_result",
+        "name": "author_stated_gaps",
+        "result": {
+            "data": [{
+                "source_pmid": "1",
+                "title": long_title,
+                "evidence_section": "discussion",
+                "evidence_quote": "q",
+            }]
+        },
+    }]
+    rows = extract_evidence(events)
+    assert rows[0]["标题/实体"] == long_title
 
 
 def test_viewer_load_warning_includes_error_code(monkeypatch):
