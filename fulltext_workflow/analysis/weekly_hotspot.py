@@ -9,6 +9,7 @@ from typing import Any
 
 import config
 from analysis.impact_scoring import literature_gap_points, norm_if
+from analysis.method_maturity import annotate_method_rows, corpus_applies_method_counts
 from db.schema import (
     get_conn,
     get_weekly_hotspot_snapshots,
@@ -352,8 +353,21 @@ def compute_weekly_hotspots(
     tasks = compute_emerging_entities("Task", window_days=window, prior_days=prior)
     combos = compute_hot_combos(window_days=window, prior_days=prior)
     limitations = compute_emerging_limitations(window_days=window)
+    counts = corpus_applies_method_counts()
+    annotate_method_rows(methods, counts=counts)
+    active_methods = list(methods)
+    emerging_methods = [
+        row for row in methods if row.get("method_maturity") != "established"
+    ]
+    annotate_method_rows(combos, name_key="method", counts=counts)
+    combos.sort(
+        key=lambda row: (
+            0 if row.get("method_maturity") != "established" else 1,
+            -float(row.get("emerging_score") or 0),
+        )
+    )
 
-    for section in (methods, diseases, tasks):
+    for section in (emerging_methods, diseases, tasks):
         for row in section[:5]:
             row["top_pmids"] = _top_pmids_for_entity(
                 row["name"], row["type"], window
@@ -370,7 +384,8 @@ def compute_weekly_hotspots(
         # Persist column / older callers still use papers_ingested.
         "papers_ingested": in_window,
         "papers_excluded_low_precision": excluded,
-        "emerging_methods": methods,
+        "emerging_methods": emerging_methods,
+        "active_methods": active_methods,
         "heating_diseases": diseases,
         "emerging_tasks": tasks,
         "hot_combos": combos,
@@ -822,12 +837,30 @@ def generate_hotspot_report(
     ]
     lines.extend(_format_wow_section(comparison))
     lines.extend([
-        "## Emerging Methods",
+        "## Emerging Methods (新苗头)",
         "",
         _format_table(
             data["emerging_methods"],
-            ["name", "recent_cnt", "prior_cnt", "velocity", "emerging_score", "avg_cite", "top_pmids"],
+            [
+                "name",
+                "method_maturity",
+                "corpus_paper_cnt",
+                "recent_cnt",
+                "prior_cnt",
+                "velocity",
+                "emerging_score",
+                "avg_cite",
+                "top_pmids",
+            ],
         ),
+        "### Established Methods (active this window)",
+        "",
+        *[
+            f"- {row['name']} (corpus papers: {row.get('corpus_paper_cnt', 0)})"
+            for row in data.get("active_methods", [])
+            if row.get("method_maturity") == "established"
+        ][:5],
+        "",
         "## Heating Diseases",
         "",
         _format_table(
@@ -844,7 +877,17 @@ def generate_hotspot_report(
         "",
         _format_table(
             data["hot_combos"],
-            ["method", "disease", "recent_cnt", "prior_cnt", "velocity", "gap_phase", "emerging_score"],
+            [
+                "method",
+                "method_maturity",
+                "corpus_paper_cnt",
+                "disease",
+                "recent_cnt",
+                "prior_cnt",
+                "velocity",
+                "gap_phase",
+                "emerging_score",
+            ],
         ),
         "## New Limitations (recent publication window)",
         "",
