@@ -179,3 +179,75 @@ def wrap_tools_with_cache(
 
         wrapped[name] = _make(name, fn)
     return wrapped
+
+
+def _is_successful_feasibility(result: Any) -> bool:
+    if not isinstance(result, dict) or "error" in result:
+        return False
+    raw = result.get("feasibility_score")
+    if raw is None or str(raw).strip() == "":
+        return False
+    try:
+        float(raw)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+class IdeaSessionGuards:
+    def __init__(self) -> None:
+        self.cache = ToolResultCache()
+        self.baseline: dict[str, Any] | None = None
+        self.relaxed_seen = False
+        self.last_spec_relation: str | None = None
+
+    def wrap_tools(
+        self, tools: dict[str, Callable[..., Any]]
+    ) -> dict[str, Callable[..., Any]]:
+        import inspect
+
+        cached = wrap_tools_with_cache(tools, self.cache)
+        if "feasibility_assess" not in tools:
+            return cached
+
+        underlying = tools["feasibility_assess"]
+
+        def feasibility_assess(**kwargs: Any) -> Any:
+            attempted = canonicalize_feasibility_args(**kwargs)
+            if self.baseline is None:
+                hit = self.cache.get("feasibility_assess", kwargs)
+                if hit is not None:
+                    result = hit
+                else:
+                    result = underlying(**kwargs)
+                    self.cache.put("feasibility_assess", kwargs, result)
+                if _is_successful_feasibility(result):
+                    self.baseline = attempted
+                self.last_spec_relation = "same" if self.baseline is not None else None
+                return result
+
+            relation = compare_feasibility_specs(self.baseline, attempted)
+            self.last_spec_relation = relation
+            if relation == "relaxed":
+                self.relaxed_seen = True
+                return {
+                    "error": "feasibility_spec_relaxed",
+                    "baseline": dict(self.baseline),
+                    "attempted": attempted,
+                    "relaxed_fields": relaxed_fields(self.baseline, attempted),
+                }
+
+            result = self.cache.get("feasibility_assess", kwargs)
+            if result is None:
+                result = underlying(**kwargs)
+                self.cache.put("feasibility_assess", kwargs, result)
+            return result
+
+        try:
+            feasibility_assess.__signature__ = inspect.signature(underlying)  # type: ignore[attr-defined]
+        except (TypeError, ValueError):
+            pass
+
+        out = dict(cached)
+        out["feasibility_assess"] = feasibility_assess
+        return out

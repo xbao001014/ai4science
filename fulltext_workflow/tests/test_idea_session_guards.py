@@ -9,6 +9,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis.idea_session_guards import (  # noqa: E402
+    IdeaSessionGuards,
     ToolResultCache,
     cache_key,
     canonicalize_feasibility_args,
@@ -194,3 +195,104 @@ def test_tool_cache_does_not_store_errors():
     assert wrapped["x"]()["error"] == "boom"
     assert calls["n"] == 2
     assert cache.hits == 0
+
+
+def test_feasibility_sets_baseline_on_first_success():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.4, "available_cohort_size": 10}
+
+    session = IdeaSessionGuards()
+    tools = session.wrap_tools({"feasibility_assess": fake_v01})
+    out = tools["feasibility_assess"](
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status"],
+        required_annotations=["tumor_region"],
+        min_followup_months=24,
+    )
+    assert out["feasibility_score"] == 0.4
+    assert session.baseline is not None
+    assert session.baseline["required_annotations"] == ["tumor_region"]
+    assert calls["n"] == 1
+
+
+def test_feasibility_blocks_relaxed_without_calling():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.4}
+
+    session = IdeaSessionGuards()
+    tools = session.wrap_tools({"feasibility_assess": fake_v01})
+    tools["feasibility_assess"](
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status"],
+        required_annotations=["tumor_region"],
+        min_followup_months=24,
+    )
+    blocked = tools["feasibility_assess"](
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status"],
+        required_annotations=[],
+        min_followup_months=24,
+    )
+    assert blocked["error"] == "feasibility_spec_relaxed"
+    assert "required_annotations" in blocked["relaxed_fields"]
+    assert calls["n"] == 1
+    assert session.relaxed_seen is True
+
+
+def test_feasibility_same_args_uses_cache():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.55}
+
+    session = IdeaSessionGuards()
+    tools = session.wrap_tools({"feasibility_assess": fake_v01})
+    args = dict(
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status"],
+        required_annotations=["tumor_region"],
+        min_followup_months=24,
+    )
+    tools["feasibility_assess"](**args)
+    tools["feasibility_assess"](**args)
+    assert calls["n"] == 1
+    assert session.last_spec_relation == "same"
+
+
+def test_feasibility_tighter_allowed_baseline_unchanged():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.2}
+
+    session = IdeaSessionGuards()
+    tools = session.wrap_tools({"feasibility_assess": fake_v01})
+    tools["feasibility_assess"](
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status"],
+        required_annotations=["tumor_region"],
+        min_followup_months=24,
+    )
+    tools["feasibility_assess"](
+        disease_id="C_CA",
+        task_type="survival_prediction",
+        required_labels=["vital_status", "overall_survival_months"],
+        required_annotations=["tumor_region"],
+        min_followup_months=24,
+    )
+    assert calls["n"] == 2
+    assert session.last_spec_relation == "tighter"
+    assert session.baseline["required_labels"] == ["vital_status"]
