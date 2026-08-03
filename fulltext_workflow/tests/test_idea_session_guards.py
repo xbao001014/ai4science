@@ -22,19 +22,33 @@ def test_canonicalize_sorts_dedupes_lists_and_defaults_followup():
     out = canonicalize_feasibility_args(
         disease_id=" C_CA ",
         task_type="survival_prediction",
-        required_labels=["vital_status", "Overall_Survival_Months", "vital_status"],
+        required_labels=["vital_status", "OS", "vital_status"],
         required_molecular_markers=None,
         required_annotations=[" tumor_region "],
         min_followup_months=None,
         hypothesis_id="should-be-dropped",
     )
-    assert out["disease_id"] == "C_CA"
+    assert out["disease_id"] == "c_ca"
     assert out["task_type"] == "survival_prediction"
-    assert out["required_labels"] == ["Overall_Survival_Months", "vital_status"]
+    assert out["required_labels"] == ["overall_survival_months", "vital_status"]
     assert out["required_molecular_markers"] == []
     assert out["required_annotations"] == ["tumor_region"]
     assert out["min_followup_months"] == 0
     assert "hypothesis_id" not in out
+
+
+def test_compare_alias_equivalent_labels_and_annotations_are_same():
+    baseline = canonicalize_feasibility_args(
+        disease_id="C_CA",
+        required_labels=["overall_survival_months"],
+        required_annotations=["tumor_region"],
+    )
+    aliases = canonicalize_feasibility_args(
+        disease_id="c_ca",
+        required_labels=["os"],
+        required_annotations=["stroma_region"],
+    )
+    assert compare_feasibility_specs(baseline, aliases) == "same"
 
 
 def test_compare_same_case_insensitive_lists():
@@ -67,7 +81,7 @@ def test_compare_tighter_superset_and_higher_followup():
         disease_id="C_CA",
         task_type="survival_prediction",
         required_labels=["vital_status", "overall_survival_months"],
-        required_annotations=["tumor_region", "stroma_region"],
+        required_annotations=["tumor_region", "immune_region"],
         min_followup_months=36,
     )
     assert compare_feasibility_specs(base, tighter) == "tighter"
@@ -270,6 +284,33 @@ def test_feasibility_same_args_uses_cache():
     assert session.last_spec_relation == "same"
 
 
+def test_feasibility_alias_case_order_and_hypothesis_id_share_cache_entry():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.55}
+
+    session = IdeaSessionGuards()
+    tool = session.wrap_tools({"feasibility_assess": fake_v01})["feasibility_assess"]
+    tool(
+        disease_id="C_CA",
+        task_type="Survival_Prediction",
+        required_labels=["vital_status", "overall_survival_months"],
+        required_annotations=["tumor_region"],
+        hypothesis_id="first",
+    )
+    tool(
+        disease_id="c_ca",
+        task_type="survival_prediction",
+        required_labels=["OS", "VITAL_STATUS"],
+        required_annotations=["STROMA_REGION"],
+        hypothesis_id="second",
+    )
+    assert calls["n"] == 1
+    assert session.cache.hits == 1
+
+
 def test_feasibility_tighter_allowed_baseline_unchanged():
     calls = {"n": 0}
 
@@ -296,3 +337,32 @@ def test_feasibility_tighter_allowed_baseline_unchanged():
     assert calls["n"] == 2
     assert session.last_spec_relation == "tighter"
     assert session.baseline["required_labels"] == ["vital_status"]
+
+
+def test_feasibility_baseline_does_not_slide_after_tighter_call():
+    calls = {"n": 0}
+
+    def fake_v01(**kwargs):
+        calls["n"] += 1
+        return {"feasibility_score": 0.4}
+
+    session = IdeaSessionGuards()
+    tool = session.wrap_tools({"feasibility_assess": fake_v01})["feasibility_assess"]
+    tool(
+        disease_id="C_CA",
+        required_labels=["vital_status", "overall_survival_months"],
+    )
+    tool(
+        disease_id="C_CA",
+        required_labels=["vital_status", "overall_survival_months", "recurrence_status"],
+    )
+    blocked = tool(
+        disease_id="C_CA",
+        required_labels=["vital_status", "recurrence_status"],
+    )
+    assert blocked["error"] == "feasibility_spec_relaxed"
+    assert session.baseline["required_labels"] == [
+        "overall_survival_months",
+        "vital_status",
+    ]
+    assert calls["n"] == 2

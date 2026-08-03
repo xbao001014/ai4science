@@ -59,6 +59,23 @@ def _normalize_list(values: list[str] | None, aliases: dict[str, str]) -> list[s
     return list(dict.fromkeys(out))
 
 
+def normalize_feasibility_field_lists(
+    required_labels: list[str] | None = None,
+    required_molecular_markers: list[str] | None = None,
+    required_annotations: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """Apply the field aliases used by the feasibility assessment."""
+    return {
+        "required_labels": _normalize_list(required_labels, _LABEL_ALIASES),
+        "required_molecular_markers": _normalize_list(
+            required_molecular_markers, _MARKER_ALIASES
+        ),
+        "required_annotations": _normalize_list(
+            required_annotations, _ANNOTATION_ALIASES
+        ),
+    }
+
+
 def _build_hypothesis_request(
     disease_id: str | None,
     task_type: str = "survival_prediction",
@@ -73,13 +90,18 @@ def _build_hypothesis_request(
             "error": "disease_id is required",
             "description": "研究假说可行性评估 (V-01) — missing disease_id",
         }
+    normalized = normalize_feasibility_field_lists(
+        required_labels,
+        required_molecular_markers,
+        required_annotations,
+    )
     return HypothesisRequest(
         hypothesis_id=new_hypothesis_id(hypothesis_id),
         disease_id=str(disease_id).strip(),
         task_type=task_type or "survival_prediction",
-        required_labels=_normalize_list(required_labels, _LABEL_ALIASES),
-        required_molecular_markers=_normalize_list(required_molecular_markers, _MARKER_ALIASES),
-        required_annotations=_normalize_list(required_annotations, _ANNOTATION_ALIASES),
+        required_labels=normalized["required_labels"],
+        required_molecular_markers=normalized["required_molecular_markers"],
+        required_annotations=normalized["required_annotations"],
         min_followup_months=min_followup_months,
     )
 

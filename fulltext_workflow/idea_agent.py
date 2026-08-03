@@ -896,6 +896,7 @@ def stream_idea_agent(
             },
             {"role": "user", "content": critic_user},
         ]
+        session_guards.relaxed_seen = False
         critic_relaxed = False
         for event in run_tool_agent(
             messages=critic_messages,

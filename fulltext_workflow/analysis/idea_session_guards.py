@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from analysis.feasibility_tools import normalize_feasibility_field_lists
+
 _SPEC_KEYS = (
     "disease_id",
     "task_type",
@@ -30,33 +32,39 @@ def _fold(value: str) -> str:
 def _canon_list(values: list[str] | None) -> list[str]:
     if not values:
         return []
-    best: dict[str, str] = {}
+    tokens: set[str] = set()
     for raw in values:
         tok = _norm_token(raw)
         if not tok:
             continue
-        key = _fold(tok)
-        best.setdefault(key, tok)
-    return [best[k] for k in sorted(best)]
+        tokens.add(_fold(tok))
+    return sorted(tokens)
 
 
 def canonicalize_feasibility_args(**kwargs: Any) -> dict[str, Any]:
     labels = kwargs.get("required_labels")
     markers = kwargs.get("required_molecular_markers")
     anns = kwargs.get("required_annotations")
+    normalized = normalize_feasibility_field_lists(
+        labels if isinstance(labels, list) else None,
+        markers if isinstance(markers, list) else None,
+        anns if isinstance(anns, list) else None,
+    )
     follow = kwargs.get("min_followup_months")
     try:
         follow_i = int(follow) if follow is not None and str(follow).strip() != "" else 0
     except (TypeError, ValueError):
         follow_i = 0
     return {
-        "disease_id": _norm_token(kwargs.get("disease_id") or ""),
-        "task_type": _norm_token(kwargs.get("task_type") or "survival_prediction"),
-        "required_labels": _canon_list(labels if isinstance(labels, list) else None),
-        "required_molecular_markers": _canon_list(
-            markers if isinstance(markers, list) else None
+        "disease_id": _fold(_norm_token(kwargs.get("disease_id") or "")),
+        "task_type": _fold(
+            _norm_token(kwargs.get("task_type") or "survival_prediction")
         ),
-        "required_annotations": _canon_list(anns if isinstance(anns, list) else None),
+        "required_labels": _canon_list(normalized["required_labels"]),
+        "required_molecular_markers": _canon_list(
+            normalized["required_molecular_markers"]
+        ),
+        "required_annotations": _canon_list(normalized["required_annotations"]),
         "min_followup_months": follow_i,
     }
 
@@ -215,12 +223,12 @@ class IdeaSessionGuards:
         def feasibility_assess(**kwargs: Any) -> Any:
             attempted = canonicalize_feasibility_args(**kwargs)
             if self.baseline is None:
-                hit = self.cache.get("feasibility_assess", kwargs)
+                hit = self.cache.get("feasibility_assess", attempted)
                 if hit is not None:
                     result = hit
                 else:
                     result = underlying(**kwargs)
-                    self.cache.put("feasibility_assess", kwargs, result)
+                    self.cache.put("feasibility_assess", attempted, result)
                 if _is_successful_feasibility(result):
                     self.baseline = attempted
                 self.last_spec_relation = "same" if self.baseline is not None else None
@@ -237,10 +245,10 @@ class IdeaSessionGuards:
                     "relaxed_fields": relaxed_fields(self.baseline, attempted),
                 }
 
-            result = self.cache.get("feasibility_assess", kwargs)
+            result = self.cache.get("feasibility_assess", attempted)
             if result is None:
                 result = underlying(**kwargs)
-                self.cache.put("feasibility_assess", kwargs, result)
+                self.cache.put("feasibility_assess", attempted, result)
             return result
 
         try:
