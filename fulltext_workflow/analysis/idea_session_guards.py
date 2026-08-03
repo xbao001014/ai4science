@@ -124,17 +124,18 @@ def _canonical_args_json(args: dict[str, Any]) -> str:
     return json.dumps(_norm(args), ensure_ascii=False, sort_keys=True, default=str)
 
 
+def cache_key(name: str, args: dict[str, Any]) -> str:
+    return f"{name}::{_canonical_args_json(args)}"
+
+
 class ToolResultCache:
     def __init__(self) -> None:
         self._store: dict[str, Any] = {}
         self.hits = 0
         self.misses = 0
 
-    def _key(self, name: str, args: dict[str, Any]) -> str:
-        return f"{name}::{_canonical_args_json(args)}"
-
     def get(self, name: str, args: dict[str, Any]) -> Any | None:
-        key = self._key(name, args)
+        key = cache_key(name, args)
         if key in self._store:
             self.hits += 1
             return self._store[key]
@@ -142,9 +143,12 @@ class ToolResultCache:
         return None
 
     def put(self, name: str, args: dict[str, Any], result: Any) -> None:
-        if isinstance(result, dict) and "error" in result:
-            return
-        self._store[self._key(name, args)] = result
+        if isinstance(result, dict):
+            if "error" in result:
+                return
+            self._store[cache_key(name, args)] = result
+        elif result:
+            self._store[cache_key(name, args)] = result
 
 
 def wrap_tools_with_cache(

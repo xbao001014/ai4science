@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 
 from analysis.idea_session_guards import (  # noqa: E402
     ToolResultCache,
+    cache_key,
     canonicalize_feasibility_args,
     compare_feasibility_specs,
     wrap_tools_with_cache,
@@ -138,6 +139,46 @@ def test_tool_cache_hit_skips_second_invoke():
     assert calls["n"] == 1
     assert cache.hits == 1
     assert cache.misses == 1
+
+
+def test_cache_key_stable_for_equivalent_args():
+    a = cache_key("metrics_for_topic", {"keyword": "crc", "limit": 10})
+    b = cache_key("metrics_for_topic", {"limit": 10, "keyword": " crc "})
+    assert a == b
+    assert cache_key("other", {"keyword": "crc", "limit": 10}) != a
+
+
+def test_tool_cache_put_skips_none():
+    calls = {"n": 0}
+
+    def returns_none(**_kwargs):
+        calls["n"] += 1
+        return None
+
+    cache = ToolResultCache()
+    wrapped = wrap_tools_with_cache({"x": returns_none}, cache)
+    assert wrapped["x"]() is None
+    assert wrapped["x"]() is None
+    assert calls["n"] == 2
+    assert cache.hits == 0
+    assert cache.misses == 2
+
+
+def test_tool_cache_put_skips_falsy_non_dict():
+    cache = ToolResultCache()
+    cache.put("x", {}, None)
+    cache.put("x", {}, False)
+    cache.put("x", {}, 0)
+    cache.put("x", {}, "")
+    assert cache.get("x", {}) is None
+    assert cache.misses == 1
+
+
+def test_tool_cache_stores_truthy_non_dict():
+    cache = ToolResultCache()
+    cache.put("x", {"k": "v"}, "ok")
+    assert cache.get("x", {"k": "v"}) == "ok"
+    assert cache.hits == 1
 
 
 def test_tool_cache_does_not_store_errors():
