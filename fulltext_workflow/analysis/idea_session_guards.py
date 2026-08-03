@@ -107,3 +107,71 @@ def relaxed_fields(baseline: dict, attempted: dict) -> list[str]:
         if not _list_set(b, key).issubset(_list_set(a, key)):
             fields.append(key)
     return fields
+
+
+def _canonical_args_json(args: dict[str, Any]) -> str:
+    def _norm(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {str(k): _norm(obj[k]) for k in sorted(obj)}
+        if isinstance(obj, (list, tuple)):
+            return [_norm(x) for x in obj]
+        if obj is None:
+            return None
+        if isinstance(obj, str):
+            return obj.strip()
+        return obj
+
+    return json.dumps(_norm(args), ensure_ascii=False, sort_keys=True, default=str)
+
+
+class ToolResultCache:
+    def __init__(self) -> None:
+        self._store: dict[str, Any] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def _key(self, name: str, args: dict[str, Any]) -> str:
+        return f"{name}::{_canonical_args_json(args)}"
+
+    def get(self, name: str, args: dict[str, Any]) -> Any | None:
+        key = self._key(name, args)
+        if key in self._store:
+            self.hits += 1
+            return self._store[key]
+        self.misses += 1
+        return None
+
+    def put(self, name: str, args: dict[str, Any], result: Any) -> None:
+        if isinstance(result, dict) and "error" in result:
+            return
+        self._store[self._key(name, args)] = result
+
+
+def wrap_tools_with_cache(
+    tools: dict[str, Callable[..., Any]],
+    cache: ToolResultCache,
+) -> dict[str, Callable[..., Any]]:
+    import inspect
+
+    wrapped: dict[str, Callable[..., Any]] = {}
+    for name, fn in tools.items():
+
+        def _make(tool_name: str, f: Callable[..., Any]):
+            def _wrapped(**kwargs: Any) -> Any:
+                hit = cache.get(tool_name, kwargs)
+                if hit is not None:
+                    return hit
+                # get() already counted a miss; call underlying
+                result = f(**kwargs)
+                cache.put(tool_name, kwargs, result)
+                return result
+
+            try:
+                _wrapped.__signature__ = inspect.signature(f)  # type: ignore[attr-defined]
+            except (TypeError, ValueError):
+                pass
+            _wrapped.__name__ = getattr(f, "__name__", tool_name)
+            return _wrapped
+
+        wrapped[name] = _make(name, fn)
+    return wrapped
