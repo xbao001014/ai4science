@@ -27,6 +27,7 @@ from analysis.gap_tools import TOOL_SCHEMAS as GAP_TOOL_SCHEMAS, tool_execute_kg
 from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
 from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
+from analysis.idea_session_guards import IdeaSessionGuards
 from analysis.difficulty_scoring import (
     DIFFICULTY_LEVELS,
     assess_implementation_difficulty,
@@ -499,6 +500,10 @@ drafting the data plan.
 - Call datasets_for_topic when discussing external data; respect access_class \
 (public|private|unknown). Prefer V-03 recommended_public when labeling public datasets.
 - Use pathology_disease_catalog to confirm Fangxin disease support when disease_id is unclear.
+- Revision rounds must NOT improve feasibility by removing required_labels, \
+required_annotations, required_molecular_markers, or lowering min_followup_months. \
+Keep the same Fangxin spec (or tighten it); revise evidence and writing instead. \
+Do not relax these requirements.
 - The final reply must be the **full proposal Markdown** (all sections). Do not stop after \
 "let me call a tool" without writing the proposal.
 - After tool calls finish, send one final message **without tool_calls** containing the full Markdown.
@@ -551,6 +556,9 @@ Review rules:
 execute_kg_sql (if needed) → text_disease_matches (if disease_id disputed/unmapped).
 - Do not call graph scanners (PageRank / community / reach).
 - **Must** call feasibility_assess (V-01) to check disease_id / task_type / label requirements.
+- Runtime freezes the first successful feasibility_assess argument baseline; \
+prefer re-calling with the same args. If a tool returns error \
+feasibility_spec_relaxed, accept must be false and revisions must not relax requirements.
 - **Must** call public_dataset_assess (V-03) when the proposal cites public datasets or omits them.
 - If feasibility_score < 0.5, technical_feasibility must be ≤ 5 and accept must be false.
 - If feasibility_score >= 0.8 and available_cohort_size >= 500, you may note "Fangxin data feasible".
@@ -688,6 +696,9 @@ def stream_idea_agent(
     crit_tools_raw, crit_schemas = build_idea_role_tool_bundle("critic")
     gen_tools = bind_idea_tools(gen_tools_raw, gap_text)
     crit_tools = bind_idea_tools(crit_tools_raw, gap_text)
+    session_guards = IdeaSessionGuards()
+    gen_tools = session_guards.wrap_tools(gen_tools)
+    crit_tools = session_guards.wrap_tools(crit_tools)
     anchor_block = _gap_anchor_block(gap_text)
 
     current_draft = ""
@@ -885,6 +896,7 @@ def stream_idea_agent(
             },
             {"role": "user", "content": critic_user},
         ]
+        critic_relaxed = False
         for event in run_tool_agent(
             messages=critic_messages,
             tools=crit_tools,
@@ -898,6 +910,18 @@ def stream_idea_agent(
                 agent_failed = True
                 yield event
                 break
+            if event.get("type") in ("tool_result", "tool_error"):
+                result = event.get("result")
+                error = event.get("error")
+                if (
+                    isinstance(result, dict)
+                    and result.get("error") == "feasibility_spec_relaxed"
+                ):
+                    critic_relaxed = True
+                if error == "feasibility_spec_relaxed":
+                    critic_relaxed = True
+                if session_guards.relaxed_seen:
+                    critic_relaxed = True
             _capture_feasibility_from_event(event)
             yield event
         critic_text = last_assistant_content(critic_messages)
@@ -935,6 +959,8 @@ def stream_idea_agent(
         accept = bool(last_feedback.get("accept", False)) or final_score >= accept_score
         if feas_for_accept < config.FEASIBILITY_SCORE_MARGINAL:
             accept = False
+        if critic_relaxed or session_guards.relaxed_seen:
+            accept = False
         completed_rounds = round_num
 
         yield {
@@ -948,6 +974,8 @@ def stream_idea_agent(
             "strengths": last_feedback.get("strengths", []),
             "critical_issues": last_feedback.get("critical_issues", []),
             "revision_priority": last_feedback.get("revision_priority", ""),
+            "feasibility_baseline": session_guards.baseline,
+            "spec_relation": session_guards.last_spec_relation,
         }
 
         if accept or round_num == max_rounds:
