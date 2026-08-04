@@ -1,9 +1,14 @@
 """Weekly ops job status files and step plan (Gap UI ops tab)."""
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import config
 
@@ -162,3 +167,95 @@ def progress_counts(job: dict) -> tuple[int, int]:
     total = len(steps)
     done = sum(1 for s in steps if s.get("status") in _DONE_STEP_STATUSES)
     return done, total
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _default_run_step(argv: list[str], log_fh) -> int:
+    root = Path(__file__).resolve().parents[1]
+    cmd = [sys.executable, str(root / "main.py"), *argv]
+    proc = subprocess.run(
+        cmd,
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    log_fh.write(proc.stdout or "")
+    log_fh.flush()
+    return int(proc.returncode)
+
+
+def run_weekly_job(
+    job_id: str,
+    *,
+    run_step_fn: Callable[[list[str], object], int] | None = None,
+) -> dict:
+    if run_step_fn is None:
+        run_step_fn = _default_run_step
+
+    job = read_status(job_id)
+    if job is None:
+        raise ValueError(f"unknown job: {job_id}")
+
+    job["state"] = "running"
+    job["pid"] = os.getpid()
+    if not job.get("started_at"):
+        job["started_at"] = _utc_now()
+    write_status(job)
+    write_current(job_id, "running")
+
+    params = job["params"]
+    failed = False
+
+    for step in job["steps"]:
+        if step.get("status") in _DONE_STEP_STATUSES:
+            continue
+
+        argv = build_weekly_argv(step["id"], params)
+        if argv is None:
+            step["status"] = "skipped"
+            step["finished_at"] = _utc_now()
+            write_status(job)
+            continue
+
+        step["status"] = "running"
+        step["started_at"] = _utc_now()
+        write_status(job)
+
+        log_path = _log_path(job_id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log_fh:
+            rc = run_step_fn(argv, log_fh)
+
+        step["finished_at"] = _utc_now()
+        if rc == 0:
+            step["status"] = "succeeded"
+            write_status(job)
+        else:
+            step["status"] = "failed"
+            job["error"] = f"step {step['id']} exited with code {rc}"
+            job["state"] = "failed"
+            job["finished_at"] = _utc_now()
+            write_status(job)
+            failed = True
+            break
+
+    if not failed and all(s.get("status") in _DONE_STEP_STATUSES for s in job["steps"]):
+        job["state"] = "succeeded"
+        job["finished_at"] = _utc_now()
+        write_status(job)
+
+    write_current(job_id, job["state"])
+    return job
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-job", required=True)
+    args = parser.parse_args()
+    run_weekly_job(args.run_job)

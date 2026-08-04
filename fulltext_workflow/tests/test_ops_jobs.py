@@ -52,3 +52,39 @@ def test_tail_log_and_progress(monkeypatch):
     job["steps"][1]["status"] = "skipped"
     done, total = oj.progress_counts(job)
     assert (done, total) == (2, 10)
+
+
+def test_run_weekly_job_skips_enrich_and_succeeds(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job(skip_enrich=True)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, log_fh):
+        calls.append(list(argv))
+        log_fh.write(f"ok {' '.join(argv)}\n")
+        return 0
+
+    result = oj.run_weekly_job(job["job_id"], run_step_fn=fake_run)
+    assert result["state"] == "succeeded"
+    assert all(c[0] != "enrich-s2" for c in calls)
+    enrich = next(s for s in result["steps"] if s["id"] == "enrich-s2")
+    assert enrich["status"] == "skipped"
+    assert calls[0][0] == "fetch"
+
+
+def test_run_weekly_job_stops_on_failure(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job(skip_enrich=True)
+
+    def fake_run(argv, log_fh):
+        if argv[0] == "fetch-fulltext":
+            log_fh.write("boom\n")
+            return 2
+        return 0
+
+    result = oj.run_weekly_job(job["job_id"], run_step_fn=fake_run)
+    assert result["state"] == "failed"
+    ft = next(s for s in result["steps"] if s["id"] == "fetch-fulltext")
+    assert ft["status"] == "failed"
+    later = next(s for s in result["steps"] if s["id"] == "build")
+    assert later["status"] == "pending"
