@@ -125,12 +125,12 @@ Step / job `status` / `state` 枚举：`pending` | `running` | `succeeded` | `fa
 
 ### Polling
 
-- 运维 Tab 可见时约每 2s 读读 status + 日志尾（`st.fragment` 定时刷新，或显式「刷新状态」+ 自动 rerun 策略；实现选 Streamlit 可用且稳的一种）
-- 页面刷新后根据 `current` / 最新 job 目录恢复展示
+- 运维 Tab 使用 `st.fragment(run_every=2)`（或当前环境等价 API）自动重读 status + 日志尾；另提供「刷新状态」按钮作为兜底。
+- 页面刷新后读 `current.json` 恢复展示；若不存在则扫描 `ops_jobs/*/status.json` 取最新 mtime。
 
 ## Clear ops memory API
 
-优先抽取/复用 `scripts/clear_ops_memory.py` 的核心函数（预览计数、按 focus 删除、可选删文件）到可 import 模块（例如留在 script 内可 import 的函数，或薄包装进 `analysis/ops_memory.py`），UI 与 CLI 共用，避免两套删除逻辑。
+将 `scripts/clear_ops_memory.py` 中的预览/删除核心函数抽到 `analysis/ops_memory.py`（可 import），CLI script 改为薄包装调用；UI 只调该 API，避免两套删除逻辑。
 
 ## Concurrency, cancel, zombie detection
 
