@@ -100,6 +100,12 @@ def test_annotate_prefers_role_by_name():
     assert rows[0]["method_role"] == "tool"
 
 
+def test_annotate_rule_beats_stale_db_role():
+    rows = [{"name": "resnet-50"}]
+    annotate_method_role(rows, role_by_name={"resnet-50": "tool"})
+    assert rows[0]["method_role"] == "backbone"
+
+
 def test_aggregator_alias_beats_backbone_alias(monkeypatch):
     import analysis.method_role as mr
 

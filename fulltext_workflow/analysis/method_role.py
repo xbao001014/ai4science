@@ -179,8 +179,6 @@ def annotate_method_role(
         raw = str(row.get(name_key) or "")
         key = _norm_key(resolve_method_canonical(raw))
         db = role_by_name.get(key) or role_by_name.get(raw)
-        if db in VALID_METHOD_ROLES:
-            row["method_role"] = db
-        else:
-            row["method_role"] = classify_method_role(raw)
+        db_or_none = db if db in VALID_METHOD_ROLES else None
+        row["method_role"] = resolve_method_role(raw, db_or_none)
     return rows
