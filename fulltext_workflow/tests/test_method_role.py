@@ -23,11 +23,27 @@ def test_backbone_aliases():
     assert classify_method_role("vit") == "backbone"
 
 
+def test_backbone_digit_glued_family_variants():
+    assert classify_method_role("densenet121") == "backbone"
+    assert classify_method_role("densenet201") == "backbone"
+    assert classify_method_role("efficientnetb0") == "backbone"
+    assert classify_method_role("vgg16") == "backbone"
+    assert classify_method_role("mobilenetv2") == "backbone"
+
+
 def test_aggregator_heuristics():
     assert classify_method_role("dual-attention mil") == "aggregator"
     assert classify_method_role("cross-attention fusion module") == "aggregator"
     assert classify_method_role("attention pooling mil head") == "aggregator"
     assert classify_method_role("bag-level aggregator") == "aggregator"
+    assert classify_method_role("attention-based multiple instance learning") == "aggregator"
+    assert classify_method_role("multiple instance learning") == "aggregator"
+
+
+def test_aggregator_framework_aliases():
+    assert classify_method_role("abmil") == "aggregator"
+    assert classify_method_role("transmil") == "aggregator"
+    assert classify_method_role("clam") == "aggregator"
 
 
 def test_bare_attention_not_forced_aggregator():
@@ -37,8 +53,6 @@ def test_bare_attention_not_forced_aggregator():
 
 
 def test_unknown_frameworkish_names():
-    assert classify_method_role("clam") == "unknown"
-    assert classify_method_role("transmil") == "unknown"
     assert classify_method_role("qupath") == "unknown"
 
 

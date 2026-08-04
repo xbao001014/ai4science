@@ -72,6 +72,7 @@ def test_emerging_and_active_have_method_role(monkeypatch):
     for i, pmid in enumerate(("1", "2"), start=1):
         pid = _paper(pmid, i)
         _edge(pmid, pid, "niche-mil-aggregator-x")
+        _related_edge(pmid, pid, "TARGETS_DISEASE", "disease-a", "Disease")
     for i, pmid in enumerate(("3", "4"), start=1):
         pid = _paper(pmid, i + 2)
         _edge(pmid, pid, "resnet-50")
@@ -85,6 +86,8 @@ def test_emerging_and_active_have_method_role(monkeypatch):
     # resnet-50 is established blacklist → excluded from emerging
     assert "resnet-50" not in emerging
     assert "resnet-50" in active
+    assert payload.get("hot_combos")
+    assert payload.get("hot_combos_by_method")
     for row in payload.get("hot_combos") or []:
         assert row.get("method_role") in {"backbone", "aggregator", "unknown"}
     for row in payload.get("hot_combos_by_method") or []:

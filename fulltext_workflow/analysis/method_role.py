@@ -42,7 +42,11 @@ _BACKBONE_ALIASES = frozenset({
 })
 
 _AGGREGATOR_ALIASES = frozenset({
-    # Seed empty or with a few known contribution modules; grow from mislabels.
+    # Common MIL framework names assigned to the aggregator role.
+    "abmil",
+    "clam",
+    "dsmil",
+    "transmil",
 })
 
 # Aggregator cues — no bare \battention\b.
@@ -51,6 +55,7 @@ _AGGREGATOR_PATTERNS = tuple(
     for p in (
         r"\baggregator\b",
         r"\bmil\b",
+        r"multiple\s+instance\s+learning",
         r"attention\s*pool",
         r"\bpooling\b",
         r"fusion\s+module",
@@ -62,11 +67,16 @@ _AGGREGATOR_PATTERNS = tuple(
 _BACKBONE_PATTERNS = tuple(
     re.compile(p, re.I)
     for p in (
-        r"\bresnet\b",
+        r"\bresnet",
         r"\bvit\b",
-        r"\bswin\b",
-        r"\befficientnet\b",
-        r"\bdensenet\b",
+        r"\bswin",
+        r"\befficientnet",
+        r"\bdensenet",
+        r"\bvgg",
+        r"\binception",
+        r"\balexnet",
+        r"\bmobilenet",
+        r"\bconvnext",
         r"\bencoder\b",
         r"\bbackbone\b",
     )

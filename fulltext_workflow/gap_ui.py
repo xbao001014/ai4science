@@ -2002,6 +2002,9 @@ def _render_methods_by_role(rows: list[dict]) -> None:
         if role not in buckets:
             role = "unknown"
         buckets[role].append(row)
+    if not any(buckets.values()):
+        st.info("当前窗口暂无方法数据。")
+        return
     for key, title in _METHOD_ROLE_SECTIONS:
         part = buckets[key]
         if not part:
