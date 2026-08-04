@@ -64,6 +64,8 @@
 | `APPLIES_METHOD` | 本文提出或采用的核心方法 |
 | `COMPARES_METHOD` | 本文实验中明确对比的 baseline |
 
+Method 实体另存 `entities.method_role`（`backbone|aggregator|classical_ml|tool|unknown`）；确定性命名规则优先于抽取时的 `method_role_hint`。
+
 仅引用、未参与本文实验的方法：两列都不保留。`repair_triple_relation` 在 object 为 Method 时默认映射到 `APPLIES_METHOD`，**不会**自动发明 `COMPARES_METHOD`。
 
 ### 2.4 Prompt 同步

@@ -49,6 +49,10 @@ class Triple(BaseModel):
     polarity: Literal["asserted", "hypothesized"] = "asserted"
     # Dataset-only hint from LLM; resolved to entities.access_class at ingest.
     access_hint: Optional[Literal["public", "private", "unknown"]] = None
+    # Method-only hint from LLM; deterministic rules take precedence at ingest.
+    method_role_hint: Optional[
+        Literal["backbone", "aggregator", "classical_ml", "tool", "unknown"]
+    ] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -57,7 +61,7 @@ class Triple(BaseModel):
 
         - subject.type \"Paper\" (or unknown): coerced — Paper→X ingest ignores subject
         - metric_value as number: coerced to string
-        - access_hint case-normalized
+        - access_hint and method_role_hint case-normalized
         """
         if not isinstance(data, dict):
             return data
@@ -79,6 +83,14 @@ class Triple(BaseModel):
         if isinstance(hint, str):
             h = hint.strip().lower()
             out["access_hint"] = h if h in ("public", "private", "unknown") else None
+        method_hint = out.get("method_role_hint")
+        if isinstance(method_hint, str):
+            h = method_hint.strip().lower()
+            out["method_role_hint"] = (
+                h
+                if h in ("backbone", "aggregator", "classical_ml", "tool", "unknown")
+                else None
+            )
         return out
 
 

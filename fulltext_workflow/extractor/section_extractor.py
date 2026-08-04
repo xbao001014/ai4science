@@ -79,7 +79,15 @@ def _save_triple(
     with _db_lock:
         if triple.relation == "RELATED_TO":
             subj_id = upsert_entity(triple.subject.name, triple.subject.type)
-            obj_id = upsert_entity(triple.object.name, triple.object.type)
+            obj_id = upsert_entity(
+                triple.object.name,
+                triple.object.type,
+                method_role=(
+                    triple.method_role_hint
+                    if triple.object.type == "Method"
+                    else None
+                ),
+            )
             insert_relation(
                 subject_type=triple.subject.type,
                 subject_id=subj_id,
@@ -113,6 +121,11 @@ def _save_triple(
                 obj_name,
                 triple.object.type,
                 access_class=access_class,
+                method_role=(
+                    triple.method_role_hint
+                    if triple.object.type == "Method"
+                    else None
+                ),
             )
             insert_relation(
                 subject_type="Paper",

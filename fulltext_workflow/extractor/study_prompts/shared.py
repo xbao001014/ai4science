@@ -133,6 +133,14 @@ Method naming policy (CRITICAL) — backbone + contribution level:
   - If both a contribution-level Method and a training trick appear, extract ONLY the former
   - "pathomics" / "digital pathology" alone is usually NOT a Method
 
+Method role hint (optional method_role_hint on triples whose object is Method):
+  - backbone: named visual/feature/segmentation backbone or foundation encoder
+  - aggregator: MIL head, attention pooling, fusion/aggregation module
+  - classical_ml: classical ML / statistical / survival models (RF, SVM, Cox, …)
+  - tool: software/platform/omics tools (QuPath, Seurat, …) — not a neural backbone
+  - unknown: omit or use unknown when unsure
+  - Rules in post-ingest may override; prefer accurate hints over guessing
+
 Limitation policy:
   - One atomic, actionable constraint per Limitation entity
   - Canonical phrasing: "small sample size", "lack of external validation",
