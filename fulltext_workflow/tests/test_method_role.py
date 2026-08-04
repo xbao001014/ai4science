@@ -11,6 +11,7 @@ if str(_ROOT) not in sys.path:
 from analysis.method_role import (  # noqa: E402
     annotate_method_role,
     classify_method_role,
+    resolve_method_role,
 )
 
 
@@ -53,7 +54,50 @@ def test_bare_attention_not_forced_aggregator():
 
 
 def test_unknown_frameworkish_names():
-    assert classify_method_role("qupath") == "unknown"
+    assert classify_method_role("qupath") == "tool"
+
+
+def test_classical_ml_aliases():
+    assert classify_method_role("random forest") == "classical_ml"
+    assert classify_method_role("support vector machine") == "classical_ml"
+    assert classify_method_role("xgboost") == "classical_ml"
+    assert classify_method_role("lightgbm") == "classical_ml"
+    assert classify_method_role("logistic regression") == "classical_ml"
+    assert classify_method_role("cox proportional hazards regression") == "classical_ml"
+
+
+def test_tool_aliases():
+    assert classify_method_role("qupath") == "tool"
+    assert classify_method_role("seurat") == "tool"
+    assert classify_method_role("gsva") == "tool"
+    assert classify_method_role("vosviewer") == "tool"
+
+
+def test_backbone_missings():
+    assert classify_method_role("hover-net") == "backbone"
+    assert classify_method_role("segformer") == "backbone"
+    assert classify_method_role("dinov2") == "backbone"
+    assert classify_method_role("cnn") == "backbone"
+    assert classify_method_role("convolutional neural network") == "backbone"
+    assert classify_method_role("xception") == "backbone"
+    assert classify_method_role("prov-gigapath") == "backbone"
+
+
+def test_resolve_rule_beats_hint():
+    assert resolve_method_role("resnet-50", "tool") == "backbone"
+    assert resolve_method_role("clam", "backbone") == "aggregator"
+
+
+def test_resolve_hint_fills_unknown():
+    assert resolve_method_role("totally-novel-widget-xyz", "classical_ml") == "classical_ml"
+    assert resolve_method_role("totally-novel-widget-xyz", "nope") == "unknown"
+    assert resolve_method_role("totally-novel-widget-xyz", None) == "unknown"
+
+
+def test_annotate_prefers_role_by_name():
+    rows = [{"name": "weird-method"}]
+    annotate_method_role(rows, role_by_name={"weird-method": "tool"})
+    assert rows[0]["method_role"] == "tool"
 
 
 def test_aggregator_alias_beats_backbone_alias(monkeypatch):

@@ -1,4 +1,4 @@
-"""Method architecture role for weekly hotspot display (backbone vs aggregator)."""
+"""Method architecture role for weekly hotspot display."""
 from __future__ import annotations
 
 import re
@@ -7,7 +7,10 @@ from typing import Literal
 from analysis.method_synonyms import resolve_method_canonical
 from extractor.entity_normalize import _norm_key
 
-MethodRole = Literal["backbone", "aggregator", "unknown"]
+MethodRole = Literal["backbone", "aggregator", "classical_ml", "tool", "unknown"]
+VALID_METHOD_ROLES = frozenset(
+    {"backbone", "aggregator", "classical_ml", "tool", "unknown"}
+)
 
 # Exact aliases after _norm_key. If a name appears in both tables, aggregator wins.
 _BACKBONE_ALIASES = frozenset({
@@ -39,6 +42,13 @@ _BACKBONE_ALIASES = frozenset({
     "attention-unet",
     "u-net",
     "unet",
+    "hover-net",
+    "segformer",
+    "dinov2",
+    "cnn",
+    "convolutional neural network",
+    "xception",
+    "prov-gigapath",
 })
 
 _AGGREGATOR_ALIASES = frozenset({
@@ -47,6 +57,22 @@ _AGGREGATOR_ALIASES = frozenset({
     "clam",
     "dsmil",
     "transmil",
+})
+
+_CLASSICAL_ML_ALIASES = frozenset({
+    "random forest",
+    "support vector machine",
+    "xgboost",
+    "lightgbm",
+    "logistic regression",
+    "cox proportional hazards regression",
+})
+
+_TOOL_ALIASES = frozenset({
+    "qupath",
+    "seurat",
+    "gsva",
+    "vosviewer",
 })
 
 # Aggregator cues — no bare \battention\b.
@@ -82,19 +108,63 @@ _BACKBONE_PATTERNS = tuple(
     )
 )
 
+_CLASSICAL_ML_PATTERNS = tuple(
+    re.compile(p, re.I)
+    for p in (
+        r"\brandom\s+forest",
+        r"\bxgboost\b",
+        r"\blightgbm\b",
+        r"\bcatboost\b",
+        r"\blogistic\s+regression",
+        r"\bsupport\s+vector",
+        r"\bcox\b",
+        r"\bkaplan[\s\-]?meier",
+        r"\bnaive\s+bayes",
+        r"\belastic\s+net\b",
+        r"\bgradient\s+boost",
+    )
+)
+
+_TOOL_PATTERNS = tuple(
+    re.compile(p, re.I)
+    for p in (
+        r"\bqupath\b",
+        r"\bseurat\b",
+        r"\bvosviewer\b",
+        r"\bcitespace\b",
+    )
+)
+
 
 def classify_method_role(name: str) -> MethodRole:
-    canonical = resolve_method_canonical(name)
-    key = _norm_key(canonical)
-    # Aggregator aliases before backbone aliases (conflict → aggregator).
+    key = _norm_key(resolve_method_canonical(name))
     if key in _AGGREGATOR_ALIASES:
         return "aggregator"
     if key in _BACKBONE_ALIASES:
         return "backbone"
+    if key in _CLASSICAL_ML_ALIASES:
+        return "classical_ml"
+    if key in _TOOL_ALIASES:
+        return "tool"
     if any(p.search(key) for p in _AGGREGATOR_PATTERNS):
         return "aggregator"
     if any(p.search(key) for p in _BACKBONE_PATTERNS):
         return "backbone"
+    if any(p.search(key) for p in _CLASSICAL_ML_PATTERNS):
+        return "classical_ml"
+    if any(p.search(key) for p in _TOOL_PATTERNS):
+        return "tool"
+    return "unknown"
+
+
+def resolve_method_role(name: str, llm_role: str | None = None) -> MethodRole:
+    rule = classify_method_role(name)
+    if rule != "unknown":
+        return rule
+    if isinstance(llm_role, str):
+        hint = llm_role.strip().lower()
+        if hint in VALID_METHOD_ROLES:
+            return hint  # type: ignore[return-value]
     return "unknown"
 
 
@@ -102,7 +172,15 @@ def annotate_method_role(
     rows: list[dict],
     *,
     name_key: str = "name",
+    role_by_name: dict[str, str] | None = None,
 ) -> list[dict]:
+    role_by_name = role_by_name or {}
     for row in rows:
-        row["method_role"] = classify_method_role(str(row.get(name_key) or ""))
+        raw = str(row.get(name_key) or "")
+        key = _norm_key(resolve_method_canonical(raw))
+        db = role_by_name.get(key) or role_by_name.get(raw)
+        if db in VALID_METHOD_ROLES:
+            row["method_role"] = db
+        else:
+            row["method_role"] = classify_method_role(raw)
     return rows
