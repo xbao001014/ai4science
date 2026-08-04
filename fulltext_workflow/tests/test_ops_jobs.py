@@ -88,3 +88,77 @@ def test_run_weekly_job_stops_on_failure(monkeypatch):
     assert ft["status"] == "failed"
     later = next(s for s in result["steps"] if s["id"] == "build")
     assert later["status"] == "pending"
+
+
+def test_start_rejects_second_running(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    spawned = []
+
+    def spawn(job_id):
+        spawned.append(job_id)
+        return 4242
+
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: True)
+    j1 = oj.start_weekly_job(spawn_fn=spawn, skip_enrich=True)
+    # Simulate runner marked running with alive pid
+    j1["state"] = "running"
+    j1["pid"] = 4242
+    oj.write_status(j1)
+    oj.write_current(j1["job_id"], "running")
+    try:
+        oj.start_weekly_job(spawn_fn=spawn)
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError:
+        pass
+    assert len(spawned) == 1
+
+
+def test_reclaim_zombie(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 999001
+    oj.write_status(job)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+    out = oj.reclaim_zombie(oj.read_status(job["job_id"]))
+    assert out["state"] == "failed"
+    assert "exited" in (out.get("error") or "").lower()
+
+
+def test_cancel_marks_cancelled(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 777
+    job["steps"][0]["status"] = "running"
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "running")
+    killed = []
+
+    def fake_kill(pid):
+        killed.append(pid)
+
+    monkeypatch.setattr(oj, "_kill_process_tree", fake_kill)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: True)
+    out = oj.cancel_weekly_job(job["job_id"])
+    assert out["state"] == "cancelled"
+    assert out["steps"][0]["status"] == "cancelled"
+    assert killed == [777]
+
+
+def test_get_active_weekly_job_reclaims_zombie(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 999002
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "running")
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+    out = oj.get_active_weekly_job()
+    assert out["state"] == "failed"
+    assert "exited" in (out.get("error") or "").lower()
+
+
+def test_get_active_weekly_job_none_when_no_current(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    assert oj.get_active_weekly_job() is None

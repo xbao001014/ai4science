@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -28,6 +30,10 @@ WEEKLY_STEPS: list[dict[str, str]] = [
 ]
 
 _DONE_STEP_STATUSES = frozenset({"succeeded", "skipped"})
+
+
+class OpsJobError(Exception):
+    """Raised for invalid weekly ops job operations (e.g. already running)."""
 
 
 def new_job_id(kind: str = "weekly") -> str:
@@ -250,6 +256,140 @@ def run_weekly_job(
         job["finished_at"] = _utc_now()
         write_status(job)
 
+    write_current(job_id, job["state"])
+    return job
+
+
+def pid_is_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    if sys.platform == "win32":
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            still_active = 259
+            exit_code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            return bool(ok) and exit_code.value == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def reclaim_zombie(job: dict) -> dict:
+    if job is None:
+        return job
+    if job.get("state") == "running" and not pid_is_alive(job.get("pid")):
+        job["state"] = "failed"
+        job["error"] = "process exited unexpectedly"
+        job["finished_at"] = _utc_now()
+        for step in job["steps"]:
+            if step.get("status") == "running":
+                step["status"] = "failed"
+                step["finished_at"] = _utc_now()
+        write_status(job)
+        write_current(job["job_id"], job["state"])
+    return job
+
+
+def get_active_weekly_job() -> dict | None:
+    current = read_current()
+    if current is None:
+        return None
+    job = read_status(current["job_id"])
+    if job is None:
+        return None
+    if job.get("state") == "running":
+        job = reclaim_zombie(job)
+    return job
+
+
+def _default_spawn(job_id: str) -> int:
+    root = Path(__file__).resolve().parents[1]
+    cmd = [sys.executable, "-m", "analysis.ops_jobs", "--run-job", job_id]
+    kwargs: dict = {"cwd": str(root), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    return int(proc.pid)
+
+
+def start_weekly_job(
+    *,
+    since_days: int = 14,
+    extract_limit: int = 0,
+    skip_enrich: bool = False,
+    spawn_fn: Callable[[str], int] | None = None,
+) -> dict:
+    if spawn_fn is None:
+        spawn_fn = _default_spawn
+
+    active = get_active_weekly_job()
+    if active is not None and active.get("state") == "running":
+        raise OpsJobError(f"weekly job {active['job_id']} is already running")
+
+    job = create_weekly_job(
+        since_days=since_days,
+        extract_limit=extract_limit,
+        skip_enrich=skip_enrich,
+    )
+    job["pid"] = int(spawn_fn(job["job_id"]))
+    write_status(job)
+    return job
+
+
+def _kill_process_tree(pid: int) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def cancel_weekly_job(job_id: str | None = None) -> dict:
+    if job_id is None:
+        current = read_current()
+        if current is None:
+            raise OpsJobError("no active weekly job to cancel")
+        job_id = current["job_id"]
+
+    job = read_status(job_id)
+    if job is None:
+        raise OpsJobError(f"unknown job: {job_id}")
+
+    pid = job.get("pid")
+    if pid and pid_is_alive(pid):
+        _kill_process_tree(pid)
+
+    for step in job["steps"]:
+        if step.get("status") == "running":
+            step["status"] = "cancelled"
+            step["finished_at"] = _utc_now()
+
+    job["state"] = "cancelled"
+    job["finished_at"] = _utc_now()
+    write_status(job)
     write_current(job_id, job["state"])
     return job
 
