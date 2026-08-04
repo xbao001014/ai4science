@@ -13,6 +13,8 @@ from db.schema import (
     fetch_recent_ops_runs,
     find_ops_gap_items_by_run,
     find_ops_run_by_week_focus,
+    get_conn,
+    init_db,
     insert_ops_gap_items,
     insert_ops_proposal,
     insert_ops_run,
@@ -353,3 +355,137 @@ def persist_debate_report(
     persist_gaps_from_report(rid, report_text, status_by_title=status_map)
     finalize_ops_run(rid, gap_report_path=gap_report_path)
     return rid
+
+
+def _resolve_clear_focus_key(focus: str | None) -> str | None:
+    if focus is None:
+        return None
+    if not str(focus).strip():
+        return "__all__"
+    return normalize_focus_key(focus)
+
+
+def _counts(conn, focus_key: str | None = None) -> dict[str, int]:
+    if focus_key:
+        runs = conn.execute(
+            "SELECT COUNT(*) FROM ops_runs WHERE focus_key=?", (focus_key,)
+        ).fetchone()[0]
+        gaps = conn.execute(
+            """SELECT COUNT(*) FROM ops_gap_items g
+               JOIN ops_runs r ON g.run_id = r.run_id
+               WHERE r.focus_key=?""",
+            (focus_key,),
+        ).fetchone()[0]
+        props = conn.execute(
+            """SELECT COUNT(*) FROM ops_proposals p
+               JOIN ops_runs r ON p.run_id = r.run_id
+               WHERE r.focus_key=?""",
+            (focus_key,),
+        ).fetchone()[0]
+    else:
+        runs = conn.execute("SELECT COUNT(*) FROM ops_runs").fetchone()[0]
+        gaps = conn.execute("SELECT COUNT(*) FROM ops_gap_items").fetchone()[0]
+        props = conn.execute("SELECT COUNT(*) FROM ops_proposals").fetchone()[0]
+    return {"ops_runs": runs, "ops_gap_items": gaps, "ops_proposals": props}
+
+
+def _collect_file_paths(conn, focus_key: str | None) -> list[str]:
+    paths: list[str] = []
+    if focus_key:
+        rows = conn.execute(
+            """SELECT gap_report_path, proposal_report_path FROM ops_runs
+               WHERE focus_key=?""",
+            (focus_key,),
+        ).fetchall()
+        prop_rows = conn.execute(
+            """SELECT p.proposal_path FROM ops_proposals p
+               JOIN ops_runs r ON p.run_id = r.run_id
+               WHERE r.focus_key=?""",
+            (focus_key,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT gap_report_path, proposal_report_path FROM ops_runs"
+        ).fetchall()
+        prop_rows = conn.execute(
+            "SELECT proposal_path FROM ops_proposals"
+        ).fetchall()
+    for row in rows:
+        for col in ("gap_report_path", "proposal_report_path"):
+            p = row[col]
+            if p:
+                paths.append(p)
+    for row in prop_rows:
+        if row["proposal_path"]:
+            paths.append(row["proposal_path"])
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def preview_ops_memory(focus: str | None = None) -> dict:
+    init_db()
+    focus_key = _resolve_clear_focus_key(focus)
+    with get_conn() as conn:
+        counts = _counts(conn, focus_key)
+        files = _collect_file_paths(conn, focus_key)
+    return {"focus_key": focus_key, "counts": counts, "file_paths": files}
+
+
+def clear_ops_memory(
+    *,
+    focus: str | None = None,
+    execute: bool = False,
+    delete_files: bool = False,
+) -> dict:
+    init_db()
+    focus_key = _resolve_clear_focus_key(focus)
+
+    with get_conn() as conn:
+        before = _counts(conn, focus_key)
+        file_paths = _collect_file_paths(conn, focus_key) if delete_files else []
+
+        if not execute:
+            return {"dry_run": True, "before": before, "files": file_paths}
+
+        if focus_key:
+            conn.execute(
+                """DELETE FROM ops_proposals WHERE run_id IN
+                   (SELECT run_id FROM ops_runs WHERE focus_key=?)""",
+                (focus_key,),
+            )
+            conn.execute(
+                """DELETE FROM ops_gap_items WHERE run_id IN
+                   (SELECT run_id FROM ops_runs WHERE focus_key=?)""",
+                (focus_key,),
+            )
+            conn.execute("DELETE FROM ops_runs WHERE focus_key=?", (focus_key,))
+        else:
+            conn.execute("DELETE FROM ops_proposals")
+            conn.execute("DELETE FROM ops_gap_items")
+            conn.execute("DELETE FROM ops_runs")
+
+        after = _counts(conn, focus_key)
+
+    deleted_files = 0
+    if delete_files:
+        import os
+
+        for path in file_paths:
+            try:
+                if path and os.path.isfile(path):
+                    os.remove(path)
+                    deleted_files += 1
+            except OSError:
+                pass
+
+    return {
+        "dry_run": False,
+        "before": before,
+        "after": after,
+        "files_removed": deleted_files,
+    }

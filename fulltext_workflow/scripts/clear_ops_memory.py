@@ -19,7 +19,6 @@ Examples (from fulltext_workflow/):
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -27,145 +26,39 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from analysis.ops_memory import normalize_focus_key
-from db.schema import get_conn, init_db
+from analysis.ops_memory import clear_ops_memory, preview_ops_memory
 
 
-def _counts(conn, focus_key: str | None = None) -> dict[str, int]:
-    if focus_key:
-        runs = conn.execute(
-            "SELECT COUNT(*) FROM ops_runs WHERE focus_key=?", (focus_key,)
-        ).fetchone()[0]
-        gaps = conn.execute(
-            """SELECT COUNT(*) FROM ops_gap_items g
-               JOIN ops_runs r ON g.run_id = r.run_id
-               WHERE r.focus_key=?""",
-            (focus_key,),
-        ).fetchone()[0]
-        props = conn.execute(
-            """SELECT COUNT(*) FROM ops_proposals p
-               JOIN ops_runs r ON p.run_id = r.run_id
-               WHERE r.focus_key=?""",
-            (focus_key,),
-        ).fetchone()[0]
-    else:
-        runs = conn.execute("SELECT COUNT(*) FROM ops_runs").fetchone()[0]
-        gaps = conn.execute("SELECT COUNT(*) FROM ops_gap_items").fetchone()[0]
-        props = conn.execute("SELECT COUNT(*) FROM ops_proposals").fetchone()[0]
-    return {"ops_runs": runs, "ops_gap_items": gaps, "ops_proposals": props}
-
-
-def _collect_file_paths(conn, focus_key: str | None) -> list[str]:
-    paths: list[str] = []
-    if focus_key:
-        rows = conn.execute(
-            """SELECT gap_report_path, proposal_report_path FROM ops_runs
-               WHERE focus_key=?""",
-            (focus_key,),
-        ).fetchall()
-        prop_rows = conn.execute(
-            """SELECT p.proposal_path FROM ops_proposals p
-               JOIN ops_runs r ON p.run_id = r.run_id
-               WHERE r.focus_key=?""",
-            (focus_key,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT gap_report_path, proposal_report_path FROM ops_runs"
-        ).fetchall()
-        prop_rows = conn.execute(
-            "SELECT proposal_path FROM ops_proposals"
-        ).fetchall()
-    for row in rows:
-        for col in ("gap_report_path", "proposal_report_path"):
-            p = row[col]
-            if p:
-                paths.append(p)
-    for row in prop_rows:
-        if row["proposal_path"]:
-            paths.append(row["proposal_path"])
-    # unique, preserve order
-    seen: set[str] = set()
-    out: list[str] = []
-    for p in paths:
-        if p not in seen:
-            seen.add(p)
-            out.append(p)
-    return out
-
-
-def clear_ops_memory(
+def _print_result(
     *,
-    focus: str | None = None,
-    execute: bool = False,
-    delete_files: bool = False,
-) -> dict:
-    init_db()
-    focus_key = normalize_focus_key(focus) if focus is not None else None
-    # Empty CLI focus string means "__all__" lane only when explicitly passed as ""
-    if focus is not None and not str(focus).strip():
-        focus_key = "__all__"
-
-    with get_conn() as conn:
-        before = _counts(conn, focus_key)
-        file_paths = _collect_file_paths(conn, focus_key) if delete_files else []
-
-        print(
-            f"Scope: {'focus_key=' + repr(focus_key) if focus_key else 'ALL ops memory'}"
-        )
-        print(
-            f"Before: runs={before['ops_runs']} gaps={before['ops_gap_items']} "
-            f"proposals={before['ops_proposals']}"
-        )
-        if delete_files:
-            print(f"Referenced files: {len(file_paths)}")
-
-        if not execute:
-            print("Dry run — pass --yes to delete.")
-            return {"dry_run": True, "before": before, "files": file_paths}
-
-        # Child tables first (FK order)
-        if focus_key:
-            conn.execute(
-                """DELETE FROM ops_proposals WHERE run_id IN
-                   (SELECT run_id FROM ops_runs WHERE focus_key=?)""",
-                (focus_key,),
-            )
-            conn.execute(
-                """DELETE FROM ops_gap_items WHERE run_id IN
-                   (SELECT run_id FROM ops_runs WHERE focus_key=?)""",
-                (focus_key,),
-            )
-            conn.execute("DELETE FROM ops_runs WHERE focus_key=?", (focus_key,))
-        else:
-            conn.execute("DELETE FROM ops_proposals")
-            conn.execute("DELETE FROM ops_gap_items")
-            conn.execute("DELETE FROM ops_runs")
-
-        after = _counts(conn, focus_key)
-        print(
-            f"After:  runs={after['ops_runs']} gaps={after['ops_gap_items']} "
-            f"proposals={after['ops_proposals']}"
-        )
-
-    deleted_files = 0
+    focus: str | None,
+    delete_files: bool,
+    result: dict,
+) -> None:
+    focus_key = preview_ops_memory(focus)["focus_key"]
+    before = result["before"]
+    print(
+        f"Scope: {'focus_key=' + repr(focus_key) if focus_key else 'ALL ops memory'}"
+    )
+    print(
+        f"Before: runs={before['ops_runs']} gaps={before['ops_gap_items']} "
+        f"proposals={before['ops_proposals']}"
+    )
     if delete_files:
-        for path in file_paths:
-            try:
-                if path and os.path.isfile(path):
-                    os.remove(path)
-                    deleted_files += 1
-                    print(f"  removed {path}")
-            except OSError as exc:
-                print(f"  [warn] could not remove {path}: {exc}")
-        print(f"Files removed: {deleted_files}/{len(file_paths)}")
-
-    return {
-        "dry_run": False,
-        "before": before,
-        "after": after,
-        "files_removed": deleted_files,
-    }
+        files = result.get("files") or []
+        print(f"Referenced files: {len(files)}")
+    if result.get("dry_run"):
+        print("Dry run — pass --yes to delete.")
+        return
+    after = result["after"]
+    print(
+        f"After:  runs={after['ops_runs']} gaps={after['ops_gap_items']} "
+        f"proposals={after['ops_proposals']}"
+    )
+    if delete_files:
+        removed = result.get("files_removed", 0)
+        files = result.get("files") or []
+        print(f"Files removed: {removed}/{len(files)}")
 
 
 def main() -> None:
@@ -189,11 +82,12 @@ def main() -> None:
         help="Also delete markdown files referenced by cleared rows.",
     )
     args = parser.parse_args()
-    clear_ops_memory(
+    result = clear_ops_memory(
         focus=args.focus,
         execute=args.yes,
         delete_files=args.delete_files,
     )
+    _print_result(focus=args.focus, delete_files=args.delete_files, result=result)
 
 
 if __name__ == "__main__":
