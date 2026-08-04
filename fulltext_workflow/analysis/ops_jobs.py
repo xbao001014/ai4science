@@ -295,19 +295,37 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
+_RECLAIMABLE_STATES = frozenset({"running", "pending"})
+
+
 def reclaim_zombie(job: dict) -> dict:
+    """Fail a job whose runner process is not (or no longer) alive.
+
+    Covers both a `running` job whose recorded pid has died (crash mid-run)
+    and a `pending` job whose spawn never progressed to `running` (e.g. the
+    runner died during import/startup before writing its first status), so
+    neither state can wedge the UI forever.
+    """
     if job is None:
         return job
-    if job.get("state") == "running" and not pid_is_alive(job.get("pid")):
-        job["state"] = "failed"
-        job["error"] = "process exited unexpectedly"
-        job["finished_at"] = _utc_now()
-        for step in job["steps"]:
-            if step.get("status") == "running":
-                step["status"] = "failed"
-                step["finished_at"] = _utc_now()
-        write_status(job)
-        write_current(job["job_id"], job["state"])
+    state = job.get("state")
+    if state not in _RECLAIMABLE_STATES:
+        return job
+    if pid_is_alive(job.get("pid")):
+        return job
+    job["state"] = "failed"
+    job["error"] = (
+        "process exited unexpectedly"
+        if state == "running"
+        else "runner process failed to start"
+    )
+    job["finished_at"] = _utc_now()
+    for step in job["steps"]:
+        if step.get("status") == "running":
+            step["status"] = "failed"
+            step["finished_at"] = _utc_now()
+    write_status(job)
+    write_current(job["job_id"], job["state"])
     return job
 
 
@@ -318,7 +336,7 @@ def get_active_weekly_job() -> dict | None:
     job = read_status(current["job_id"])
     if job is None:
         return None
-    if job.get("state") == "running":
+    if job.get("state") in _RECLAIMABLE_STATES:
         job = reclaim_zombie(job)
     return job
 
@@ -326,12 +344,19 @@ def get_active_weekly_job() -> dict | None:
 def _default_spawn(job_id: str) -> int:
     root = Path(__file__).resolve().parents[1]
     cmd = [sys.executable, "-m", "analysis.ops_jobs", "--run-job", job_id]
-    kwargs: dict = {"cwd": str(root), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    else:
-        kwargs["start_new_session"] = True
-    proc = subprocess.Popen(cmd, **kwargs)
+    log_path = _log_path(job_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = log_path.open("a", encoding="utf-8")
+    try:
+        kwargs: dict = {"cwd": str(root), "stdout": log_fh, "stderr": subprocess.STDOUT}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        else:
+            kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **kwargs)
+    finally:
+        # The child inherits a duplicated handle/fd; the parent's copy can close.
+        log_fh.close()
     return int(proc.pid)
 
 
@@ -354,26 +379,84 @@ def start_weekly_job(
         extract_limit=extract_limit,
         skip_enrich=skip_enrich,
     )
-    job["pid"] = int(spawn_fn(job["job_id"]))
+    try:
+        pid = int(spawn_fn(job["job_id"]))
+    except Exception as exc:
+        job["state"] = "failed"
+        job["error"] = f"failed to start runner process: {exc}"
+        job["finished_at"] = _utc_now()
+        write_status(job)
+        write_current(job["job_id"], job["state"])
+        raise OpsJobError(f"failed to start weekly job: {exc}") from exc
+
+    job["pid"] = pid
     write_status(job)
     return job
 
 
-def _kill_process_tree(pid: int) -> None:
+def _kill_process_tree(pid: int) -> bool:
+    """Attempt to kill pid's process tree. Return True iff the OS call succeeded."""
     if sys.platform == "win32":
-        subprocess.run(
+        result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return
+        return result.returncode == 0
     try:
         os.killpg(pid, signal.SIGTERM)
+        return True
     except (ProcessLookupError, PermissionError, OSError):
         try:
             os.kill(pid, signal.SIGTERM)
+            return True
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            return False
+
+
+def _pid_command_line(pid: int) -> str:
+    """Best-effort Windows command-line lookup for `pid`; "" if unavailable."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        proc = subprocess.run(
+            [
+                "wmic",
+                "process",
+                "where",
+                f"ProcessId={int(pid)}",
+                "get",
+                "CommandLine",
+                "/FORMAT:LIST",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("CommandLine="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _pid_looks_like_runner(pid: int, job_id: str) -> bool:
+    """Pragmatic Windows pid-reuse guard: does `pid`'s command line still look
+    like our weekly runner (`analysis.ops_jobs --run-job <job_id>`)?
+
+    If the lookup is inconclusive (non-Windows, `wmic` missing, empty output),
+    we cannot verify either way and fall back to allowing the cancel — the
+    pid liveness check is still the primary guard.
+    """
+    if sys.platform != "win32":
+        return True
+    cmdline = _pid_command_line(pid)
+    if not cmdline:
+        return True
+    lowered = cmdline.lower()
+    return "ops_jobs" in lowered and ("--run-job" in lowered or job_id.lower() in lowered)
 
 
 def cancel_weekly_job(job_id: str | None = None) -> dict:
@@ -392,8 +475,28 @@ def cancel_weekly_job(job_id: str | None = None) -> dict:
         raise OpsJobError(f"weekly job {job_id} is not running (state={state!r})")
 
     pid = job.get("pid")
-    if pid and pid_is_alive(pid):
-        _kill_process_tree(pid)
+    if not pid or not pid_is_alive(pid):
+        # Runner is already gone; reclaim honestly instead of claiming a clean
+        # cancel (there is nothing left to kill).
+        job["state"] = "failed"
+        job["error"] = "process was not running (reclaimed on cancel request)"
+        job["finished_at"] = _utc_now()
+        for step in job["steps"]:
+            if step.get("status") == "running":
+                step["status"] = "failed"
+                step["finished_at"] = _utc_now()
+        write_status(job)
+        write_current(job_id, job["state"])
+        return job
+
+    if not _pid_looks_like_runner(pid, job_id):
+        raise OpsJobError(
+            f"refusing to cancel: pid {pid} no longer looks like the weekly "
+            f"runner for job {job_id} (possible pid reuse)"
+        )
+
+    if not _kill_process_tree(pid):
+        raise OpsJobError(f"failed to kill process {pid} for weekly job {job_id}")
 
     for step in job["steps"]:
         if step.get("status") == "running":

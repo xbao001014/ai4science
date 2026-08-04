@@ -76,6 +76,7 @@ def _render_status_body() -> None:
         if st.button("取消任务", disabled=not confirm_cancel, key="ops_cancel_btn"):
             try:
                 cancel_weekly_job(job["job_id"])
+                st.session_state["ops_confirm_cancel"] = False
                 st.success("已请求取消。")
                 st.rerun()
             except OpsJobError as exc:
@@ -145,12 +146,31 @@ def _render_weekly_section() -> None:
 def _render_clear_memory_section(focus_hint: str) -> None:
     focus_norm = normalize_focus(focus_hint)
     scope_options = ["全部"] + (["仅当前焦点"] if focus_norm else [])
+
+    # When the option set itself changes (e.g. the sidebar focus is cleared
+    # and "仅当前焦点" disappears), Streamlit silently snaps the radio back to
+    # the first option while leaving any checked confirm box armed. Detect
+    # that here and force both the widget and the confirm gate to reset
+    # instead of carrying a stale confirmation into a wider scope.
+    if st.session_state.get("_ops_clear_scope_options") != scope_options:
+        st.session_state["_ops_clear_scope_options"] = scope_options
+        st.session_state.pop("ops_clear_scope", None)
+        st.session_state["ops_clear_confirm"] = False
+
     scope = st.radio(
         "清空范围",
         scope_options,
         horizontal=True,
         key="ops_clear_scope",
     )
+
+    # Also reset on any effective scope change (including the user manually
+    # switching the radio), so a confirmation never carries over to a
+    # different lane than the one it was given for.
+    if st.session_state.get("_ops_clear_last_scope") != scope:
+        st.session_state["_ops_clear_last_scope"] = scope
+        st.session_state["ops_clear_confirm"] = False
+
     focus_for_clear = focus_hint if (focus_norm and scope == "仅当前焦点") else None
 
     preview = preview_ops_memory(focus_for_clear)
@@ -184,6 +204,7 @@ def _render_clear_memory_section(focus_hint: str) -> None:
         )
         if delete_files:
             msg += f"；已删除文件 {result.get('files_removed', 0)} 个"
+        st.session_state["ops_clear_confirm"] = False
         st.success(msg)
         st.rerun()
 

@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -125,6 +127,70 @@ def test_reclaim_zombie(monkeypatch):
     assert "exited" in (out.get("error") or "").lower()
 
 
+def test_reclaim_zombie_handles_dead_pending(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["pid"] = 999003
+    oj.write_status(job)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+    out = oj.reclaim_zombie(oj.read_status(job["job_id"]))
+    assert out["state"] == "failed"
+    assert "start" in (out.get("error") or "").lower()
+
+
+def test_start_weekly_job_marks_failed_on_spawn_exception(monkeypatch):
+    _tmp_jobs(monkeypatch)
+
+    def bad_spawn(job_id):
+        raise OSError("spawn failed")
+
+    try:
+        oj.start_weekly_job(spawn_fn=bad_spawn)
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError as exc:
+        assert "failed to start" in str(exc).lower()
+
+    current = oj.read_current()
+    assert current["state"] == "failed"
+    job = oj.read_status(current["job_id"])
+    assert job["state"] == "failed"
+    assert "spawn failed" in (job.get("error") or "")
+
+    # Failed spawn must not block a subsequent start.
+    active = oj.get_active_weekly_job()
+    assert active is None or active.get("state") != "running"
+
+
+def test_get_active_weekly_job_reclaims_dead_pending(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["pid"] = 999004
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "pending")
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+    out = oj.get_active_weekly_job()
+    assert out["state"] == "failed"
+
+
+def test_start_weekly_job_not_blocked_by_stale_pending(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    stuck = oj.create_weekly_job()
+    stuck["pid"] = 999005
+    oj.write_status(stuck)
+    oj.write_current(stuck["job_id"], "pending")
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+
+    spawned = []
+
+    def spawn(job_id):
+        spawned.append(job_id)
+        return 4343
+
+    job = oj.start_weekly_job(spawn_fn=spawn, skip_enrich=True)
+    assert job["state"] == "pending"
+    assert spawned == [job["job_id"]]
+
+
 def test_cancel_marks_cancelled(monkeypatch):
     _tmp_jobs(monkeypatch)
     job = oj.create_weekly_job()
@@ -137,13 +203,80 @@ def test_cancel_marks_cancelled(monkeypatch):
 
     def fake_kill(pid):
         killed.append(pid)
+        return True
 
     monkeypatch.setattr(oj, "_kill_process_tree", fake_kill)
     monkeypatch.setattr(oj, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(oj, "_pid_looks_like_runner", lambda pid, job_id: True)
     out = oj.cancel_weekly_job(job["job_id"])
     assert out["state"] == "cancelled"
     assert out["steps"][0]["status"] == "cancelled"
     assert killed == [777]
+
+
+def test_cancel_reclaims_when_pid_already_dead(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 888
+    job["steps"][0]["status"] = "running"
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "running")
+
+    killed = []
+    monkeypatch.setattr(oj, "_kill_process_tree", lambda pid: killed.append(pid) or True)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: False)
+
+    out = oj.cancel_weekly_job(job["job_id"])
+    assert out["state"] == "failed"
+    assert killed == []
+    assert out["steps"][0]["status"] == "failed"
+
+
+def test_cancel_refuses_when_pid_does_not_look_like_runner(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 999
+    job["steps"][0]["status"] = "running"
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "running")
+
+    killed = []
+    monkeypatch.setattr(oj, "_kill_process_tree", lambda pid: killed.append(pid) or True)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(oj, "_pid_looks_like_runner", lambda pid, job_id: False)
+
+    try:
+        oj.cancel_weekly_job(job["job_id"])
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError as exc:
+        assert "pid reuse" in str(exc).lower() or "does not" in str(exc).lower() or "no longer" in str(exc).lower()
+    assert killed == []
+    loaded = oj.read_status(job["job_id"])
+    assert loaded["state"] == "running"
+
+
+def test_cancel_raises_when_kill_fails(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "running"
+    job["pid"] = 1010
+    job["steps"][0]["status"] = "running"
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "running")
+
+    monkeypatch.setattr(oj, "_kill_process_tree", lambda pid: False)
+    monkeypatch.setattr(oj, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(oj, "_pid_looks_like_runner", lambda pid, job_id: True)
+
+    try:
+        oj.cancel_weekly_job(job["job_id"])
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError as exc:
+        assert "failed to kill" in str(exc).lower()
+    loaded = oj.read_status(job["job_id"])
+    assert loaded["state"] == "running"
 
 
 def test_get_active_weekly_job_reclaims_zombie(monkeypatch):
@@ -175,6 +308,22 @@ def test_cancel_rejects_pending_job(monkeypatch):
         assert "not running" in str(exc).lower()
     loaded = oj.read_status(job["job_id"])
     assert loaded["state"] == "pending"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only pid-reuse guard")
+def test_pid_looks_like_runner_matches_and_rejects(monkeypatch):
+    monkeypatch.setattr(
+        oj,
+        "_pid_command_line",
+        lambda pid: r'"C:\Python\python.exe" -m analysis.ops_jobs --run-job 20260101T000000Z_weekly',
+    )
+    assert oj._pid_looks_like_runner(123, "20260101T000000Z_weekly") is True
+
+    monkeypatch.setattr(oj, "_pid_command_line", lambda pid: r"C:\Windows\System32\notepad.exe")
+    assert oj._pid_looks_like_runner(123, "20260101T000000Z_weekly") is False
+
+    monkeypatch.setattr(oj, "_pid_command_line", lambda pid: "")
+    assert oj._pid_looks_like_runner(123, "20260101T000000Z_weekly") is True
 
 
 def test_cancel_rejects_succeeded_job(monkeypatch):
