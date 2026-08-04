@@ -47,6 +47,13 @@ $py = "..\.venv\Scripts\python.exe"
 
 浏览器：`http://localhost:8501`
 
+### Gap UI「运维」Tab
+
+等价于后台执行 `-Stage weekly`（阶段进度 + 日志），并支持清空 ops 记忆：
+
+- 周更参数：`SinceDays` / `ExtractLimit` / `SkipEnrich`
+- 清空记忆：对应 `scripts/clear_ops_memory.py`（预览 + `--yes` + 可选 `--focus` / `--delete-files`）
+
 ---
 
 ## 2. 日常 `main.py` 命令

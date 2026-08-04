@@ -21,7 +21,7 @@
 | 研究方案 | Generator × Critic，可行性门控 |
 | Ops memory | 同 focus 软避让近重复空白；成功后持久化 |
 
-界面 = **侧边栏** + **七个主标签页**。
+界面 = **侧边栏** + **八个主标签页**。
 
 ---
 
@@ -91,7 +91,7 @@ cd fulltext_workflow
 ├──────────────────────────────────────────────────────────────────┤
 │  [Debate Process] [Weekly Hotspot] [Visualization]               │
 │  [Evidence & Literature] [Gap Report]                            │
-│  [Data Feasibility (Fangxin LIS)] [Research Proposal]            │
+│  [Data Feasibility (Fangxin LIS)] [Research Proposal] [运维]     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -136,7 +136,7 @@ Extracted 为 0 时先跑抽取流水线。
 
 ---
 
-## 5. 七个主标签页
+## 5. 八个主标签页
 
 ### 5.1 Debate Process
 
@@ -251,12 +251,43 @@ V-01 常用字段：`disease_id`、`task_type`、`min_followup_months`、`requir
 
 ---
 
+### 5.8 运维
+
+**无需先辩论即可使用。** 后台跑周常流水线，并安全清空 ops memory。
+
+#### 周常一键更新
+
+| 操作 | 作用 |
+|------|------|
+| 回溯天数 / 抽取上限 / SkipEnrich | 同 `run_pipeline.ps1 -Stage weekly` 的 `-SinceDays` / `-ExtractLimit` / `-SkipEnrich` |
+| **启动周常更新** | 后台依次执行 weekly 的 10 步；已有任务在跑时按钮禁用 |
+| 进度条 + 步骤图标 | 查看各阶段 pending / running / succeeded / skipped / failed |
+| 日志 expander | 最近 200 行 stdout |
+| **刷新状态** | 手动刷新（支持时约 2 秒自动轮询） |
+| **取消任务** | 需勾选「确认取消」后生效 |
+
+启动后可切换到 **辩论 / 热点 / 可行性** 等其他标签页；任务在独立进程中运行，不阻塞 UI。侧边栏底部显示 `周更：空闲` 或 `周更：进行中 · <当前步骤>`。
+
+#### 清空 ops 记忆
+
+预览 `ops_runs` / `ops_gap_items` / `ops_proposals` 计数；**不影响** papers / KG / hotspot 表。
+
+| 选项 | 对应 CLI |
+|------|----------|
+| 全部 | `scripts/clear_ops_memory.py --yes` |
+| 仅当前焦点（侧边栏 focus 非空时可选） | `--focus "<focus>" --yes` |
+| 同时删除关联文件 | 加 `--delete-files` |
+
+须勾选 **「我确认清空」** 后「执行清空」才可用。CLI 等价见 [SCRIPTS.md](SCRIPTS.md) §3。
+
+---
+
 ## 6. 推荐工作流
 
 ### A. 周常闭环
 
 ```
-1. run_pipeline.ps1 -Stage weekly          # 增量 + 热点
+1. run_pipeline.ps1 -Stage weekly          # 增量 + 热点（或在 UI「运维」Tab 一键启动）
 2. （可选）main.py compute-gap-lifecycle --temporal-only
 3. .\run_gap_ui.ps1
 4. Weekly Hotspot 浏览 → 侧边栏 focus → Run Gap Debate
@@ -371,8 +402,10 @@ Extracted > 0？focus 是否过窄？API Key / 余额是否正常？
 | 手动测病种样本量 | Data Feasibility → V-01 |
 | 生成可立项方案 | Research Proposal → Generate |
 | 避免每周重复空白 | 保持 Use ops memory + Persist this run |
+| 后台跑 weekly | **运维** → 启动周常更新 |
+| 清空 ops 记忆 | **运维** → 预览后勾选确认再执行 |
 | 导出结果 | Gap Report / Proposal 的 Download |
 
 ---
 
-*文档对应当前 `gap_ui.py`（七标签页 + ops memory + Weekly Hotspot + Visualization）。界面变更后以源码为准。*
+*文档对应当前 `gap_ui.py`（八标签页 + ops memory + Weekly Hotspot + Visualization + 运维）。界面变更后以源码为准。*
