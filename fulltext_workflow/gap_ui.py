@@ -2154,9 +2154,21 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
             extra = [c for c in df_m.columns if c not in ordered]
             safe_table(df_m[ordered + extra])
         else:
-            safe_table(pd.DataFrame(payload.get("hot_combos", [])))
+            df_fallback = pd.DataFrame(payload.get("hot_combos", []))
+            fallback_order = [
+                c for c in ("method", "method_role") if c in df_fallback.columns
+            ]
+            fallback_extra = [
+                c for c in df_fallback.columns if c not in fallback_order
+            ]
+            safe_table(df_fallback[fallback_order + fallback_extra])
         with st.expander("方法×疾病明细（未折叠）", expanded=False):
-            safe_table(pd.DataFrame(payload.get("hot_combos", [])))
+            df_detail = pd.DataFrame(payload.get("hot_combos", []))
+            detail_order = [
+                c for c in ("method", "method_role") if c in df_detail.columns
+            ]
+            detail_extra = [c for c in df_detail.columns if c not in detail_order]
+            safe_table(df_detail[detail_order + detail_extra])
     with tab_o:
         opps = payload.get("emerging_gap_opportunities", [])
         st.caption(

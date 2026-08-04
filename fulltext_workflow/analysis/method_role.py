@@ -177,9 +177,24 @@ def load_method_roles() -> dict[str, str]:
             """
             SELECT name, method_role FROM entities
             WHERE type='Method' AND method_role IS NOT NULL AND method_role != ''
+            ORDER BY id
             """
         ).fetchall()
-    return {str(row["name"]): str(row["method_role"]) for row in rows}
+    roles: dict[str, str] = {}
+    for row in rows:
+        name = str(row["name"])
+        role = str(row["method_role"])
+        raw_key = _norm_key(name)
+        canonical_key = _norm_key(resolve_method_canonical(name))
+        for key in (canonical_key, raw_key):
+            if key in roles:
+                # Prefer a known role over unknown; between conflicting known
+                # aliases, preserve the first DB row's role deterministically.
+                if roles[key] == "unknown" and role != "unknown":
+                    roles[key] = role
+            else:
+                roles[key] = role
+    return roles
 
 
 def backfill_method_roles() -> dict[str, int]:

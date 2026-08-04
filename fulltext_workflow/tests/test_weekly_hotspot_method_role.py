@@ -11,6 +11,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import config  # noqa: E402
+import analysis.method_synonyms as method_synonyms  # noqa: E402
 from analysis.weekly_hotspot import (  # noqa: E402
     compute_emerging_gap_opportunities,
     compute_weekly_hotspots,
@@ -114,6 +115,25 @@ def test_weekly_hotspot_prefers_stored_method_role(monkeypatch):
     assert payload["active_methods"][0]["method_role"] == "tool"
     assert payload["hot_combos"][0]["method_role"] == "tool"
     assert payload["hot_combos_by_method"][0]["method_role"] == "tool"
+
+
+def test_weekly_hotspot_preserves_alias_stored_method_role(monkeypatch):
+    _tmp_db(monkeypatch)
+    alias = "opaque-method-alias"
+    canonical = "opaque-method-canonical"
+    monkeypatch.setitem(method_synonyms._METHOD_SYNONYMS, alias, canonical)
+    paper_id = _paper("stored-alias-role", 1)
+    _edge("stored-alias-role", paper_id, alias, method_role="tool")
+    _related_edge(
+        "stored-alias-role", paper_id, "TARGETS_DISEASE", "disease-a", "Disease"
+    )
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+
+    assert payload["active_methods"][0]["name"] == canonical
+    assert payload["active_methods"][0]["method_role"] == "tool"
+    assert payload["hot_combos"][0]["method"] == canonical
+    assert payload["hot_combos"][0]["method_role"] == "tool"
 
 
 def test_methods_ui_renders_five_role_sections_in_order(monkeypatch):
