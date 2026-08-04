@@ -17,7 +17,7 @@ from analysis.method_maturity import (
     maturity_penalty,
     nascent_bonus,
 )
-from analysis.method_role import annotate_method_role
+from analysis.method_role import annotate_method_role, load_method_roles
 from analysis.method_synonyms import resolve_method_canonical
 from db.schema import (
     get_conn,
@@ -622,16 +622,21 @@ def compute_weekly_hotspots(
     )
     limitations = compute_emerging_limitations(window_days=window)
     counts = corpus_applies_method_counts_canonical()
+    role_map = load_method_roles()
     annotate_method_rows(methods, counts=counts)
-    annotate_method_role(methods)
+    annotate_method_role(methods, role_by_name=role_map)
     active_methods = list(methods)
     emerging_methods = [
         row for row in methods if row.get("method_maturity") != "established"
     ]
     annotate_method_rows(combos, name_key="method", counts=counts)
     annotate_method_rows(combos_by_method, name_key="method", counts=counts)
-    annotate_method_role(combos, name_key="method")
-    annotate_method_role(combos_by_method, name_key="method")
+    annotate_method_role(combos, name_key="method", role_by_name=role_map)
+    annotate_method_role(
+        combos_by_method,
+        name_key="method",
+        role_by_name=role_map,
+    )
     _maturity_sort = lambda row: (
         0 if row.get("method_maturity") != "established" else 1,
         -float(row.get("emerging_score") or 0),
@@ -862,6 +867,7 @@ def compute_emerging_gap_opportunities(
     from analysis.task_quality import classify_task_quality
     from extractor.entity_normalize import normalize_entity_name
 
+    role_map = load_method_roles()
     data = payload or compute_weekly_hotspots(
         window_days=window_days,
         prior_days=prior_days,
@@ -1053,7 +1059,7 @@ def compute_emerging_gap_opportunities(
     )
     top_n = limit if limit is not None else min(20, config.HOTSPOT_TOP_N)
     rows = rows[:top_n]
-    annotate_method_role(rows, name_key="method")
+    annotate_method_role(rows, name_key="method", role_by_name=role_map)
     return rows
 
 

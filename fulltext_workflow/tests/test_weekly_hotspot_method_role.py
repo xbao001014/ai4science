@@ -44,8 +44,14 @@ def _paper(pmid: str, days_ago: int) -> int:
     })
 
 
-def _edge(pmid: str, paper_id: int, name: str) -> None:
-    entity_id = upsert_entity(name, "Method")
+def _edge(
+    pmid: str,
+    paper_id: int,
+    name: str,
+    *,
+    method_role: str | None = None,
+) -> None:
+    entity_id = upsert_entity(name, "Method", method_role=method_role)
     insert_relation(
         "Paper", paper_id, "APPLIES_METHOD", "Method", entity_id,
         source_pmid=pmid, status="active",
@@ -94,11 +100,65 @@ def test_emerging_and_active_have_method_role(monkeypatch):
         assert row.get("method_role") in {"backbone", "aggregator", "unknown"}
 
 
+def test_weekly_hotspot_prefers_stored_method_role(monkeypatch):
+    _tmp_db(monkeypatch)
+    method = "opaque-method-z"
+    paper_id = _paper("stored-role", 1)
+    _edge("stored-role", paper_id, method, method_role="tool")
+    _related_edge(
+        "stored-role", paper_id, "TARGETS_DISEASE", "disease-a", "Disease"
+    )
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+
+    assert payload["active_methods"][0]["method_role"] == "tool"
+    assert payload["hot_combos"][0]["method_role"] == "tool"
+    assert payload["hot_combos_by_method"][0]["method_role"] == "tool"
+
+
+def test_methods_ui_renders_five_role_sections_in_order(monkeypatch):
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-key")
+    import gap_ui
+
+    headings: list[str] = []
+    rendered_roles: list[str] = []
+    monkeypatch.setattr(gap_ui.st, "subheader", headings.append)
+    monkeypatch.setattr(
+        gap_ui,
+        "safe_table",
+        lambda frame: rendered_roles.append(str(frame.iloc[0]["method_role"])),
+    )
+    rows = [
+        {"name": "unclassified", "method_role": "not-a-role"},
+        {"name": "tool", "method_role": "tool"},
+        {"name": "classic", "method_role": "classical_ml"},
+        {"name": "aggregator", "method_role": "aggregator"},
+        {"name": "backbone", "method_role": "backbone"},
+    ]
+
+    gap_ui._render_methods_by_role(rows)
+
+    assert rendered_roles == [
+        "backbone",
+        "aggregator",
+        "classical_ml",
+        "tool",
+        "not-a-role",
+    ]
+    assert headings == [
+        "基座 / 骨干（1）",
+        "聚合器 / 贡献模块（1）",
+        "传统 ML（1）",
+        "工具 / 平台（1）",
+        "未分类（1）",
+    ]
+
+
 def test_emerging_gap_opportunity_has_method_role(monkeypatch):
     _tmp_db(monkeypatch)
-    method = "niche-mil-aggregator-x"
+    method = "opaque-opportunity-method"
     support_paper = _paper("support", 2)
-    _edge("support", support_paper, method)
+    _edge("support", support_paper, method, method_role="tool")
     _related_edge(
         "support", support_paper, "TARGETS_DISEASE", "disease-a", "Disease"
     )
@@ -128,4 +188,4 @@ def test_emerging_gap_opportunity_has_method_role(monkeypatch):
     rows = compute_emerging_gap_opportunities(window_days=14, payload=payload)
 
     assert rows
-    assert rows[0]["method_role"] == "aggregator"
+    assert rows[0]["method_role"] == "tool"

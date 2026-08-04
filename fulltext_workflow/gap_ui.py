@@ -372,6 +372,33 @@ def safe_table(df: pd.DataFrame, height: int | None = None, **_kwargs) -> None:
         st.markdown(df.to_html(index=False), unsafe_allow_html=True)
 
 
+_METHOD_ROLE_SECTIONS = (
+    ("backbone", "基座 / 骨干"),
+    ("aggregator", "聚合器 / 贡献模块"),
+    ("classical_ml", "传统 ML"),
+    ("tool", "工具 / 平台"),
+    ("unknown", "未分类"),
+)
+
+
+def _render_methods_by_role(rows: list[dict]) -> None:
+    buckets = {key: [] for key, _title in _METHOD_ROLE_SECTIONS}
+    for row in rows or []:
+        role = str(row.get("method_role") or "unknown")
+        if role not in buckets:
+            role = "unknown"
+        buckets[role].append(row)
+    if not any(buckets[key] for key, _title in _METHOD_ROLE_SECTIONS):
+        st.info("本窗口暂无方法条目。")
+        return
+    for key, title in _METHOD_ROLE_SECTIONS:
+        part = buckets[key]
+        if not part:
+            continue
+        st.subheader(f"{title}（{len(part)}）")
+        safe_table(pd.DataFrame(part))
+
+
 def remember_main_tab(label_or_slug: str) -> None:
     if label_or_slug in MAIN_TAB_BY_SLUG:
         slug = label_or_slug
@@ -2094,11 +2121,11 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     with tab_m:
         st.caption(
             f"新苗头；已过滤「成熟常用」方法。已按方法同义词软归并。"
-            f"当前最少近窗篇数 = **{min_recent}**。"
+            f"当前最少近窗篇数 = **{min_recent}**。按方法角色分区展示。"
         )
-        safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
+        _render_methods_by_role(payload.get("emerging_methods", []))
         with st.expander("本周活跃（含成熟常用方法）", expanded=False):
-            safe_table(pd.DataFrame(payload.get("active_methods", [])))
+            _render_methods_by_role(payload.get("active_methods", []))
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
@@ -2111,6 +2138,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         if by_method:
             cols = [
                 "method",
+                "method_role",
                 "disease_cnt",
                 "diseases",
                 "recent_cnt",
@@ -2140,6 +2168,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         if opps:
             opp_cols = [
                 "method",
+                "method_role",
                 "disease",
                 "bridge_task",
                 "bridge_quality",
