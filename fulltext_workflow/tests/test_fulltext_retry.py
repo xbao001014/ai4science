@@ -160,6 +160,19 @@ def test_fetch_all_fulltext_no_retry_skips_requeue(monkeypatch):
     assert st == "unavailable"
 
 
+def test_fetch_all_fulltext_rejects_negative_pdf_retry_limit(monkeypatch):
+    import pytest
+
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
+    monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)
+
+    with pytest.raises(ValueError, match="pdf_retry_limit must be >= 0"):
+        ff.fetch_all_fulltext(retry=False, pdf_retry_limit=-1)
+
+
 def test_fetch_all_fulltext_default_requeues(monkeypatch):
     from fetcher import fulltext_fetcher as ff
 

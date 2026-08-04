@@ -24,8 +24,14 @@ from fetcher.pmc_fetcher import fetch_jats_fulltext
 from fetcher.scansci_fetcher import download_pdf
 
 
+def _validate_pdf_retry_limit(limit: int | None, *, param: str = "pdf_retry_limit") -> None:
+    if limit is not None and limit < 0:
+        raise ValueError(f"{param} must be >= 0, got {limit}")
+
+
 def _papers_for_pdf_fallback(limit: int | None = None) -> list[sqlite3.Row]:
     """jats_unavailable papers, newest first. limit=None or 0 → no cap."""
+    _validate_pdf_retry_limit(limit, param="limit")
     sql = """
         SELECT id, pmid, doi, pmc_id, full_text_status, year, created_at
         FROM papers
@@ -106,6 +112,7 @@ def fetch_all_fulltext(
     """Three-tier fulltext acquisition (tiers 1–2; tier 3 is abstract at extract)."""
     if pdf_retry_limit is None:
         pdf_retry_limit = config.FULLTEXT_PDF_RETRY_LIMIT
+    _validate_pdf_retry_limit(pdf_retry_limit)
 
     retried = 0
     if retry or force_retry:
