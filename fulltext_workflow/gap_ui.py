@@ -1987,6 +1987,32 @@ def _load_weekly_hotspot_payload(
     return payload
 
 
+_METHOD_ROLE_SECTIONS = (
+    ("backbone", "基座 / 骨干"),
+    ("aggregator", "聚合器 / 贡献模块"),
+    ("unknown", "未分类"),
+)
+
+
+def _render_methods_by_role(rows: list[dict]) -> None:
+    """Split method rows into role sections; preserve relative order within each."""
+    buckets: dict[str, list[dict]] = {key: [] for key, _ in _METHOD_ROLE_SECTIONS}
+    for row in rows or []:
+        role = str(row.get("method_role") or "unknown")
+        if role not in buckets:
+            role = "unknown"
+        buckets[role].append(row)
+    if not any(buckets.values()):
+        st.info("当前窗口暂无方法数据。")
+        return
+    for key, title in _METHOD_ROLE_SECTIONS:
+        part = buckets[key]
+        if not part:
+            continue
+        st.subheader(title)
+        safe_table(pd.DataFrame(part))
+
+
 def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
     """Weekly publication hotspots, WoW deltas, gap opportunities, optional LLM brief."""
     from analysis.hotspot_brief import save_hotspot_brief
@@ -2094,9 +2120,13 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
             f"新苗头；已过滤「成熟常用」方法。已按方法同义词软归并。"
             f"当前最少近窗篇数 = **{min_recent}**。"
         )
-        safe_table(pd.DataFrame(payload.get("emerging_methods", [])))
+        st.caption(
+            "方法已按角色分为基座（backbone）/ 聚合器（aggregator）/ 未分类；"
+            "分类为运行时规则，不影响热度分。"
+        )
+        _render_methods_by_role(payload.get("emerging_methods") or [])
         with st.expander("本周活跃（含成熟常用方法）", expanded=False):
-            safe_table(pd.DataFrame(payload.get("active_methods", [])))
+            _render_methods_by_role(payload.get("active_methods") or [])
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
@@ -2109,6 +2139,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         if by_method:
             cols = [
                 "method",
+                "method_role",
                 "disease_cnt",
                 "diseases",
                 "recent_cnt",
@@ -2138,6 +2169,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         if opps:
             opp_cols = [
                 "method",
+                "method_role",
                 "disease",
                 "bridge_task",
                 "bridge_quality",
