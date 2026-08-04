@@ -31,6 +31,15 @@ WEEKLY_STEPS: list[dict[str, str]] = [
 
 _DONE_STEP_STATUSES = frozenset({"succeeded", "skipped"})
 
+if sys.platform == "win32":
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    _kernel32.OpenProcess.restype = ctypes.c_void_p
+    _kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    _kernel32.GetExitCodeProcess.restype = ctypes.c_bool
+    _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _kernel32.CloseHandle.restype = ctypes.c_bool
+
 
 class OpsJobError(Exception):
     """Raised for invalid weekly ops job operations (e.g. already running)."""
@@ -265,16 +274,16 @@ def pid_is_alive(pid: int) -> bool:
         return False
     if sys.platform == "win32":
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:
             still_active = 259
             exit_code = ctypes.c_ulong()
-            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ok = _kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
             return bool(ok) and exit_code.value == still_active
         finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            _kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -377,6 +386,10 @@ def cancel_weekly_job(job_id: str | None = None) -> dict:
     job = read_status(job_id)
     if job is None:
         raise OpsJobError(f"unknown job: {job_id}")
+
+    state = job.get("state")
+    if state != "running":
+        raise OpsJobError(f"weekly job {job_id} is not running (state={state!r})")
 
     pid = job.get("pid")
     if pid and pid_is_alive(pid):

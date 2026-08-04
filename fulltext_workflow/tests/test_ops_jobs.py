@@ -162,3 +162,32 @@ def test_get_active_weekly_job_reclaims_zombie(monkeypatch):
 def test_get_active_weekly_job_none_when_no_current(monkeypatch):
     _tmp_jobs(monkeypatch)
     assert oj.get_active_weekly_job() is None
+
+
+def test_cancel_rejects_pending_job(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    assert job["state"] == "pending"
+    try:
+        oj.cancel_weekly_job(job["job_id"])
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError as exc:
+        assert "not running" in str(exc).lower()
+    loaded = oj.read_status(job["job_id"])
+    assert loaded["state"] == "pending"
+
+
+def test_cancel_rejects_succeeded_job(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job()
+    job["state"] = "succeeded"
+    job["finished_at"] = "2026-01-01T00:00:00Z"
+    oj.write_status(job)
+    oj.write_current(job["job_id"], "succeeded")
+    try:
+        oj.cancel_weekly_job(job["job_id"])
+        assert False, "expected OpsJobError"
+    except oj.OpsJobError as exc:
+        assert "not running" in str(exc).lower()
+    loaded = oj.read_status(job["job_id"])
+    assert loaded["state"] == "succeeded"
