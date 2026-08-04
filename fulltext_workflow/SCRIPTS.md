@@ -67,6 +67,7 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py watch-fetch                 # 另开终端看 fetch 进度
 & $py main.py backfill-date-precision     # 存量补 date_precision（PubMed 重拉日期）
 & $py main.py backfill-date-precision --limit 200
+& $py main.py backfill-method-roles       # entities.method_role 规则回填
 & $py main.py enrich-s2
 & $py main.py import-if                   # 默认 data/jcr.csv
 & $py main.py fetch-fulltext

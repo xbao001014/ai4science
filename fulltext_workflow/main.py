@@ -230,6 +230,15 @@ def cmd_backfill_date_precision(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_backfill_method_roles(_args: argparse.Namespace) -> None:
+    from analysis.method_role import backfill_method_roles
+    from db.schema import init_db
+
+    init_db()
+    counts = backfill_method_roles()
+    print(counts)
+
+
 def cmd_watch_fetch(args: argparse.Namespace) -> None:
     from utils.fetch_progress import watch_fetch_progress
 
@@ -723,6 +732,11 @@ def main() -> None:
         help="Max papers to backfill (0 = all missing)",
     )
 
+    sub.add_parser(
+        "backfill-method-roles",
+        help="Classify and persist roles for Method entities",
+    )
+
     p_watch = sub.add_parser(
         "watch-fetch",
         help="Live PubMed fetch progress (poll DB; run in a second terminal)",
@@ -819,6 +833,7 @@ def main() -> None:
         "idea-pipeline": cmd_idea_pipeline,
         "stats": cmd_stats,
         "backfill-date-precision": cmd_backfill_date_precision,
+        "backfill-method-roles": cmd_backfill_method_roles,
         "watch-fetch": cmd_watch_fetch,
         "run-all": cmd_run_all,
         "run-db": cmd_run_db,

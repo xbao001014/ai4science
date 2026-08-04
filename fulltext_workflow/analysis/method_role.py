@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Literal
 
 from analysis.method_synonyms import resolve_method_canonical
@@ -166,6 +167,37 @@ def resolve_method_role(name: str, llm_role: str | None = None) -> MethodRole:
         if hint in VALID_METHOD_ROLES:
             return hint  # type: ignore[return-value]
     return "unknown"
+
+
+def load_method_roles() -> dict[str, str]:
+    from db.schema import get_conn
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT name, method_role FROM entities
+            WHERE type='Method' AND method_role IS NOT NULL AND method_role != ''
+            """
+        ).fetchall()
+    return {str(row["name"]): str(row["method_role"]) for row in rows}
+
+
+def backfill_method_roles() -> dict[str, int]:
+    from db.schema import get_conn
+
+    counts: Counter[str] = Counter()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name FROM entities WHERE type='Method'"
+        ).fetchall()
+        for row in rows:
+            role = classify_method_role(str(row["name"]))
+            conn.execute(
+                "UPDATE entities SET method_role=? WHERE id=?",
+                (role, row["id"]),
+            )
+            counts[role] += 1
+    return dict(counts)
 
 
 def annotate_method_role(

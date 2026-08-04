@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS entities (
     cui         TEXT,
     aliases     TEXT,
     access_class TEXT,
+    method_role TEXT,
     UNIQUE(name, type)
 );
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
@@ -335,6 +336,8 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
 
     if "access_class" not in entity_cols:
         conn.execute("ALTER TABLE entities ADD COLUMN access_class TEXT")
+    if "method_role" not in entity_cols:
+        conn.execute("ALTER TABLE entities ADD COLUMN method_role TEXT")
 
     for col, ddl in (
         ("status", "ALTER TABLE relations ADD COLUMN status TEXT DEFAULT 'active'"),
@@ -803,6 +806,7 @@ def upsert_entity(
     entity_type: str,
     cui: str = "",
     access_class: str | None = None,
+    method_role: str | None = None,
 ) -> int:
     from extractor.dataset_access import stronger_access
 
@@ -813,9 +817,15 @@ def upsert_entity(
         if ac not in ("public", "private", "unknown"):
             ac = "unknown"
 
+    resolved_role = None
+    if entity_type == "Method":
+        from analysis.method_role import resolve_method_role
+
+        resolved_role = resolve_method_role(name, method_role)
+
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id, access_class FROM entities WHERE name=? AND type=?",
+            "SELECT id, access_class, method_role FROM entities WHERE name=? AND type=?",
             (normalized, entity_type),
         ).fetchone()
         if existing:
@@ -826,10 +836,27 @@ def upsert_entity(
                         "UPDATE entities SET access_class=? WHERE id=?",
                         (merged, existing["id"]),
                     )
+            if (
+                entity_type == "Method"
+                and resolved_role is not None
+                and resolved_role != "unknown"
+                and resolved_role != existing["method_role"]
+            ):
+                conn.execute(
+                    "UPDATE entities SET method_role=? WHERE id=?",
+                    (resolved_role, existing["id"]),
+                )
             return existing["id"]
         conn.execute(
-            "INSERT INTO entities (name, type, cui, access_class) VALUES (?,?,?,?)",
-            (normalized, entity_type, cui or None, ac if entity_type == "Dataset" else None),
+            """INSERT INTO entities
+               (name, type, cui, access_class, method_role) VALUES (?,?,?,?,?)""",
+            (
+                normalized,
+                entity_type,
+                cui or None,
+                ac if entity_type == "Dataset" else None,
+                resolved_role if entity_type == "Method" else None,
+            ),
         )
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
