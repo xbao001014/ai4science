@@ -180,6 +180,8 @@ flowchart TD
 2. ScanSci PDF + MinerU → `raw/pdfs/`、`raw/mineru_output/`
 3. 均失败则标记 `full_text_status=unavailable`，后续 extract 退回摘要
 
+**重试：** 默认把冷却期满（`FULLTEXT_RETRY_COOLDOWN_DAYS`，默认 7 天）的 `unavailable` / `jats_unavailable` 重置为 `pending` 再抓。JATS 不限量；PDF/MinerU 受 `FULLTEXT_PDF_RETRY_LIMIT`（默认 500）限制。`--no-retry` 关闭重试；`--force-retry` 忽略冷却。周常 `fetch-fulltext` 使用默认行为，无需额外步骤。
+
 ---
 
 ### Phase 4 — LLM 知识抽取

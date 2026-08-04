@@ -45,6 +45,11 @@ def test_build_weekly_argv_skip_enrich(monkeypatch):
     assert ext == ["extract", "--limit", "5", "--core-only"]
 
 
+def test_build_weekly_argv_fetch_fulltext_unchanged():
+    params = {"since_days": 14, "extract_limit": 0, "skip_enrich": False}
+    assert oj.build_weekly_argv("fetch-fulltext", params) == ["fetch-fulltext"]
+
+
 def test_tail_log_and_progress(monkeypatch):
     _tmp_jobs(monkeypatch)
     job = oj.create_weekly_job()

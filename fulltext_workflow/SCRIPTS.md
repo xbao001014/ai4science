@@ -71,6 +71,10 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py enrich-s2
 & $py main.py import-if                   # 默认 data/jcr.csv
 & $py main.py fetch-fulltext
+& $py main.py fetch-fulltext --no-retry
+& $py main.py fetch-fulltext --force-retry
+& $py main.py fetch-fulltext --pdf-retry-limit 100
+# env: FULLTEXT_RETRY_COOLDOWN_DAYS=7  FULLTEXT_PDF_RETRY_LIMIT=500
 & $py main.py stats
 ```
 

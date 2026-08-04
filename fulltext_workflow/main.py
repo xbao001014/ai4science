@@ -53,12 +53,22 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     print("\n[Fetch] Stats:", db_stats())
 
 
-def cmd_fetch_fulltext(_args: argparse.Namespace) -> None:
+def cmd_fetch_fulltext(args: argparse.Namespace) -> None:
     from db.schema import db_stats, init_db
     from fetcher.fulltext_fetcher import fetch_all_fulltext
 
     init_db()
-    fetch_all_fulltext(cache_xml=True)
+    if getattr(args, "no_retry", False) and getattr(args, "force_retry", False):
+        raise SystemExit("Use only one of --no-retry / --force-retry")
+    retry = not getattr(args, "no_retry", False)
+    force_retry = bool(getattr(args, "force_retry", False))
+    pdf_limit = getattr(args, "pdf_retry_limit", None)
+    fetch_all_fulltext(
+        cache_xml=True,
+        retry=retry,
+        force_retry=force_retry,
+        pdf_retry_limit=pdf_limit,
+    )
     print("\n[Fetch-Fulltext] Stats:", db_stats())
 
 
@@ -513,7 +523,26 @@ def main() -> None:
         help=f"IF year label (default: {config.JCR_IF_YEAR})",
     )
 
-    sub.add_parser("fetch-fulltext", help="Fetch full text: JATS → PDF/MinerU fallback")
+    p_ft = sub.add_parser(
+        "fetch-fulltext",
+        help="Fetch full text: JATS → PDF/MinerU fallback (retries cooled-down unavailable)",
+    )
+    p_ft.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="Do not requeue unavailable/jats_unavailable; only process pending",
+    )
+    p_ft.add_argument(
+        "--force-retry",
+        action="store_true",
+        help="Requeue all unavailable/jats_unavailable ignoring cooldown",
+    )
+    p_ft.add_argument(
+        "--pdf-retry-limit",
+        type=int,
+        default=None,
+        help="Max PDF/MinerU attempts this run (default: config FULLTEXT_PDF_RETRY_LIMIT; 0=unlimited)",
+    )
 
     p_ext = sub.add_parser("extract", help="LLM section extraction")
     p_ext.add_argument(
