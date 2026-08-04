@@ -66,11 +66,38 @@ def test_classical_ml_aliases():
     assert classify_method_role("cox proportional hazards regression") == "classical_ml"
 
 
+def test_expanded_classical_ml_seeds():
+    for name in (
+        "lasso",
+        "decision tree",
+        "knn",
+        "k-nearest neighbors",
+        "pca",
+        "principal component analysis",
+        "gbm",
+        "gradient boosting machine",
+        "nomogram",
+        "random survival forests",
+    ):
+        assert classify_method_role(name) == "classical_ml"
+
+
+def test_cox_biomarker_is_not_classical_ml():
+    assert classify_method_role("cox-2") != "classical_ml"
+    assert classify_method_role("COX2 expression") != "classical_ml"
+    assert classify_method_role("Cox regression") == "classical_ml"
+
+
 def test_tool_aliases():
     assert classify_method_role("qupath") == "tool"
     assert classify_method_role("seurat") == "tool"
     assert classify_method_role("gsva") == "tool"
     assert classify_method_role("vosviewer") == "tool"
+
+
+def test_expanded_tool_seeds():
+    for name in ("limma", "cibersort", "cellchat", "wgcna", "ssGSEA", "gsea"):
+        assert classify_method_role(name) == "tool"
 
 
 def test_backbone_missings():
@@ -81,6 +108,20 @@ def test_backbone_missings():
     assert classify_method_role("convolutional neural network") == "backbone"
     assert classify_method_role("xception") == "backbone"
     assert classify_method_role("prov-gigapath") == "backbone"
+
+
+def test_expanded_backbone_and_aggregator_patterns():
+    for name in (
+        "convolutional neural networks",
+        "resunet++",
+        "TransUNet",
+        "DoubleU-Net",
+        "transformer",
+        "YOLOv8",
+    ):
+        assert classify_method_role(name) == "backbone"
+    assert classify_method_role("CLAM-SB") == "aggregator"
+    assert classify_method_role("CLAM-MB") == "aggregator"
 
 
 def test_resolve_rule_beats_hint():

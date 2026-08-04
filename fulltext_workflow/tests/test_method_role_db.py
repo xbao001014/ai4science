@@ -64,3 +64,23 @@ def test_backfill_sets_roles(monkeypatch):
     roles = load_method_roles()
     assert roles["random forest"] == "classical_ml"
     assert roles["qupath"] == "tool"
+
+
+def test_backfill_preserves_hint_role_when_rule_is_unknown(monkeypatch):
+    _tmp(monkeypatch)
+    upsert_entity("novel-widget-hint", "Method", method_role="tool")
+
+    counts = backfill_method_roles()
+
+    assert counts.get("unknown", 0) == 1
+    assert load_method_roles()["novel-widget-hint"] == "tool"
+
+
+def test_backfill_force_overwrites_hint_role_with_unknown(monkeypatch):
+    _tmp(monkeypatch)
+    upsert_entity("novel-widget-hint", "Method", method_role="tool")
+
+    counts = backfill_method_roles(force=True)
+
+    assert counts.get("unknown", 0) == 1
+    assert load_method_roles()["novel-widget-hint"] == "unknown"

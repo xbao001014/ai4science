@@ -48,6 +48,7 @@ _BACKBONE_ALIASES = frozenset({
     "dinov2",
     "cnn",
     "convolutional neural network",
+    "convolutional neural networks",
     "xception",
     "prov-gigapath",
 })
@@ -62,11 +63,22 @@ _AGGREGATOR_ALIASES = frozenset({
 
 _CLASSICAL_ML_ALIASES = frozenset({
     "random forest",
+    "random survival forest",
+    "random survival forests",
     "support vector machine",
     "xgboost",
     "lightgbm",
     "logistic regression",
     "cox proportional hazards regression",
+    "lasso",
+    "decision tree",
+    "knn",
+    "k-nearest neighbors",
+    "pca",
+    "principal component analysis",
+    "gbm",
+    "gradient boosting machine",
+    "nomogram",
 })
 
 _TOOL_ALIASES = frozenset({
@@ -74,6 +86,12 @@ _TOOL_ALIASES = frozenset({
     "seurat",
     "gsva",
     "vosviewer",
+    "limma",
+    "cibersort",
+    "cellchat",
+    "wgcna",
+    "ssgsea",
+    "gsea",
 })
 
 # Aggregator cues — no bare \battention\b.
@@ -88,6 +106,7 @@ _AGGREGATOR_PATTERNS = tuple(
         r"fusion\s+module",
         r"bag[\s\-]?level",
         r"instance[\s\-]?aggregat",
+        r"\bclam\b",
     )
 )
 
@@ -106,6 +125,9 @@ _BACKBONE_PATTERNS = tuple(
         r"\bconvnext",
         r"\bencoder\b",
         r"\bbackbone\b",
+        r"\b(?:u[\s\-]?net|resunet|transunet|doubleu[\s\-]?net)\b",
+        r"\btransformer\b",
+        r"\byolo(?:v?\d+)?\b",
     )
 )
 
@@ -118,11 +140,12 @@ _CLASSICAL_ML_PATTERNS = tuple(
         r"\bcatboost\b",
         r"\blogistic\s+regression",
         r"\bsupport\s+vector",
-        r"\bcox\b",
+        r"\bcox(?!-?\d)\b.*\b(?:regression|proportional\s+hazards?|ph\s+model)\b",
         r"\bkaplan[\s\-]?meier",
         r"\bnaive\s+bayes",
         r"\belastic\s+net\b",
         r"\bgradient\s+boost",
+        r"\brandom\s+survival\s+forests?\b",
     )
 )
 
@@ -197,20 +220,22 @@ def load_method_roles() -> dict[str, str]:
     return roles
 
 
-def backfill_method_roles() -> dict[str, int]:
+def backfill_method_roles(*, force: bool = False) -> dict[str, int]:
     from db.schema import get_conn
 
     counts: Counter[str] = Counter()
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, name FROM entities WHERE type='Method'"
+            "SELECT id, name, method_role FROM entities WHERE type='Method'"
         ).fetchall()
         for row in rows:
             role = classify_method_role(str(row["name"]))
-            conn.execute(
-                "UPDATE entities SET method_role=? WHERE id=?",
-                (role, row["id"]),
-            )
+            existing = row["method_role"]
+            if force or role != "unknown" or not str(existing or "").strip():
+                conn.execute(
+                    "UPDATE entities SET method_role=? WHERE id=?",
+                    (role, row["id"]),
+                )
             counts[role] += 1
     return dict(counts)
 

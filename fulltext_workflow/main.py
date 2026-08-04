@@ -230,13 +230,20 @@ def cmd_backfill_date_precision(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_backfill_method_roles(_args: argparse.Namespace) -> None:
+def cmd_backfill_method_roles(args: argparse.Namespace) -> None:
     from analysis.method_role import backfill_method_roles
     from db.schema import init_db
 
     init_db()
-    counts = backfill_method_roles()
-    print(counts)
+    counts = backfill_method_roles(force=args.force)
+    roles = ("backbone", "aggregator", "classical_ml", "tool", "unknown")
+    total = sum(counts.get(role, 0) for role in roles)
+    unknown_rate = counts.get("unknown", 0) / total if total else 0.0
+    formatted_counts = " ".join(f"{role}={counts.get(role, 0)}" for role in roles)
+    print(
+        f"[Backfill-MethodRoles] total={total} {formatted_counts} "
+        f"unknown_rate={unknown_rate:.1%} force={args.force}"
+    )
 
 
 def cmd_watch_fetch(args: argparse.Namespace) -> None:
@@ -732,9 +739,14 @@ def main() -> None:
         help="Max papers to backfill (0 = all missing)",
     )
 
-    sub.add_parser(
+    p_backfill_roles = sub.add_parser(
         "backfill-method-roles",
         help="Classify and persist roles for Method entities",
+    )
+    p_backfill_roles.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite hint-derived roles even when rules classify them as unknown",
     )
 
     p_watch = sub.add_parser(

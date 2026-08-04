@@ -2122,6 +2122,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.caption(
             f"新苗头；已过滤「成熟常用」方法。已按方法同义词软归并。"
             f"当前最少近窗篇数 = **{min_recent}**。按方法角色分区展示。"
+            "角色规则优先，抽取提示仅补全未知项；角色不影响热度分数。"
         )
         _render_methods_by_role(payload.get("emerging_methods", []))
         with st.expander("本周活跃（含成熟常用方法）", expanded=False):

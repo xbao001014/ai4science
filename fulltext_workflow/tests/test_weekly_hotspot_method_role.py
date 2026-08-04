@@ -96,9 +96,13 @@ def test_emerging_and_active_have_method_role(monkeypatch):
     assert payload.get("hot_combos")
     assert payload.get("hot_combos_by_method")
     for row in payload.get("hot_combos") or []:
-        assert row.get("method_role") in {"backbone", "aggregator", "unknown"}
+        assert row.get("method_role") in {
+            "backbone", "aggregator", "classical_ml", "tool", "unknown",
+        }
     for row in payload.get("hot_combos_by_method") or []:
-        assert row.get("method_role") in {"backbone", "aggregator", "unknown"}
+        assert row.get("method_role") in {
+            "backbone", "aggregator", "classical_ml", "tool", "unknown",
+        }
 
 
 def test_weekly_hotspot_prefers_stored_method_role(monkeypatch):
