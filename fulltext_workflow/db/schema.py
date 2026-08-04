@@ -717,6 +717,44 @@ def mark_fulltext_status(
         )
 
 
+def requeue_cooled_fulltext_failures(
+    *,
+    cooldown_days: int,
+    force: bool = False,
+) -> int:
+    """Reset cooled-down unavailable/jats_unavailable papers to pending.
+
+    Returns the number of rows updated. Does not touch available/pdf_available
+    or extraction/reconcile flags.
+    """
+    if cooldown_days < 0:
+        raise ValueError("cooldown_days must be >= 0")
+    with get_conn() as conn:
+        if force:
+            cur = conn.execute(
+                """UPDATE papers SET
+                       full_text_status='pending',
+                       full_text_fetched_at=CURRENT_TIMESTAMP
+                   WHERE full_text_status IN ('unavailable', 'jats_unavailable')
+                     AND pmid IS NOT NULL"""
+            )
+        else:
+            cur = conn.execute(
+                """UPDATE papers SET
+                       full_text_status='pending',
+                       full_text_fetched_at=CURRENT_TIMESTAMP
+                   WHERE full_text_status IN ('unavailable', 'jats_unavailable')
+                     AND pmid IS NOT NULL
+                     AND (
+                       full_text_fetched_at IS NULL
+                       OR julianday('now') - julianday(full_text_fetched_at)
+                          >= ?
+                     )""",
+                (float(cooldown_days),),
+            )
+        return int(cur.rowcount)
+
+
 def delete_paper_sections(paper_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM document_sections WHERE paper_id=?", (paper_id,))

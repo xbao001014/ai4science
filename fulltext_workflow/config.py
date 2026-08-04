@@ -56,6 +56,13 @@ MINERU_LANG: str = os.getenv("MINERU_LANG", "en")
 # auto: CUDA if available, else CPU; override with cuda | cpu
 MINERU_DEVICE: str = os.getenv("MINERU_DEVICE", "auto")
 
+# Cooldown retry for papers previously marked unavailable / jats_unavailable
+FULLTEXT_RETRY_COOLDOWN_DAYS: int = int(
+    os.getenv("FULLTEXT_RETRY_COOLDOWN_DAYS", "7")
+)
+# Max ScanSci+MinerU attempts per fetch-fulltext run; 0 = unlimited
+FULLTEXT_PDF_RETRY_LIMIT: int = int(os.getenv("FULLTEXT_PDF_RETRY_LIMIT", "500"))
+
 # ── Citation / IF enrichment (gap research weighting) ────────────────────────
 S2_API_KEY: str = os.getenv("S2_API_KEY", "")
 # auto: try S2 if key works, else OpenAlex | openalex | semantic_scholar
