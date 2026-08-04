@@ -162,6 +162,7 @@ from viz.evidence_viewer import (  # noqa: E402
     render_evidence_viewer_html,
     resolve_focus_extraction,
 )
+from ops_panel import render_ops_sidebar_chip, render_ops_tab  # noqa: E402
 
 ROLE_COLOR = {
     "optimist": "#2ca02c",
@@ -302,6 +303,7 @@ MAIN_TAB_ENTRIES: list[tuple[str, str]] = [
     ("gap-report", "研究空白报告"),
     ("data-feasibility-fangxin-lis", "数据可行性（方信）"),
     ("research-proposal", "研究提案"),
+    ("ops-maintenance", "运维"),
 ]
 MAIN_TAB_LABELS = [label for _, label in MAIN_TAB_ENTRIES]
 MAIN_TAB_BY_SLUG = {slug: label for slug, label in MAIN_TAB_ENTRIES}
@@ -444,17 +446,44 @@ def render_feasibility_result(result: dict) -> None:
     if "feasibility_score" in result:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("可行性得分", f"{result.get('feasibility_score', 0):.2f}")
-        c2.metric("队列规模", result.get("available_cohort_size", "—"))
-        c3.metric("建议", result.get("recommendation", "—"))
-        c4.metric("状态", result.get("status", "—"))
+        c2.metric("已验证队列", result.get("available_cohort_size", "—"))
+        base = result.get("cohort_base")
+        c3.metric("队列基数", base if base is not None else "—")
+        c4.metric("建议", result.get("recommendation", "—"))
+        st.caption(
+            f"状态: {result.get('status', '—')} · "
+            "「已验证队列」仅含接口可计数条件的交集；未验证项见下方。"
+        )
         if result.get("note"):
             st.info(result["note"])
         breakdown = result.get("breakdown")
         if breakdown:
             with st.expander("样本分解", expanded=True):
-                safe_table(pd.DataFrame([breakdown]).T.reset_index().rename(
-                    columns={"index": "field", 0: "count"}
-                ))
+                # Observed counts only (drop null-ish); show integers.
+                rows = {
+                    k: v
+                    for k, v in breakdown.items()
+                    if v is not None and not (isinstance(v, float) and v != v)
+                }
+                safe_table(
+                    pd.DataFrame([rows]).T.reset_index().rename(
+                        columns={"index": "field", 0: "count"}
+                    )
+                )
+                unverified = result.get("unverified_requirements") or []
+                if unverified:
+                    st.caption(
+                        "未验证要求（接口无实测计数，未计入交集）: "
+                        + ", ".join(str(x) for x in unverified)
+                    )
+                coverage = result.get("patient_list_coverage") or {}
+                if coverage.get("catalog_total") is not None:
+                    st.caption(
+                        "患者列表覆盖: "
+                        f"{coverage.get('enumerated', '—')} / "
+                        f"{coverage.get('catalog_total', '—')} "
+                        f"（cohort_base={result.get('cohort_base', '—')}）"
+                    )
 
     if result.get("alternative_hypothesis_suggestions"):
         st.markdown("**替代建议（V-02）**")
@@ -672,6 +701,10 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
                 12,
                 key="v01_followup",
                 on_change=remember_main_tab_for(_DATA_TAB_LABEL),
+            )
+            st.caption(
+                "随访月数目前无方信实测计数接口：填写后只进入「未验证要求」，"
+                "不会收紧已验证队列规模。"
             )
         with fc2:
             v01_labels = st.text_input(
@@ -1601,29 +1634,43 @@ def _landscape_indexes() -> tuple[dict[str, int], dict[str, dict], list[str]]:
     return cases, by_id, names
 
 
-def _fangxin_scale_metrics(payload: dict) -> dict[str, int]:
-    """Four scale metrics from landscape payload (sample_size / pools)."""
+def _fangxin_scale_metrics(payload: dict) -> dict[str, Any]:
+    """Scale metrics from landscape payload (sample_size / pools).
+
+    Follow-up is only shown when pools carry an *observed* survival/follow-up
+    count. Estimate-era keys and missing keys → followup=None (UI: 不可验证).
+    """
     cat = payload.get("catalog") or {}
     ss = payload.get("sample_size") or {}
     pools = payload.get("feasibility_pools") or {}
+    provenance = payload.get("pool_provenance") or {}
     total = int(ss.get("total_cases") or cat.get("total_cases") or 0)
     wsi = int(
-        ss.get("total_wsi_slides")
+        pools.get("has_wsi")
+        or pools.get("cohort_base")
         or ss.get("cases_with_wsi")
-        or pools.get("has_wsi")
         or 0
     )
-    followup = int(
-        ss.get("cases_with_followup")
-        or pools.get("has_survival_label")
-        or pools.get("meets_followup_12m")
-        or 0
-    )
+    # Prefer slide count for the WSI metric label "WSI 切片/病例" if present.
+    wsi_slides = int(ss.get("total_wsi_slides") or cat.get("total_wsi_slides") or 0)
+
+    followup: int | None = None
+    surv_key = "has_survival_label"
+    fu_key = "meets_followup_12m"
+    # Never trust estimate-era / unverifiable provenance or bare sample_size fallback.
+    if provenance.get(surv_key) == "observed" and surv_key in pools:
+        followup = int(pools[surv_key])
+    elif provenance.get(fu_key) == "observed" and fu_key in pools:
+        followup = int(pools[fu_key])
+    # No provenance (old cache): do not show stale ratio estimates as follow-up.
+    # Only show if explicitly marked observed above.
+
     mol_keys = ("has_msi_status", "has_her2", "has_egfr", "has_alk", "has_pd_l1")
     molecular = max((int(pools.get(k) or 0) for k in mol_keys), default=0)
     return {
         "total_cases": total,
-        "wsi": wsi,
+        "wsi": wsi_slides or wsi,
+        "wsi_cases": wsi,
         "followup": followup,
         "molecular": molecular,
     }
@@ -1876,9 +1923,14 @@ def render_gap_visualization_tab(
                 scale = _fangxin_scale_metrics(payload)
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("总病例", scale["total_cases"])
-                s2.metric("WSI 切片/病例", scale["wsi"])
-                s3.metric("随访病例", scale["followup"])
+                s2.metric("WSI 切片", scale["wsi"])
+                fu = scale.get("followup")
+                s3.metric("随访病例", "不可验证" if fu is None else fu)
                 s4.metric("分子标注", scale["molecular"])
+                if fu is None:
+                    st.caption(
+                        "随访/生存无方信实测池；勿将历史估算或 0 当作真实随访覆盖。"
+                    )
 
                 v11 = payload.get("v11") or {}
                 subtypes = list(v11.get("subtype_distribution") or [])
@@ -2374,6 +2426,9 @@ def main() -> None:
             ]:
                 st.metric(label, val)
 
+        st.divider()
+        render_ops_sidebar_chip()
+
     st.title("病理 AI · 研究空白分析")
     focus_label = (
         f"焦点：*{focus_input}*"
@@ -2533,9 +2588,10 @@ def main() -> None:
 
     bootstrap_main_tab_state()
 
-    tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data, tab_proposal = st.tabs(
-        MAIN_TAB_LABELS
-    )
+    (
+        tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data,
+        tab_proposal, tab_ops,
+    ) = st.tabs(MAIN_TAB_LABELS)
     render_main_tab_sync()
 
     if not st.session_state["events"]:
@@ -2567,6 +2623,8 @@ def main() -> None:
             render_data_feasibility_tab(focus_hint=focus_input)
         with tab_proposal:
             st.info("请先完成空白辩论，或使用 **数据可行性** 页测试 API。")
+        with tab_ops:
+            render_ops_tab(focus_hint=focus_input)
 
     elif st.session_state["events"]:
         with tab_debate:
@@ -2980,6 +3038,9 @@ def main() -> None:
                     file_name=f"proposal_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
                     mime="text/markdown",
                 )
+
+        with tab_ops:
+            render_ops_tab(focus_hint=focus_input)
 
 
 if st.runtime.exists():
