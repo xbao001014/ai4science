@@ -88,3 +88,88 @@ def test_force_requeue_ignores_cooldown(monkeypatch):
             "SELECT full_text_status FROM papers WHERE id=?", (pid,)
         ).fetchone()[0]
     assert st == "pending"
+
+
+def test_pdf_fallback_respects_limit_and_marks_rest_unavailable(monkeypatch):
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    for i, year in enumerate((2025, 2024, 2023), start=1):
+        pid = upsert_paper(
+            {
+                "pmid": str(i),
+                "doi": f"10.1/{i}",
+                "title": f"T{i}",
+                "year": year,
+            }
+        )
+        mark_fulltext_status(pid, "jats_unavailable")
+
+    calls: list[str] = []
+
+    def fake_download(doi, pmid):
+        calls.append(pmid)
+        return {"success": False}
+
+    monkeypatch.setattr(ff, "download_pdf", fake_download)
+    monkeypatch.setattr(ff, "pdf_to_sections", lambda *a, **k: [])
+
+    ok = ff.fetch_pdf_mineru_fallback(limit=2)
+    assert ok == 0
+    assert calls == ["1", "2"]  # newest year first
+
+    with get_conn() as conn:
+        skipped = conn.execute(
+            """SELECT COUNT(*) FROM papers
+               WHERE full_text_status='jats_unavailable'"""
+        ).fetchone()[0]
+    assert skipped == 1  # pmid 3 not attempted
+
+    n_skip = ff.finalize_jats_unavailable_as_unavailable()
+    assert n_skip == 1
+    with get_conn() as conn:
+        rows = {
+            r["pmid"]: (r["full_text_status"], r["full_text_fetched_at"] is not None)
+            for r in conn.execute(
+                "SELECT pmid, full_text_status, full_text_fetched_at FROM papers"
+            )
+        }
+    assert rows["1"][0] == "unavailable"
+    assert rows["2"][0] == "unavailable"
+    assert rows["3"][0] == "unavailable"
+    assert all(v[1] for v in rows.values())
+
+
+def test_fetch_all_fulltext_no_retry_skips_requeue(monkeypatch):
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper({"pmid": "77", "title": "X", "year": 2025})
+    mark_fulltext_status(pid, "unavailable")
+    _set_fetched_at(pid, 30)
+
+    monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
+    monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)
+
+    stats = ff.fetch_all_fulltext(retry=False)
+    assert stats["retried_into_pending"] == 0
+    with get_conn() as conn:
+        st = conn.execute(
+            "SELECT full_text_status FROM papers WHERE id=?", (pid,)
+        ).fetchone()[0]
+    assert st == "unavailable"
+
+
+def test_fetch_all_fulltext_default_requeues(monkeypatch):
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper({"pmid": "88", "title": "Y", "year": 2025})
+    mark_fulltext_status(pid, "unavailable")
+    _set_fetched_at(pid, 30)
+
+    monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
+    monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)
+
+    stats = ff.fetch_all_fulltext(retry=True, force_retry=False)
+    assert stats["retried_into_pending"] == 1
