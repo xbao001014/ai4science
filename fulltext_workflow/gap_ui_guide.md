@@ -260,6 +260,7 @@ V-01 常用字段：`disease_id`、`task_type`、`min_followup_months`、`requir
 | 操作 | 作用 |
 |------|------|
 | 回溯天数 / 抽取上限 / SkipEnrich | 同 `run_pipeline.ps1 -Stage weekly` 的 `-SinceDays` / `-ExtractLimit` / `-SkipEnrich` |
+| 升级先前仅摘要文献 | 补全文后对曾摘要抽取的论文 clear 并重抽；**默认关闭**以加快周常 |
 | **启动周常更新** | 后台依次执行 weekly 的 10 步；已有任务在跑时按钮禁用 |
 | 进度条 + 步骤图标 | 查看各阶段 pending / running / succeeded / skipped / failed |
 | 日志 expander | 最近 200 行 stdout |

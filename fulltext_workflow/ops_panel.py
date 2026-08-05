@@ -119,6 +119,13 @@ def _render_weekly_section() -> None:
             key="ops_skip_enrich",
         )
 
+    upgrade_abstract = st.checkbox(
+        "升级先前仅摘要文献（补全文后完整重抽）",
+        value=False,
+        key="ops_upgrade_abstract_fulltext",
+        help="开启后 extract 会对曾摘要抽取且现已有全文的论文 clear 并重抽，可能很慢。默认关闭以加快周常。",
+    )
+
     if st.button(
         "启动周常更新",
         type="primary",
@@ -131,6 +138,7 @@ def _render_weekly_section() -> None:
                 since_days=int(since_days),
                 extract_limit=int(extract_limit),
                 skip_enrich=bool(skip_enrich),
+                upgrade_abstract_fulltext=bool(upgrade_abstract),
             )
             st.success(f"已启动周常任务 {job['job_id']}")
             st.rerun()

@@ -81,9 +81,11 @@ $py = "..\.venv\Scripts\python.exe"
 ### 抽取 / 建图 / 分析
 
 ```powershell
-& $py main.py extract --limit 0 --core-only
+& $py main.py extract --limit 0 --core-only --no-upgrade-reextract
+& $py main.py extract --limit 0 --core-only --upgrade-reextract
 & $py main.py extract --limit 30
 # env: FULLTEXT_UPGRADE_REEXTRACT=true  (default) auto-reextract abstract→fulltext upgrades
+# weekly ops job passes --no-upgrade-reextract by default (checkbox off)
 ```
 
 ### Pilot re-extract
