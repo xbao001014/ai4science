@@ -42,7 +42,7 @@ def test_build_weekly_argv_skip_enrich(monkeypatch):
     assert fetch[:2] == ["fetch", "--since-days"]
     assert "14" in fetch
     ext = oj.build_weekly_argv("extract", {"since_days": 14, "extract_limit": 5, "skip_enrich": False})
-    assert ext == ["extract", "--limit", "5", "--core-only"]
+    assert ext == ["extract", "--limit", "5", "--core-only", "--no-upgrade-reextract"]
 
 
 def test_build_weekly_argv_fetch_fulltext_unchanged():
@@ -345,3 +345,34 @@ def test_cancel_rejects_succeeded_job(monkeypatch):
         assert "not running" in str(exc).lower()
     loaded = oj.read_status(job["job_id"])
     assert loaded["state"] == "succeeded"
+
+
+def test_build_weekly_argv_upgrade_flags():
+    base = {"since_days": 14, "extract_limit": 0, "skip_enrich": False}
+    off = oj.build_weekly_argv("extract", {**base, "upgrade_abstract_fulltext": False})
+    assert off == [
+        "extract",
+        "--limit",
+        "0",
+        "--core-only",
+        "--no-upgrade-reextract",
+    ]
+    on = oj.build_weekly_argv("extract", {**base, "upgrade_abstract_fulltext": True})
+    assert on == [
+        "extract",
+        "--limit",
+        "0",
+        "--core-only",
+        "--upgrade-reextract",
+    ]
+    # Missing key → off (fast weekly default)
+    missing = oj.build_weekly_argv("extract", base)
+    assert missing[-1] == "--no-upgrade-reextract"
+
+
+def test_create_weekly_job_stores_upgrade_flag(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job(upgrade_abstract_fulltext=True)
+    assert job["params"]["upgrade_abstract_fulltext"] is True
+    job2 = oj.create_weekly_job()
+    assert job2["params"]["upgrade_abstract_fulltext"] is False

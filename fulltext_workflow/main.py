@@ -95,6 +95,15 @@ def cmd_extract(args: argparse.Namespace) -> None:
     if args.paper_workers is not None:
         config.EXTRACT_PAPER_WORKERS = max(1, args.paper_workers)
 
+    upgrade = getattr(args, "upgrade_reextract", False)
+    no_upgrade = getattr(args, "no_upgrade_reextract", False)
+    if upgrade and no_upgrade:
+        raise SystemExit("Use only one of --upgrade-reextract / --no-upgrade-reextract")
+    if upgrade:
+        config.FULLTEXT_UPGRADE_REEXTRACT = True
+    elif no_upgrade:
+        config.FULLTEXT_UPGRADE_REEXTRACT = False
+
     limit = args.limit if args.limit is not None else None
     pmids = _load_pmid_list(args.pmid_list) if args.pmid_list else None
     if pmids:
@@ -584,6 +593,16 @@ def main() -> None:
         "--force-reextract",
         action="store_true",
         help="Clear relations/bindings for target PMIDs before Pass1+2",
+    )
+    p_ext.add_argument(
+        "--upgrade-reextract",
+        action="store_true",
+        help="Force enable abstract→fulltext upgrade clear+reextract",
+    )
+    p_ext.add_argument(
+        "--no-upgrade-reextract",
+        action="store_true",
+        help="Disable abstract→fulltext upgrade clear+reextract for this run",
     )
 
     p_reconcile = sub.add_parser(

@@ -108,6 +108,7 @@ def create_weekly_job(
     since_days: int = 14,
     extract_limit: int = 0,
     skip_enrich: bool = False,
+    upgrade_abstract_fulltext: bool = False,
 ) -> dict:
     job_id = new_job_id("weekly")
     job = {
@@ -118,6 +119,7 @@ def create_weekly_job(
             "since_days": since_days,
             "extract_limit": extract_limit,
             "skip_enrich": skip_enrich,
+            "upgrade_abstract_fulltext": upgrade_abstract_fulltext,
         },
         "pid": None,
         "started_at": None,
@@ -136,12 +138,17 @@ def build_weekly_argv(step_id: str, params: dict) -> list[str] | None:
     if step_id == "fetch":
         return ["fetch", "--since-days", str(params["since_days"])]
     if step_id == "extract":
-        return [
+        argv = [
             "extract",
             "--limit",
             str(params["extract_limit"]),
             "--core-only",
         ]
+        if params.get("upgrade_abstract_fulltext"):
+            argv.append("--upgrade-reextract")
+        else:
+            argv.append("--no-upgrade-reextract")
+        return argv
     if step_id in {
         "enrich-s2",
         "fetch-fulltext",
@@ -365,6 +372,7 @@ def start_weekly_job(
     since_days: int = 14,
     extract_limit: int = 0,
     skip_enrich: bool = False,
+    upgrade_abstract_fulltext: bool = False,
     spawn_fn: Callable[[str], int] | None = None,
 ) -> dict:
     if spawn_fn is None:
@@ -378,6 +386,7 @@ def start_weekly_job(
         since_days=since_days,
         extract_limit=extract_limit,
         skip_enrich=skip_enrich,
+        upgrade_abstract_fulltext=upgrade_abstract_fulltext,
     )
     try:
         pid = int(spawn_fn(job["job_id"]))
