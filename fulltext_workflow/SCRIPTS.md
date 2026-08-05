@@ -83,6 +83,7 @@ $py = "..\.venv\Scripts\python.exe"
 ```powershell
 & $py main.py extract --limit 0 --core-only
 & $py main.py extract --limit 30
+# env: FULLTEXT_UPGRADE_REEXTRACT=true  (default) auto-reextract abstract→fulltext upgrades
 ```
 
 ### Pilot re-extract

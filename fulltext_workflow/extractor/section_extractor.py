@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 import config
 from db.schema import (
+    clear_abstract_extractions_for_fulltext_upgrade,
     clear_paper_kg_extractions,
     get_conn,
     get_paper_sections,
@@ -407,15 +408,19 @@ def run_extraction(
                 clear_paper_kg_extractions(pmid)
         papers = get_papers_by_pmids(pmids)
         lim = len(papers)
-    elif limit is None:
-        lim = config.DEFAULT_EXTRACT_LIMIT
-        papers = get_papers_for_extraction(limit=lim)
-    elif limit == 0:
-        papers = get_papers_for_extraction(limit=0)
-        lim = len(papers)
     else:
-        papers = get_papers_for_extraction(limit=limit)
-        lim = limit
+        if config.FULLTEXT_UPGRADE_REEXTRACT:
+            upgraded = clear_abstract_extractions_for_fulltext_upgrade()
+            print(f"[Extractor] upgraded_from_abstract={upgraded}")
+        if limit is None:
+            lim = config.DEFAULT_EXTRACT_LIMIT
+            papers = get_papers_for_extraction(limit=lim)
+        elif limit == 0:
+            papers = get_papers_for_extraction(limit=0)
+            lim = len(papers)
+        else:
+            papers = get_papers_for_extraction(limit=limit)
+            lim = limit
 
     llm_parallel = max(
         config.LLM_MAX_CONCURRENT,

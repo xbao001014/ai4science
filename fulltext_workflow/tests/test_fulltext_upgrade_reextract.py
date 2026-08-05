@@ -106,3 +106,92 @@ def test_clear_upgrade_removes_relations_and_resets_flags(monkeypatch):
     assert p11["extraction_done"] == 1
     assert p11["reconcile_status"] == "skipped_no_ft"
     assert rel11 == 1
+
+
+def _section_extractor(monkeypatch):
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-key")
+    from extractor import section_extractor as se
+
+    return se
+
+
+def test_run_extraction_upgrades_into_queue(monkeypatch):
+    se = _section_extractor(monkeypatch)
+
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "FULLTEXT_UPGRADE_REEXTRACT", True)
+    monkeypatch.setattr(config, "DEFAULT_EXTRACT_LIMIT", 30)
+    _seed_abstract_extracted("20", year=2025, ft_status="available")
+    # also a plain pending paper
+    upsert_paper(
+        {
+            "pmid": "21",
+            "title": "Pending",
+            "abstract": "Abstract body long enough.",
+            "year": 2024,
+            "journal_name": "J",
+        }
+    )
+
+    seen: list[str] = []
+
+    def fake_process(paper):
+        seen.append(paper["pmid"])
+
+    monkeypatch.setattr(se, "_process_paper", fake_process)
+    se.run_extraction(limit=0)
+    assert "20" in seen
+    assert "21" in seen
+    with get_conn() as conn:
+        rel = conn.execute(
+            "SELECT COUNT(*) FROM relations WHERE source_pmid='20'"
+        ).fetchone()[0]
+    assert rel == 0  # cleared before process
+
+
+def test_run_extraction_skips_upgrade_when_disabled(monkeypatch):
+    se = _section_extractor(monkeypatch)
+
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "FULLTEXT_UPGRADE_REEXTRACT", False)
+    _seed_abstract_extracted("30", year=2025, ft_status="available")
+
+    seen: list[str] = []
+    monkeypatch.setattr(se, "_process_paper", lambda paper: seen.append(paper["pmid"]))
+    se.run_extraction(limit=0)
+    assert seen == []
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT extraction_done, reconcile_status FROM papers WHERE pmid='30'"
+        ).fetchone()
+        rel = conn.execute(
+            "SELECT COUNT(*) FROM relations WHERE source_pmid='30'"
+        ).fetchone()[0]
+    assert row["extraction_done"] == 1
+    assert row["reconcile_status"] == "skipped_no_ft"
+    assert rel == 1
+
+
+def test_run_extraction_pmid_list_does_not_auto_upgrade(monkeypatch):
+    se = _section_extractor(monkeypatch)
+
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "FULLTEXT_UPGRADE_REEXTRACT", True)
+    _seed_abstract_extracted("40", year=2025, ft_status="available")
+
+    seen: list[str] = []
+    monkeypatch.setattr(se, "_process_paper", lambda paper: seen.append(paper["pmid"]))
+    se.run_extraction(limit=0, pmids=["40"], force_reextract=False)
+    # Without force_reextract, paper stays extraction_done=1; get_papers_by_pmids
+    # still returns it and _process_paper is called — but relations must remain
+    # because auto-upgrade prep must not run on pmid-list path.
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT extraction_done, reconcile_status FROM papers WHERE pmid='40'"
+        ).fetchone()
+        rel = conn.execute(
+            "SELECT COUNT(*) FROM relations WHERE source_pmid='40'"
+        ).fetchone()[0]
+    assert row["extraction_done"] == 1
+    assert row["reconcile_status"] == "skipped_no_ft"
+    assert rel == 1

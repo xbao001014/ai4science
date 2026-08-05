@@ -202,6 +202,7 @@ flowchart TD
 
 **模块**：`extractor/section_extractor.py`、`extractor/llm_client.py`、`extractor/entity_normalize.py`  
 **作用**：按章节调用 LLM，抽取实体（Disease/Method/Task 等）和关系，写入 `entities` / `relations`，标记 `extraction_done=1`。  
+**全文升级重抽：** 若论文曾以摘要抽取（`reconcile_status=skipped_no_ft`）且后来补到全文，`extract`（非 `--pmid-list`）会在开跑前 `clear` 并完整重抽 Pass 1+2。默认开启；`FULLTEXT_UPGRADE_REEXTRACT=false` 可关闭。周常 `fetch-fulltext` → `extract` 即可消化。  
 **粒度对齐（Method 骨干+贡献 / Disease 亚型+分子分型）与后处理维护说明**：[extractor/GRANULARITY.md](extractor/GRANULARITY.md)
 
 **辅助脚本**（抽取失败/空结果重跑）：
