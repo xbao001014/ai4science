@@ -1,4 +1,5 @@
 from db.schema import (
+    clear_abstract_extractions_for_fulltext_upgrade,
     db_stats,
     delete_paper_sections,
     get_papers_for_extraction,
@@ -12,6 +13,7 @@ from db.schema import (
     link_paper_journal,
     list_active_improvement_suggestions,
     list_active_improvement_suggestions_for_limitations,
+    list_papers_for_fulltext_upgrade,
     mark_extraction_done,
     mark_fulltext_status,
     requeue_cooled_fulltext_failures,
@@ -43,4 +45,6 @@ __all__ = [
     "replace_paper_improvement_suggestions",
     "list_active_improvement_suggestions",
     "list_active_improvement_suggestions_for_limitations",
+    "list_papers_for_fulltext_upgrade",
+    "clear_abstract_extractions_for_fulltext_upgrade",
 ]

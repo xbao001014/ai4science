@@ -182,6 +182,14 @@ EXTRACT_CORE_ONLY: bool = os.getenv("EXTRACT_CORE_ONLY", "true").lower() == "tru
 RECONCILE_ENABLED: bool = os.getenv("RECONCILE_ENABLED", "true").lower() in (
     "1", "true", "yes", "on",
 )
+FULLTEXT_UPGRADE_REEXTRACT: bool = os.getenv(
+    "FULLTEXT_UPGRADE_REEXTRACT", "true"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 RECONCILE_MAX_CHARS: int = int(os.getenv("RECONCILE_MAX_CHARS", "32000"))
 # When core sections are empty/empty-yield, promote long `other` body as discussion
 EXTRACT_OTHER_FALLBACK_MIN_CHARS: int = int(

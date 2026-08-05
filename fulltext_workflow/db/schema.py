@@ -1057,6 +1057,28 @@ def clear_paper_kg_extractions(pmid: str) -> None:
         )
 
 
+def list_papers_for_fulltext_upgrade() -> list[sqlite3.Row]:
+    """Abstract-extracted papers that now have fulltext sections available."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT id, pmid, year, full_text_status, reconcile_status
+               FROM papers
+               WHERE extraction_done=1
+                 AND reconcile_status='skipped_no_ft'
+                 AND full_text_status IN ('available', 'pdf_available')
+                 AND pmid IS NOT NULL
+               ORDER BY year DESC, id DESC"""
+        ).fetchall()
+
+
+def clear_abstract_extractions_for_fulltext_upgrade() -> int:
+    """Clear KG extractions for upgrade candidates; return number cleared."""
+    rows = list_papers_for_fulltext_upgrade()
+    for row in rows:
+        clear_paper_kg_extractions(row["pmid"])
+    return len(rows)
+
+
 def upsert_paper_entity_binding(
     source_pmid: str,
     method_entity_id: int | None,
