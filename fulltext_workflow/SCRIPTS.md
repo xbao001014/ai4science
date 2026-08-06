@@ -75,6 +75,7 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py fetch-fulltext --force-retry
 & $py main.py fetch-fulltext --pdf-retry-limit 100
 # env: FULLTEXT_RETRY_COOLDOWN_DAYS=7  FULLTEXT_PDF_RETRY_LIMIT=500
+# PDF 队列按 fulltext_pdf_attempts 升序优先从未尝试；失败重试冷却 7→14→28→56 天
 & $py main.py stats
 ```
 

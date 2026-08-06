@@ -154,11 +154,14 @@ def test_force_requeue_ignores_cooldown(monkeypatch):
     assert st == "pending"
 
 
-def test_pdf_fallback_respects_limit_and_marks_rest_unavailable(monkeypatch):
+def test_pdf_fallback_limit_leaves_untried_as_jats_unavailable(monkeypatch):
     from fetcher import fulltext_fetcher as ff
 
     _tmp_db(monkeypatch)
-    for i, year in enumerate((2025, 2024, 2023), start=1):
+    # attempts=1 older year should still sort after attempts=0
+    for i, (year, attempts) in enumerate(
+        ((2025, 1), (2024, 0), (2023, 0)), start=1
+    ):
         pid = upsert_paper(
             {
                 "pmid": str(i),
@@ -168,6 +171,11 @@ def test_pdf_fallback_respects_limit_and_marks_rest_unavailable(monkeypatch):
             }
         )
         mark_fulltext_status(pid, "jats_unavailable")
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE papers SET fulltext_pdf_attempts=? WHERE id=?",
+                (attempts, pid),
+            )
 
     calls: list[str] = []
 
@@ -180,28 +188,42 @@ def test_pdf_fallback_respects_limit_and_marks_rest_unavailable(monkeypatch):
 
     ok = ff.fetch_pdf_mineru_fallback(limit=2)
     assert ok == 0
-    assert calls == ["1", "2"]  # newest year first
+    # never-tried first (pmid 2 year 2024, pmid 3 year 2023), then attempted
+    assert calls == ["2", "3"]
 
-    with get_conn() as conn:
-        skipped = conn.execute(
-            """SELECT COUNT(*) FROM papers
-               WHERE full_text_status='jats_unavailable'"""
-        ).fetchone()[0]
-    assert skipped == 1  # pmid 3 not attempted
-
-    n_skip = ff.finalize_jats_unavailable_as_unavailable()
-    assert n_skip == 1
     with get_conn() as conn:
         rows = {
-            r["pmid"]: (r["full_text_status"], r["full_text_fetched_at"] is not None)
+            r["pmid"]: (r["full_text_status"], r["fulltext_pdf_attempts"])
             for r in conn.execute(
-                "SELECT pmid, full_text_status, full_text_fetched_at FROM papers"
+                "SELECT pmid, full_text_status, fulltext_pdf_attempts FROM papers"
             )
         }
-    assert rows["1"][0] == "unavailable"
-    assert rows["2"][0] == "unavailable"
-    assert rows["3"][0] == "unavailable"
-    assert all(v[1] for v in rows.values())
+    assert rows["2"][0] == "unavailable" and rows["2"][1] == 1
+    assert rows["3"][0] == "unavailable" and rows["3"][1] == 1
+    assert rows["1"] == ("jats_unavailable", 1)  # not attempted this run
+
+
+def test_fetch_all_does_not_finalize_deferred(monkeypatch):
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper(
+        {"pmid": "50", "doi": "10.1/50", "title": "T", "year": 2025}
+    )
+    mark_fulltext_status(pid, "jats_unavailable")
+    monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
+    monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)
+    monkeypatch.setattr(
+        ff, "repair_misclassified_unavailable_without_pdf_attempt", lambda: 0
+    )
+
+    stats = ff.fetch_all_fulltext(retry=False, pdf_retry_limit=0)
+    assert stats.get("pdf_deferred", 0) >= 1
+    with get_conn() as conn:
+        st = conn.execute(
+            "SELECT full_text_status FROM papers WHERE id=?", (pid,)
+        ).fetchone()[0]
+    assert st == "jats_unavailable"
 
 
 def test_fetch_all_fulltext_no_retry_skips_requeue(monkeypatch):
@@ -211,6 +233,10 @@ def test_fetch_all_fulltext_no_retry_skips_requeue(monkeypatch):
     pid = upsert_paper({"pmid": "77", "title": "X", "year": 2025})
     mark_fulltext_status(pid, "unavailable")
     _set_fetched_at(pid, 30)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=1 WHERE id=?", (pid,)
+        )
 
     monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
     monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)
@@ -244,6 +270,10 @@ def test_fetch_all_fulltext_default_requeues(monkeypatch):
     pid = upsert_paper({"pmid": "88", "title": "Y", "year": 2025})
     mark_fulltext_status(pid, "unavailable")
     _set_fetched_at(pid, 30)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=1 WHERE id=?", (pid,)
+        )
 
     monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
     monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", lambda limit=None: 0)

@@ -15,8 +15,10 @@ import config
 from db.schema import (
     delete_paper_sections,
     get_conn,
+    increment_fulltext_pdf_attempts,
     insert_sections,
     mark_fulltext_status,
+    repair_misclassified_unavailable_without_pdf_attempt,
     requeue_cooled_fulltext_failures,
 )
 from fetcher.mineru_parser import pdf_to_sections
@@ -30,30 +32,20 @@ def _validate_pdf_retry_limit(limit: int | None, *, param: str = "pdf_retry_limi
 
 
 def _papers_for_pdf_fallback(limit: int | None = None) -> list[sqlite3.Row]:
-    """jats_unavailable papers, newest first. limit=None or 0 → no cap."""
+    """jats_unavailable papers; never-tried first, then newest. limit=None or 0 → no cap."""
     _validate_pdf_retry_limit(limit, param="limit")
     sql = """
-        SELECT id, pmid, doi, pmc_id, full_text_status, year, created_at
+        SELECT id, pmid, doi, pmc_id, full_text_status, year, created_at,
+               COALESCE(fulltext_pdf_attempts, 0) AS fulltext_pdf_attempts
         FROM papers
         WHERE pmid IS NOT NULL AND full_text_status = 'jats_unavailable'
-        ORDER BY year IS NULL, year DESC, created_at DESC
+        ORDER BY COALESCE(fulltext_pdf_attempts, 0) ASC,
+                 year IS NULL, year DESC, created_at DESC
     """
     with get_conn() as conn:
         if limit is not None and limit > 0:
             return conn.execute(sql + " LIMIT ?", (int(limit),)).fetchall()
         return conn.execute(sql).fetchall()
-
-
-def finalize_jats_unavailable_as_unavailable() -> int:
-    """Mark leftover jats_unavailable as unavailable; refresh fetched_at."""
-    with get_conn() as conn:
-        cur = conn.execute(
-            """UPDATE papers SET
-                   full_text_status='unavailable',
-                   full_text_fetched_at=CURRENT_TIMESTAMP
-               WHERE full_text_status='jats_unavailable'"""
-        )
-        return int(cur.rowcount)
 
 
 def _store_pdf_sections(paper_id: int, sections: list[dict[str, Any]]) -> bool:
@@ -77,6 +69,8 @@ def fetch_pdf_mineru_fallback(limit: int | None = None) -> int:
         paper_id = row["id"]
         pmid = row["pmid"] or ""
         doi = row["doi"] or ""
+
+        increment_fulltext_pdf_attempts(paper_id)
 
         if not doi:
             mark_fulltext_status(paper_id, "unavailable")
@@ -114,6 +108,12 @@ def fetch_all_fulltext(
         pdf_retry_limit = config.FULLTEXT_PDF_RETRY_LIMIT
     _validate_pdf_retry_limit(pdf_retry_limit)
 
+    repaired = repair_misclassified_unavailable_without_pdf_attempt()
+    if repaired:
+        print(
+            f"[Fulltext] Repaired {repaired} misclassified unavailable→jats_unavailable."
+        )
+
     retried = 0
     if retry or force_retry:
         retried = requeue_cooled_fulltext_failures(
@@ -140,14 +140,10 @@ def fetch_all_fulltext(
     print("[Fulltext] Tier 2: ScanSci PDF + MinerU")
     pdf_ok = fetch_pdf_mineru_fallback(limit=effective_limit)
 
-    still = finalize_jats_unavailable_as_unavailable()
-    if still:
-        print(
-            f"[Fulltext] Marked {still} papers unavailable "
-            f"(abstract-only at extract; skipped_by_pdf_limit≈{pdf_skipped_by_limit})."
-        )
-
     with get_conn() as conn:
+        deferred = conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE full_text_status='jats_unavailable'"
+        ).fetchone()[0]
         jats = conn.execute(
             "SELECT COUNT(*) FROM papers WHERE full_text_status='available'"
         ).fetchone()[0]
@@ -163,6 +159,7 @@ def fetch_all_fulltext(
         "pdf_attempted": pdf_attempt_cap,
         "pdf_ok": pdf_ok,
         "pdf_skipped_by_limit": pdf_skipped_by_limit,
+        "pdf_deferred": deferred,
         "jats_available": jats,
         "pdf_available": pdf,
         "unavailable": unavail,
@@ -170,6 +167,7 @@ def fetch_all_fulltext(
     }
     print(
         f"[Fulltext] Done: retried={retried}, JATS={jats}, MinerU-PDF={pdf}, "
-        f"abstract-only={unavail}, pdf_skipped_by_limit={pdf_skipped_by_limit}"
+        f"abstract-only={unavail}, pdf_deferred={deferred}, "
+        f"pdf_skipped_by_limit={pdf_skipped_by_limit}"
     )
     return stats
