@@ -25,6 +25,10 @@ _LABEL_ALIASES = {
     "progression_free_survival": "overall_survival_months",
     "progression_free_survival_months": "overall_survival_months",
     "dfs": "overall_survival_months",
+    "disease_free_survival": "overall_survival_months",
+    "disease_free_survival_months": "overall_survival_months",
+    "survival_status": "death_event",
+    "vital_status": "death_event",
 }
 
 _MARKER_ALIASES = {
@@ -46,7 +50,24 @@ _ANNOTATION_ALIASES = {
     "stroma_region": "tumor_region",
     "necrosis_region": "tumor_region",
     "lymph_node_status": "tnm_stage",
+    "tnm_stage": "tnm_stage",
+    "histological_grade": "who_grade",
+    "who_grade": "who_grade",
+    "histologic_grade": "who_grade",
 }
+
+# Clinical fields models often put under required_labels; treat as annotations.
+_LABEL_FIELDS_THAT_ARE_ANNOTATIONS = frozenset({
+    "tnm_stage",
+    "who_grade",
+    "histological_grade",
+    "histologic_grade",
+    "lauren_classification",
+    "tumor_region",
+    "tumor_segmentation",
+    "stroma_region",
+    "necrosis_region",
+})
 
 
 def _normalize_list(values: list[str] | None, aliases: dict[str, str]) -> list[str]:
@@ -65,13 +86,23 @@ def normalize_feasibility_field_lists(
     required_annotations: list[str] | None = None,
 ) -> dict[str, list[str]]:
     """Apply the field aliases used by the feasibility assessment."""
+    labels_raw = list(required_labels or [])
+    anns_raw = list(required_annotations or [])
+    moved: list[str] = []
+    kept_labels: list[str] = []
+    for item in labels_raw:
+        key = str(item).strip().lower().replace("-", "_")
+        if key in _LABEL_FIELDS_THAT_ARE_ANNOTATIONS:
+            moved.append(item)
+        else:
+            kept_labels.append(item)
     return {
-        "required_labels": _normalize_list(required_labels, _LABEL_ALIASES),
+        "required_labels": _normalize_list(kept_labels, _LABEL_ALIASES),
         "required_molecular_markers": _normalize_list(
             required_molecular_markers, _MARKER_ALIASES
         ),
         "required_annotations": _normalize_list(
-            required_annotations, _ANNOTATION_ALIASES
+            anns_raw + moved, _ANNOTATION_ALIASES
         ),
     }
 

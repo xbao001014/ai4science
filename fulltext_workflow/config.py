@@ -261,6 +261,10 @@ MOCK_DATA_DIR: str = str(_ROOT / "feasibility" / "mock_data")
 FEASIBILITY_SCORE_APPROVE: float = 0.8
 FEASIBILITY_SCORE_REJECT: float = 0.2
 FEASIBILITY_SCORE_MARGINAL: float = 0.5
+FEASIBILITY_ASSUME_ANNOTATIONS_FROM_WSI: bool = (
+    os.getenv("FEASIBILITY_ASSUME_ANNOTATIONS_FROM_WSI", "true").lower()
+    in ("1", "true", "yes")
+)
 
 # Implementation difficulty (proposal target / assessed)
 DIFFICULTY_Q1_HARD: float = float(os.getenv("DIFFICULTY_Q1_HARD", "0.55"))

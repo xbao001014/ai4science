@@ -43,6 +43,11 @@ PATHOLOGY_API_KEY=your-key
 # 可选：周常 ops memory（默认开启）
 OPS_MEMORY_ENABLED=1
 OPS_MEMORY_LOOKBACK_RUNS=4
+
+# 可选：全文重试 / 摘要→全文升级重抽
+FULLTEXT_RETRY_COOLDOWN_DAYS=7
+FULLTEXT_PDF_RETRY_LIMIT=500
+FULLTEXT_UPGRADE_REEXTRACT=true
 ```
 
 进入工作目录：
@@ -52,7 +57,7 @@ cd fulltext_workflow
 $py = "..\.venv\Scripts\python.exe"
 ```
 
-检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、**14** 组启用查询；`pathomics_radiomics` 默认关闭，聚焦病理 AI、对齐方信无影像数据）。可用环境变量覆盖年份：
+检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、**17** 组启用查询；`pathomics_radiomics` 默认关闭，聚焦病理 AI、对齐方信无影像数据）。可用环境变量覆盖年份：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
@@ -100,9 +105,9 @@ flowchart TD
 | 分析 | `analyze` | 推荐 | 静态 SQL Gap 报告 |
 | 周热点 | `hotspot-report` / `hotspot-brief` | 周更推荐 | 发表窗口热点 + WoW + LLM 简报 |
 | 辩论/方案 | `gap-debate` / `idea-pipeline` | 可选 | 默认读写 ops memory；需 LLM |
-| UI | `streamlit run gap_ui.py` | 可选 | 七标签页交互分析 |
+| UI | `streamlit run gap_ui.py` | 可选 | 八标签页交互分析（含「运维」） |
 | **建库一键** | `run-db` | 可选 | fetch → enrich → import-if → fulltext → extract |
-| **每周一键** | `run_pipeline.ps1 -Stage weekly` | 周更 | EDAT 增量 + 抽取 + lifecycle + 热点 + build/analyze |
+| **每周一键** | `run_pipeline.ps1 -Stage weekly` | 周更 | EDAT 增量 + 抽取 + lifecycle + 热点 + stats（不含 build/analyze）；也可在 Gap UI「运维」Tab 后台启动 |
 
 **运营节奏（约每 1–2 周）**：增量入库 → 周热点 → Gap 辩论（ops soft-dedup）→ 可选可行性 / 研究方案。
 
@@ -318,6 +323,14 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 **模块**：`pipeline.py`、`feasibility/`、`analysis/public_dataset_feasibility.py`、`idea_agent.py`、`evolution_agent.py`  
 **作用**：结合 LIS 队列（V-01/V-02）与 KG 公开数据集（V-03，经 focus 相关论文选出）评估研究空白的数据可行性，Generator × Critic 迭代产出研究方案。V-03 与方信得分并行，不合并。
 
+**API-faithful pools（V-01）**：landscape 只写入方信 API **实测**计数（`cohort_base` = 医院 `PatientCount` 之和）；不再用 `patient_count × ratio` 估计生存/随访，也不再对稀疏标注做乐观 floor。随访/生存等无实测接口的条件进入 `unverified_requirements`，**不参与** `min` 收紧队列，也不强制降档 recommendation。`patient_list_coverage` 报告枚举患者样本相对 catalog 的覆盖。升级后建议 `bootstrap-landscape --force` 重建缓存。设计见 `docs/superpowers/specs/2026-08-04-feasibility-api-faithful-pools-design.md`。
+
+**临时策略（2026-08-06）**：评估时若 `FEASIBILITY_ASSUME_ANNOTATIONS_FROM_WSI=true`（默认）且 `has_wsi>0`，
+将假说 `required_annotations` 按 `has_wsi` 计入队列，并在结果 `annotation_assumption` /
+提案 §9 / Gap UI 区分「接口有计数（raw>0）」与「有 WSI 临时假定（raw=0）」。landscape 池仍只存实测。
+在此开关下，要求任意标注（含未知名）**不会**把可用队列压低于 `has_wsi`；必须在 UI / 提案中披露假定。
+接口完善后将该开关设为 `false`。设计见 `docs/superpowers/specs/2026-08-06-wsi-assume-annotations-design.md`。
+
 ---
 
 ### Phase 9 — 交互式 UI
@@ -330,7 +343,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 
 浏览器打开 `http://localhost:8501`。操作细节见 [gap_ui_guide.md](gap_ui_guide.md)。
 
-**七个主标签页**：
+**八个主标签页**：
 
 | 标签 | 内容 |
 |------|------|
@@ -341,6 +354,7 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 | Gap Report | 可下载辩论报告 |
 | Data Feasibility (Fangxin LIS) | 方信 V-01/V-02 + 公开数据集 V-03 |
 | Research Proposal | Generator × Critic 方案 |
+| 运维 | 后台周常更新（同 `-Stage weekly`）+ 清空 ops memory |
 
 ---
 
@@ -407,7 +421,9 @@ PowerShell 脚本等价：
 | `analysis/gap_lifecycle.py` | limitation 时间画像与填补信号 |
 | `analysis/weekly_hotspot.py` | 每周发表热点（`pub_date` + velocity + emerging_score + WoW） |
 | `analysis/hotspot_brief.py` | LLM 热点周报简报 |
+| `analysis/method_role.py` | Method 架构角色（backbone/aggregator/…）；hotspot 展示 + `backfill-method-roles` |
 | `analysis/ops_memory.py` | 周常 gap/proposal 持久化与软避让 |
+| `analysis/ops_jobs.py` | Gap UI 运维：weekly 后台任务状态机 |
 | `analysis/feasibility_tools.py` | 病理数据可行性 LLM 工具（含 V-03 `public_dataset_assess`） |
 | `analysis/public_dataset_feasibility.py` | 公开数据集可行性 V-03（论文中介选集） |
 | `analysis/graph_tools.py` | 实体图分析（PageRank/社区/可达性） |
@@ -415,13 +431,16 @@ PowerShell 脚本等价：
 | `debate_labels.py` | 辩论角色 UI 文案映射 |
 | `idea_agent.py` | 研究方案 Generator × Critic |
 | `pipeline.py` | idea-pipeline 编排 |
-| `feasibility/` | 方信病理 LIS HTTP 客户端 |
-| `gap_ui.py` | Streamlit 七标签页 UI |
+| `feasibility/` | 方信病理 LIS HTTP 客户端（API-faithful pools） |
+| `gap_ui.py` | Streamlit 八标签页 UI |
+| `ops_panel.py` | 运维 Tab / 侧边栏周更状态 |
 | `utils/fetch_progress.py` | watch-fetch 进度轮询 |
 | `utils/if_importer.py` | 期刊 IF 导入 |
 | `scripts/reset_empty_extraction.py` | 重置空抽取结果 |
 | `scripts/reset_extraction.py` | 重置全部已抽取结果 |
 | `scripts/fix_pmc_mismatch.py` | 修复 PMC 缓存错配 |
+| `scripts/audit_method_role.py` | Method 角色覆盖审计 |
+| `scripts/audit_method_role_unknowns.py` | 列出 unknown Method |
 | `scripts/clear_ops_memory.py` | 清空 ops memory（可按 focus） |
 | `scripts/backfill_ops_proposals.py` | 回填 ops_proposals 缺失字段 |
 | `SCRIPTS.md` | 常用脚本速查 |
@@ -487,6 +506,9 @@ HOTSPOT_MIN_RECENT_PAPERS=2            # 实体至少 N 篇窗口内发表论文
 HOTSPOT_ESTABLISHED_MIN_PAPERS=10      # 全库 APPLIES_METHOD 达 N 篇即成熟，过滤出新苗头主榜
 OPS_MEMORY_ENABLED=1
 OPS_MEMORY_LOOKBACK_RUNS=4
+FULLTEXT_RETRY_COOLDOWN_DAYS=7        # unavailable 冷却后再试
+FULLTEXT_PDF_RETRY_LIMIT=500          # PDF/MinerU 重试上限
+FULLTEXT_UPGRADE_REEXTRACT=true       # 摘要→全文自动重抽
 ```
 
 ### 7.1 一键周更（与脚本一致）
@@ -497,11 +519,13 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 #   fetch --since-days 14
 #   enrich-s2（可用 -SkipEnrich 跳过）
 #   fetch-fulltext
-#   extract --core-only
+#   extract --core-only   # 含摘要→全文自动升级重抽
 #   compute-gap-lifecycle
 #   hotspot-report
 #   hotspot-brief
-#   build → analyze → stats
+#   stats
+# （不含 build / analyze）
+# Gap UI「运维」Tab 后台跑同一套步骤
 ```
 
 或分步：
@@ -558,8 +582,10 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 相关工具与 UI：
 
 - **emerging_gap_opportunities**（可迁移候选）：升温 method × 稀疏 disease 组合，且需 **ok Task 桥**（`bridge_task`、`bridge_mode`）；**非**热门实体笛卡尔积交叉。`opportunity_score = emerging_score + literature_gap 分档 + bridge_bonus + context_novelty − maturity_penalty + nascent_bonus + actionability_bump`（同篇桥接加分高于跨篇；binding / public dataset 可加 actionability bump）。当前 Task 质量不足时列表为空属预期——待 Task 抽取质量提升或全库重抽后再看。
+- **method_role**：方法榜 / combo / 可迁移候选带 `method_role`（`backbone` / `aggregator` / `classical_ml` / `tool` / `unknown`）。抽取时可写 `method_role_hint`；存量用 `main.py backfill-method-roles`（`--force` 覆盖）。审计：`scripts/audit_method_role.py`。
 - **hotspot-brief**：热点 JSON → 中文周报摘要（可迁移候选语义同上）
 - **gap_ui → Weekly Hotspot**：方法/病种/组合/**可迁移候选** + WoW + 一键简报
+- **gap_ui → 运维**：后台 `-Stage weekly`（进度 + 日志）与清空 ops memory
 
 ### 7.3 Ops memory（周常软去重）
 
@@ -593,7 +619,7 @@ OPS_MEMORY_LOOKBACK_RUNS=4
 .\run_pipeline.ps1 -Stage enrich            # 仅引用 + IF 导入
 .\run_pipeline.ps1 -Stage all -SkipEnrich   # 跳过引用/IF
 .\run_pipeline.ps1 -Stage extract -ExtractLimit 20 -CoreOnly
-.\run_pipeline.ps1 -Stage weekly            # 每周增量（EDAT 14 天 + lifecycle + hotspot + build/analyze）
+.\run_pipeline.ps1 -Stage weekly            # 每周增量（EDAT 14 天 + lifecycle + hotspot + stats）
 .\run_pipeline.ps1 -Stage fetch -SinceDays 14  # 仅增量 fetch
 .\run_pipeline.ps1 -Stage debate            # gap-debate → output/gap_debate_report.md
 .\run_pipeline.ps1 -Stage landscape         # bootstrap-landscape --force

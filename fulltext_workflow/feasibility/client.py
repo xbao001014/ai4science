@@ -67,6 +67,8 @@ class ApiPathologyDataClient:
                     "molecular_markers", []
                 ),
                 "feasibility_pools": pools,
+                "pool_provenance": payload.get("pool_provenance") or {},
+                "patient_list_coverage": payload.get("patient_list_coverage") or {},
                 "wsi_specs": payload.get("wsi_specs") or {},
             }
 
@@ -216,20 +218,32 @@ class ApiPathologyDataClient:
     def assess_feasibility(self, request: HypothesisRequest | dict) -> dict[str, Any]:
         req = self._parse_request(request)
         try:
-            pools = self._pools(req.disease_id)
+            dd = self._ensure_disease(req.disease_id)
+            pools = dd.get("feasibility_pools", {})
         except (ValueError, PathologyHttpError):
             return assess_feasibility_from_pools(req, {}, disease_exists=False)
-        return assess_feasibility_from_pools(req, pools)
+        return assess_feasibility_from_pools(
+            req,
+            pools,
+            pool_provenance=dd.get("pool_provenance") or {},
+            patient_list_coverage=dd.get("patient_list_coverage") or None,
+        )
 
     def gap_analysis(self, request: HypothesisRequest | dict) -> dict[str, Any]:
         req = self._parse_request(request)
         try:
-            pools = self._pools(req.disease_id)
-            tasks = self._ensure_disease(req.disease_id).get("tasks", [])
+            dd = self._ensure_disease(req.disease_id)
+            pools = dd.get("feasibility_pools", {})
+            tasks = dd.get("tasks", [])
         except (ValueError, PathologyHttpError):
             assess = assess_feasibility_from_pools(req, {}, disease_exists=False)
             return gap_analysis_from_pools(req, {}, assess)
-        assess = assess_feasibility_from_pools(req, pools)
+        assess = assess_feasibility_from_pools(
+            req,
+            pools,
+            pool_provenance=dd.get("pool_provenance") or {},
+            patient_list_coverage=dd.get("patient_list_coverage") or None,
+        )
         return gap_analysis_from_pools(req, pools, assess, disease_tasks=tasks)
 
     def build_landscape_entry(
@@ -254,6 +268,8 @@ class ApiPathologyDataClient:
         )
         built = build_feasibility_pools(self._api, disease_code, stats=stats)
         pools = built["pools"]
+        pool_provenance = built.get("pool_provenance") or {}
+        patient_list_coverage = built.get("patient_list_coverage") or {}
         catalog = build_catalog_entry(
             disease_row,
             stats,
@@ -276,6 +292,8 @@ class ApiPathologyDataClient:
             "followup": infer_followup(pools, total),
             "molecular_markers": infer_molecular_markers(pools, total),
             "feasibility_pools": pools,
+            "pool_provenance": pool_provenance,
+            "patient_list_coverage": patient_list_coverage,
             "wsi_specs": {
                 "he_slide_rows": built["he_slide_rows"],
                 "ihc_slide_rows": built["ihc_slide_rows"],
@@ -312,6 +330,8 @@ class ApiPathologyDataClient:
             "followup": disease_data["followup"],
             "molecular": self.get_molecular_markers(disease_code),
             "feasibility_pools": pools,
+            "pool_provenance": pool_provenance,
+            "patient_list_coverage": patient_list_coverage,
             "wsi_specs": disease_data["wsi_specs"],
             "v11": v11,
             "data_source": "fangxin_api",

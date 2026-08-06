@@ -64,8 +64,13 @@ def test_assess_feasibility_msi_bottleneck():
         subgroup_filters={"stage": ["III", "IV"]},
     )
     result = client.assess_feasibility(req)
+    # Survival/follow-up are unverifiable; observed MSI ∩ TNM ∩ stage III/IV = 1187.
+    assert "overall_survival_months" in result["unverified_requirements"]
+    assert "min_followup_months" in result["unverified_requirements"]
+    assert result["breakdown"]["has_MSI_status"] == 1320
+    assert result["breakdown"]["in_target_stage"] == 1187
+    assert result["available_cohort_size"] == 1187
     assert result["feasibility_score"] < 0.9
-    assert result["breakdown"]["all_criteria_met"] <= 743
 
 
 def test_gap_analysis_suggestions():

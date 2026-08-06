@@ -139,28 +139,39 @@ def build_catalog_entry(
     }
 
 
+_UNVERIFIABLE_POOL_KEYS = (
+    "has_survival_label",
+    "has_death_event",
+    "meets_followup_6m",
+    "meets_followup_12m",
+    "meets_followup_24m",
+    "all_survival_no_msi",
+    "all_survival_tnm_no_msi",
+)
+
+
 def build_feasibility_pools(
     api: HttpPathologyApi,
     disease_code: str,
     *,
     stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Aggregate API endpoints into feasibility pool counters for V-01/V-02."""
+    """Aggregate API endpoints into feasibility pool counters for V-01/V-02.
+
+    Numeric pools are API observations only — no ratio estimates or optimistic floors.
+    """
     if stats is None:
         stats = aggregate_hospital_stats(
             api.sample_count_by_hospital(disease_code=disease_code)
         )
 
-    patient_count = stats["patient_count"]
-    slide_count = stats["slide_count"]
-    has_wsi = patient_count if slide_count > 0 else 0
+    cohort_base = int(stats["patient_count"] or 0)
+    slide_count = int(stats["slide_count"] or 0)
+    has_wsi = cohort_base if slide_count > 0 else 0
 
     patients = api.list_patients(disease_code=disease_code, limit=1000)
     patient_ids = {p["PatientId"] for p in patients if p.get("PatientId")}
-    if patient_ids:
-        patient_count = max(patient_count, len(patient_ids))
-        if slide_count > 0:
-            has_wsi = len(patient_ids)
+    enumerated = len(patient_ids)
 
     attributes = api.list_disease_attributes(limit=1000)
     attr_scope = patient_ids or set()
@@ -195,40 +206,54 @@ def build_feasibility_pools(
                 _patients_with_molecular(api, attr_scope, names)
             )
 
-    survival_est = int(patient_count * 0.85) if patient_count else 0
-    followup_12m = int(patient_count * 0.75) if patient_count else 0
-    followup_6m = int(patient_count * 0.80) if patient_count else 0
-
     pools: dict[str, int] = {
-        "has_wsi": has_wsi or patient_count,
-        "has_survival_label": survival_est,
-        "has_death_event": survival_est,
-        "has_tnm_stage": len(tnm_patients) or int(patient_count * 0.9),
-        "has_who_grade": len(grade_patients) or int(patient_count * 0.85),
+        "has_wsi": has_wsi,
+        "cohort_base": cohort_base,
+        "enumerated_patients": enumerated,
+        "has_tnm_stage": len(tnm_patients),
+        "has_who_grade": len(grade_patients),
         "has_tumor_region": len(region_patients),
-        "meets_followup_6m": followup_6m,
-        "meets_followup_12m": followup_12m,
         "in_target_stage_III_IV": len(stage_patients),
-        "all_survival_no_msi": followup_12m,
-        "all_survival_tnm_no_msi": min(followup_12m, len(tnm_patients) or followup_12m),
     }
     pools.update(molecular_counts)
 
-    if pools.get("has_msi_status") and pools["has_tnm_stage"] and pools["in_target_stage_III_IV"]:
-        pools["all_msi_survival_tnm_stage_III_IV"] = min(
-            pools.get("has_msi_status", 0),
-            pools["has_survival_label"],
-            pools["has_tnm_stage"],
-            pools["in_target_stage_III_IV"],
-        )
+    pool_provenance: dict[str, str] = {
+        "has_wsi": "observed",
+        "cohort_base": "observed",
+        "enumerated_patients": "observed",
+        "has_tnm_stage": "observed",
+        "has_who_grade": "observed",
+        "has_tumor_region": "observed",
+        "in_target_stage_III_IV": "observed",
+    }
+    for key in molecular_counts:
+        pool_provenance[key] = "observed"
+    for key in _UNVERIFIABLE_POOL_KEYS:
+        pool_provenance[key] = "unverifiable"
 
-    ihc_slide_rows = stats["slide_count"] if stats["slide_count"] > 0 else 0
-    he_slide_rows = stats["slide_count"]
+    if (
+        pools.get("has_msi_status")
+        and pools["has_tnm_stage"]
+        and pools["in_target_stage_III_IV"]
+    ):
+        # Survival leg is unverifiable — do not invent an MSI×survival shortcut count.
+        pool_provenance["all_msi_survival_tnm_stage_III_IV"] = "unverifiable"
+
+    patient_list_coverage = {
+        "enumerated": enumerated,
+        "catalog_total": cohort_base,
+    }
+
+    ihc_slide_rows = slide_count if slide_count > 0 else 0
+    he_slide_rows = slide_count
 
     return {
         "pools": pools,
+        "pool_provenance": pool_provenance,
+        "patient_list_coverage": patient_list_coverage,
+        "cohort_base": cohort_base,
         "stats": stats,
-        "patient_sample_size": len(patient_ids),
+        "patient_sample_size": enumerated,
         "specimen_count": stats["specimen_count"],
         "ihc_slide_rows": ihc_slide_rows,
         "he_slide_rows": he_slide_rows,

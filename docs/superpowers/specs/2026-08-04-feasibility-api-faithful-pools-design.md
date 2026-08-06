@@ -1,9 +1,11 @@
 # Feasibility: API-Faithful Pools (No Estimates)
 
 **Date:** 2026-08-04  
-**Status:** Approved design  
+**Status:** Implemented  
 **Scope:** `feasibility/landscape_builder.py`, `feasibility/assessment.py`, `feasibility/client.py`, `analysis/feasibility_tools.py`, `gap_ui.py` (样本分解), related tests  
-**Supersedes (optimistic floors only):** `2026-08-03-tumor-region-pool-fallback-design.md`
+**Supersedes (optimistic floors only):** `2026-08-03-tumor-region-pool-fallback-design.md`  
+**Scoring impact (Idea Critic + Proposal difficulty):** `2026-08-04-feasibility-faithful-pools-scoring-impact.md`  
+**Plan:** `docs/superpowers/plans/2026-08-04-feasibility-api-faithful-pools.md`
 
 ## Problem
 

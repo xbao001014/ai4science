@@ -530,7 +530,15 @@ Also append a structured Fangxin integration section:
 - **required_labels**: [<label fields>]
 - **required_molecular_markers**: [<markers, or none>]
 - **required_annotations**: [<pathology annotations>]
+- **annotations_observed**: [<from annotation_assumption.observed, or none>]
+- **annotations_assumed_from_wsi**: [<from annotation_assumption.assumed_from_wsi, or none>]
 - **min_followup_months**: <integer or N/A>
+
+When feasibility_assess returns annotation_assumption, copy observed vs assumed_from_wsi \
+into §9. **observed** means raw_observed>0 only — not a full API-verified cohort; under the \
+temporary WSI flag, scoring still uses has_wsi for all required_annotations (including \
+observed). Never describe assumed_from_wsi items as API-verified; do not imply observed \
+items have cohort-wide annotation coverage.
 
 Required structure:
 ## 1. Background and Rationale
@@ -562,6 +570,15 @@ feasibility_spec_relaxed, accept must be false and revisions must not relax requ
 - **Must** call public_dataset_assess (V-03) when the proposal cites public datasets or omits them.
 - If feasibility_score < 0.5, technical_feasibility must be ≤ 5 and accept must be false.
 - If feasibility_score >= 0.8 and available_cohort_size >= 500, you may note "Fangxin data feasible".
+- Do **not** treat `unverified_requirements` as satisfied; do **not** invent cohort sizes \
+for labels the API cannot count (e.g. survival/follow-up when listed as unverifiable).
+- If annotation_assumption is present, data_feasibility_verification must disclose \
+observed vs assumed_from_wsi. **observed** (raw_observed>0) is not full cohort verification \
+— under the temporary flag, cohort sizing still uses has_wsi for all required_annotations. \
+assumed_from_wsi items are temporary WSI assumptions (not API-verified). \
+Do not set accept=false solely because assumptions exist.
+- Do not claim "Fangxin annotations verified" for assumed_from_wsi items or imply observed \
+items have full annotation coverage when raw_observed is sparse.
 - Check evidence_quote consistency; note extracted-corpus size limits.
 - Data sources: Fangxin must be primary when feasible; public datasets must be explicitly labeled \
 (`public dataset: <name>`); reject or demand revision if Fangxin-feasible proposals omit Fangxin \
@@ -663,7 +680,7 @@ def _prepend_difficulty_header(content: str, result: dict[str, Any]) -> str:
 def stream_idea_agent(
     gap_text: str,
     gap_data: dict | None = None,
-    max_rounds: int = 3,
+    max_rounds: int = 2,
     accept_score: float = ACCEPT_SCORE,
     target_difficulty: str = "moderate",
 ) -> Generator[dict, None, None]:
@@ -1005,7 +1022,7 @@ def stream_idea_agent(
 def run_idea_agent(
     gap_text: str,
     gap_data: dict | None = None,
-    max_rounds: int = 3,
+    max_rounds: int = 2,
     verbose: bool = False,
     target_difficulty: str = "moderate",
 ) -> tuple[str, dict]:
@@ -1061,7 +1078,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Research Proposal Agent")
     parser.add_argument("--gap", "-g", default=None)
     parser.add_argument("--interactive", "-i", action="store_true")
-    parser.add_argument("--rounds", "-r", type=int, default=3)
+    parser.add_argument("--rounds", "-r", type=int, default=2)
     parser.add_argument("--output", "-o", default=None)
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()

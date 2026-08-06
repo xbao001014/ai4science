@@ -484,6 +484,36 @@ def render_feasibility_result(result: dict) -> None:
                 safe_table(pd.DataFrame([breakdown]).T.reset_index().rename(
                     columns={"index": "field", 0: "count"}
                 ))
+        aa = result.get("annotation_assumption")
+        if isinstance(aa, dict) and (aa.get("observed") or aa.get("assumed_from_wsi")):
+            with st.expander("标注假定（有 WSI 临时策略）", expanded=True):
+                st.markdown(
+                    "- **接口有计数（raw>0）**: "
+                    + (", ".join(aa.get("observed") or []) or "（无）")
+                    + " — 仅表示接口返回 raw_observed>0，**队列计数仍按 has_wsi 计**"
+                )
+                st.markdown(
+                    "- **有 WSI 临时假定（raw=0）**: "
+                    + (", ".join(aa.get("assumed_from_wsi") or []) or "（无）")
+                )
+                raw = aa.get("raw_observed") or {}
+                if raw:
+                    safe_table(
+                        pd.DataFrame(
+                            [{"annotation": k, "raw_observed": v} for k, v in raw.items()]
+                        )
+                    )
+                st.caption(
+                    f"临时策略下，所有 required_annotations 的 min 计数均取 has_wsi"
+                    f"（{aa.get('assumed_count', '—')}），含 raw 稀疏或未知名；"
+                    "raw_observed 可能远小于队列计数。"
+                    "landscape 池仍为接口实测，须披露假定。"
+                )
+        unverified = result.get("unverified_requirements") or []
+        if unverified:
+            st.caption(
+                "未验证条件（不参与 min 收紧）: " + ", ".join(unverified)
+            )
 
     if result.get("alternative_hypothesis_suggestions"):
         st.markdown("**替代建议（V-02）**")
