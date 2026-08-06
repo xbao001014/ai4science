@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS papers (
     citation_source         TEXT,
     full_text_status        TEXT DEFAULT 'pending',
     full_text_fetched_at    TIMESTAMP,
+    fulltext_pdf_attempts   INTEGER DEFAULT 0,
     extraction_done         INTEGER DEFAULT 0,
     reconcile_status        TEXT DEFAULT 'pending',
     reconcile_at            TIMESTAMP,
@@ -358,6 +359,7 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         ("date_precision", "ALTER TABLE papers ADD COLUMN date_precision TEXT"),
         ("reconcile_status", "ALTER TABLE papers ADD COLUMN reconcile_status TEXT DEFAULT 'pending'"),
         ("reconcile_at", "ALTER TABLE papers ADD COLUMN reconcile_at TIMESTAMP"),
+        ("fulltext_pdf_attempts", "ALTER TABLE papers ADD COLUMN fulltext_pdf_attempts INTEGER DEFAULT 0"),
     ):
         if col not in paper_cols:
             conn.execute(ddl)
@@ -717,14 +719,48 @@ def mark_fulltext_status(
         )
 
 
+def cooldown_days_for_pdf_attempts(
+    attempts: int, *, base_days: int = 7, cap_days: int = 56
+) -> int:
+    a = max(int(attempts or 0), 1)
+    return min(int(cap_days), int(base_days) * (2 ** (a - 1)))
+
+
+def increment_fulltext_pdf_attempts(paper_id: int) -> int:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE papers SET
+                   fulltext_pdf_attempts = COALESCE(fulltext_pdf_attempts, 0) + 1
+               WHERE id=?""",
+            (paper_id,),
+        )
+        row = conn.execute(
+            "SELECT fulltext_pdf_attempts FROM papers WHERE id=?",
+            (paper_id,),
+        ).fetchone()
+        return int(row[0])
+
+
+def repair_misclassified_unavailable_without_pdf_attempt() -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE papers SET full_text_status='jats_unavailable'
+               WHERE full_text_status='unavailable'
+                 AND COALESCE(fulltext_pdf_attempts, 0)=0
+                 AND pmid IS NOT NULL"""
+        )
+        return int(cur.rowcount)
+
+
 def requeue_cooled_fulltext_failures(
     *,
     cooldown_days: int,
     force: bool = False,
 ) -> int:
-    """Reset cooled-down unavailable/jats_unavailable papers to pending.
+    """Reset cooled-down unavailable papers to pending.
 
-    Returns the number of rows updated. Does not touch available/pdf_available
+    Escalating cooldown by fulltext_pdf_attempts when force=False (7/14/28/56
+    days when base cooldown_days=7). Does not touch jats_unavailable, available,
     or extraction/reconcile flags.
     """
     if cooldown_days < 0:
@@ -735,7 +771,7 @@ def requeue_cooled_fulltext_failures(
                 """UPDATE papers SET
                        full_text_status='pending',
                        full_text_fetched_at=CURRENT_TIMESTAMP
-                   WHERE full_text_status IN ('unavailable', 'jats_unavailable')
+                   WHERE full_text_status='unavailable'
                      AND pmid IS NOT NULL"""
             )
         else:
@@ -743,14 +779,27 @@ def requeue_cooled_fulltext_failures(
                 """UPDATE papers SET
                        full_text_status='pending',
                        full_text_fetched_at=CURRENT_TIMESTAMP
-                   WHERE full_text_status IN ('unavailable', 'jats_unavailable')
+                   WHERE full_text_status='unavailable'
                      AND pmid IS NOT NULL
                      AND (
                        full_text_fetched_at IS NULL
                        OR julianday('now') - julianday(full_text_fetched_at)
-                          >= ?
+                          >= CASE
+                               WHEN COALESCE(fulltext_pdf_attempts, 0) <= 1
+                                 THEN ?
+                               WHEN fulltext_pdf_attempts = 2
+                                 THEN ?
+                               WHEN fulltext_pdf_attempts = 3
+                                 THEN ?
+                               ELSE ?
+                             END
                      )""",
-                (float(cooldown_days),),
+                (
+                    float(cooldown_days_for_pdf_attempts(1, base_days=cooldown_days)),
+                    float(cooldown_days_for_pdf_attempts(2, base_days=cooldown_days)),
+                    float(cooldown_days_for_pdf_attempts(3, base_days=cooldown_days)),
+                    float(cooldown_days_for_pdf_attempts(4, base_days=cooldown_days)),
+                ),
             )
         return int(cur.rowcount)
 

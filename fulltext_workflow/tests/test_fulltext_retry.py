@@ -11,9 +11,12 @@ if str(_ROOT) not in sys.path:
 
 import config  # noqa: E402
 from db.schema import (  # noqa: E402
+    cooldown_days_for_pdf_attempts,
     get_conn,
     init_db,
+    increment_fulltext_pdf_attempts,
     mark_fulltext_status,
+    repair_misclassified_unavailable_without_pdf_attempt,
     requeue_cooled_fulltext_failures,
     upsert_paper,
 )
@@ -51,7 +54,7 @@ def test_requeue_skips_fresh_unavailable(monkeypatch):
     assert st == "unavailable"
 
 
-def test_requeue_resets_cooled_unavailable_and_jats(monkeypatch):
+def test_requeue_resets_only_cooled_unavailable(monkeypatch):
     _tmp_db(monkeypatch)
     p1 = upsert_paper({"pmid": "1", "title": "A", "year": 2025})
     p2 = upsert_paper({"pmid": "2", "title": "B", "year": 2024})
@@ -63,7 +66,7 @@ def test_requeue_resets_cooled_unavailable_and_jats(monkeypatch):
     _set_fetched_at(p2, 8)
     _set_fetched_at(p3, 8)
     n = requeue_cooled_fulltext_failures(cooldown_days=7, force=False)
-    assert n == 2
+    assert n == 1
     with get_conn() as conn:
         rows = {
             r["pmid"]: r["full_text_status"]
@@ -72,8 +75,69 @@ def test_requeue_resets_cooled_unavailable_and_jats(monkeypatch):
             ).fetchall()
         }
     assert rows["1"] == "pending"
-    assert rows["2"] == "pending"
+    assert rows["2"] == "jats_unavailable"
     assert rows["3"] == "available"
+
+
+def test_cooldown_days_schedule():
+    assert cooldown_days_for_pdf_attempts(0) == 7
+    assert cooldown_days_for_pdf_attempts(1) == 7
+    assert cooldown_days_for_pdf_attempts(2) == 14
+    assert cooldown_days_for_pdf_attempts(3) == 28
+    assert cooldown_days_for_pdf_attempts(4) == 56
+    assert cooldown_days_for_pdf_attempts(9) == 56
+
+
+def test_requeue_escalating_cooldown_by_attempts(monkeypatch):
+    _tmp_db(monkeypatch)
+    p1 = upsert_paper({"pmid": "1", "title": "A", "year": 2025})
+    p2 = upsert_paper({"pmid": "2", "title": "B", "year": 2024})
+    mark_fulltext_status(p1, "unavailable")
+    mark_fulltext_status(p2, "unavailable")
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=1 WHERE id=?", (p1,)
+        )
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=2 WHERE id=?", (p2,)
+        )
+    _set_fetched_at(p1, 8)   # needs 7 → eligible
+    _set_fetched_at(p2, 8)   # needs 14 → not eligible
+    n = requeue_cooled_fulltext_failures(cooldown_days=7, force=False)
+    assert n == 1
+    with get_conn() as conn:
+        rows = {
+            r["pmid"]: r["full_text_status"]
+            for r in conn.execute("SELECT pmid, full_text_status FROM papers")
+        }
+    assert rows["1"] == "pending"
+    assert rows["2"] == "unavailable"
+
+
+def test_repair_misclassified_unavailable(monkeypatch):
+    _tmp_db(monkeypatch)
+    p0 = upsert_paper({"pmid": "10", "title": "Z", "year": 2025})
+    p1 = upsert_paper({"pmid": "11", "title": "Y", "year": 2024})
+    mark_fulltext_status(p0, "unavailable")
+    mark_fulltext_status(p1, "unavailable")
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=0 WHERE id=?", (p0,)
+        )
+        conn.execute(
+            "UPDATE papers SET fulltext_pdf_attempts=2 WHERE id=?", (p1,)
+        )
+    n = repair_misclassified_unavailable_without_pdf_attempt()
+    assert n == 1
+    with get_conn() as conn:
+        rows = {
+            r["pmid"]: (r["full_text_status"], r["fulltext_pdf_attempts"])
+            for r in conn.execute(
+                "SELECT pmid, full_text_status, fulltext_pdf_attempts FROM papers"
+            )
+        }
+    assert rows["10"] == ("jats_unavailable", 0)
+    assert rows["11"][0] == "unavailable"
 
 
 def test_force_requeue_ignores_cooldown(monkeypatch):
