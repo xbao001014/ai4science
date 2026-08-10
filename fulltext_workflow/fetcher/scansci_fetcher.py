@@ -27,6 +27,25 @@ def download_pdf(doi: str, pmid: str) -> dict[str, Any]:
             "reason": "",
         }
 
+    if config.FULLTEXT_PUBLISHER_DIRECT:
+        from fetcher.publisher_direct import publisher_for_doi, try_publisher_direct
+
+        if publisher_for_doi(doi) is not None:
+            print(f"[INFO] Publisher direct - {doi}")
+            pub = try_publisher_direct(doi, cached)
+            if pub.get("success"):
+                time.sleep(config.SCANSCI_RATE_DELAY)
+                return {
+                    "success": True,
+                    "file": str(cached),
+                    "source": pub.get("source", "publisher_direct"),
+                    "reason": "",
+                }
+            print(
+                f"[INFO]    Publisher direct miss "
+                f"({pub.get('source')}: {pub.get('reason')}); falling back to ScanSci"
+            )
+
     os.environ.setdefault("SCANSCI_PDF_SCIHUB_ENABLED", "false")
     from scansci_pdf.sources import download
 

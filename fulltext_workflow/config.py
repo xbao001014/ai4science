@@ -50,6 +50,10 @@ MINERU_OUTPUT_DIR: str = str(_ROOT / "raw" / "mineru_output")
 # ── PDF fallback (ScanSci + MinerU) ──────────────────────────────────────────
 SCANSCI_STRATEGY: str = os.getenv("SCANSCI_STRATEGY", "oa_first")
 SCANSCI_RATE_DELAY: float = float(os.getenv("SCANSCI_RATE_DELAY", "1.0"))
+# Campus/VPN IP direct for IEEE (10.1109/) / Elsevier (10.1016/); default off
+FULLTEXT_PUBLISHER_DIRECT: bool = os.getenv(
+    "FULLTEXT_PUBLISHER_DIRECT", "false"
+).lower() in ("1", "true", "yes", "on")
 MINERU_BACKEND: str = os.getenv("MINERU_BACKEND", "pipeline")
 MINERU_MODEL_SOURCE: str = os.getenv("MINERU_MODEL_SOURCE", "modelscope")
 MINERU_LANG: str = os.getenv("MINERU_LANG", "en")
