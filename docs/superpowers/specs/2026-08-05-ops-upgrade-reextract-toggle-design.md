@@ -11,8 +11,10 @@
 ## Goals
 
 1. 运维「启动周常更新」表单增加勾选：**升级先前仅摘要文献**，**默认未勾选（关）**。
-2. 选择写入 weekly job `params`，经 `extract` CLI flag 传到 `config.FULLTEXT_UPGRADE_REEXTRACT`。
-3. 单独 CLI `extract` 不加 flag 时行为不变（仍跟 config/env，默认 true）。
+2. 选择写入 weekly job `params`，经 CLI flag 控制：
+   - `extract`：`--no-upgrade-reextract` / `--upgrade-reextract` → `config.FULLTEXT_UPGRADE_REEXTRACT`
+   - `fetch-fulltext`：关 → `--no-retry --skip-pdf`；开 → `--pdf-retry-limit N`（表单「Tier2 PDF 上限」，默认 50；0=不限）
+3. 单独 CLI `extract` / `fetch-fulltext` 不加 flag 时行为不变。
 
 ## Non-goals
 
@@ -31,19 +33,24 @@ Rejected: 仅设子进程 env（argv/日志不透明）。
 
 In `ops_panel.py` weekly form (alongside SkipEnrich):
 
-- Checkbox label: `升级先前仅摘要文献（补全文后完整重抽）`
+- Checkbox label: `升级先前仅摘要文献（冷却重试 + Tier2 PDF + 完整重抽）`
 - Default: `False`
-- Help: 开启后 extract 会对曾摘要抽取且现已有全文的论文 clear 并重抽，可能很慢
+- Help: 开启后会重试冷却失败全文并跑 Tier2；默认关闭以加快周常（本周新 pending 仅试 JATS）
+- Number input: `Tier2 PDF 上限（勾选升级时生效，0=不限）`，default `50`，disabled when checkbox off
 
-Pass `upgrade_abstract_fulltext=bool(...)` into `start_weekly_job` / `create_weekly_job`.
+Pass `upgrade_abstract_fulltext=bool(...)` and `pdf_retry_limit=int(...)` into `start_weekly_job` / `create_weekly_job`.
 
 ## Job params + argv
 
 - `params["upgrade_abstract_fulltext"]`: bool, default `False` when missing (old status.json safe).
+- `params["pdf_retry_limit"]`: int, default `50` when missing.
+- `build_weekly_argv("fetch-fulltext", params)`:
+  - `False` / missing → `["fetch-fulltext", "--no-retry", "--skip-pdf"]`
+  - `True` → `["fetch-fulltext", "--pdf-retry-limit", str(pdf_retry_limit)]`
 - `build_weekly_argv("extract", params)`:
   - `False` → `["extract", "--limit", …, "--core-only", "--no-upgrade-reextract"]`
   - `True` → `… "--upgrade-reextract"`
-- Mutual exclusion on CLI: cannot pass both flags.
+- Mutual exclusion on extract CLI: cannot pass both upgrade flags.
 
 ## Extract CLI
 

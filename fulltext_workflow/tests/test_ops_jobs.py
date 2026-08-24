@@ -26,7 +26,17 @@ def test_create_weekly_job_writes_status(monkeypatch):
     job = oj.create_weekly_job(since_days=7, extract_limit=3, skip_enrich=True)
     assert job["kind"] == "weekly"
     assert job["state"] == "pending"
-    assert len(job["steps"]) == 10
+    assert len(job["steps"]) == 8
+    assert [s["id"] for s in job["steps"]] == [
+        "fetch",
+        "enrich-s2",
+        "fetch-fulltext",
+        "extract",
+        "compute-gap-lifecycle",
+        "hotspot-report",
+        "hotspot-brief",
+        "stats",
+    ]
     assert job["params"]["skip_enrich"] is True
     loaded = oj.read_status(job["job_id"])
     assert loaded["job_id"] == job["job_id"]
@@ -45,9 +55,38 @@ def test_build_weekly_argv_skip_enrich(monkeypatch):
     assert ext == ["extract", "--limit", "5", "--core-only", "--no-upgrade-reextract"]
 
 
-def test_build_weekly_argv_fetch_fulltext_unchanged():
-    params = {"since_days": 14, "extract_limit": 0, "skip_enrich": False}
-    assert oj.build_weekly_argv("fetch-fulltext", params) == ["fetch-fulltext"]
+def test_build_weekly_argv_fetch_fulltext_respects_upgrade_flag():
+    base = {"since_days": 14, "extract_limit": 0, "skip_enrich": False}
+    # Default / missing / false → fast path: no cooled retry, no Tier-2 PDF
+    assert oj.build_weekly_argv("fetch-fulltext", base) == [
+        "fetch-fulltext",
+        "--no-retry",
+        "--skip-pdf",
+    ]
+    assert oj.build_weekly_argv(
+        "fetch-fulltext", {**base, "upgrade_abstract_fulltext": False}
+    ) == ["fetch-fulltext", "--no-retry", "--skip-pdf"]
+    # Checkbox on → cooled retry + Tier 2 with pdf_retry_limit (default 50)
+    assert oj.build_weekly_argv(
+        "fetch-fulltext", {**base, "upgrade_abstract_fulltext": True}
+    ) == ["fetch-fulltext", "--pdf-retry-limit", "50"]
+    assert oj.build_weekly_argv(
+        "fetch-fulltext",
+        {**base, "upgrade_abstract_fulltext": True, "pdf_retry_limit": 100},
+    ) == ["fetch-fulltext", "--pdf-retry-limit", "100"]
+    assert oj.build_weekly_argv(
+        "fetch-fulltext",
+        {**base, "upgrade_abstract_fulltext": True, "pdf_retry_limit": 0},
+    ) == ["fetch-fulltext", "--pdf-retry-limit", "0"]
+
+
+def test_create_weekly_job_stores_pdf_retry_limit(monkeypatch):
+    _tmp_jobs(monkeypatch)
+    job = oj.create_weekly_job(upgrade_abstract_fulltext=True, pdf_retry_limit=80)
+    assert job["params"]["pdf_retry_limit"] == 80
+    job2 = oj.create_weekly_job()
+    assert job2["params"]["pdf_retry_limit"] == 50
+    assert job2["params"]["upgrade_abstract_fulltext"] is False
 
 
 def test_tail_log_and_progress(monkeypatch):
@@ -58,7 +97,7 @@ def test_tail_log_and_progress(monkeypatch):
     job["steps"][0]["status"] = "succeeded"
     job["steps"][1]["status"] = "skipped"
     done, total = oj.progress_counts(job)
-    assert (done, total) == (2, 10)
+    assert (done, total) == (2, 8)
 
 
 def test_run_weekly_job_skips_enrich_and_succeeds(monkeypatch):
@@ -77,6 +116,45 @@ def test_run_weekly_job_skips_enrich_and_succeeds(monkeypatch):
     enrich = next(s for s in result["steps"] if s["id"] == "enrich-s2")
     assert enrich["status"] == "skipped"
     assert calls[0][0] == "fetch"
+    log = oj.tail_log(job["job_id"], max_lines=50)
+    assert "========== fetch ==========" in log
+    assert "========== fetch-fulltext ==========" in log
+
+
+def test_default_run_step_streams_before_exit(monkeypatch, tmp_path):
+    """Child output must hit the log file before the process exits."""
+    _tmp_jobs(monkeypatch)
+    script = tmp_path / "slow_print.py"
+    script.write_text(
+        "import sys, time\n"
+        "print('line-one', flush=True)\n"
+        "time.sleep(0.4)\n"
+        "print('line-two', flush=True)\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    class _Tee:
+        def write(self, s: str) -> int:
+            seen.append(s)
+            return len(s)
+
+        def flush(self) -> None:
+            return None
+
+    real_popen = oj.subprocess.Popen
+
+    def fake_popen(cmd, **kwargs):
+        # Replace main.py invocation with our slow script while keeping -u.
+        new_cmd = [cmd[0], "-u", str(script)]
+        return real_popen(new_cmd, **{k: v for k, v in kwargs.items() if k != "cwd"})
+
+    monkeypatch.setattr(oj.subprocess, "Popen", fake_popen)
+    rc = oj._default_run_step(["fetch"], _Tee())
+    assert rc == 0
+    assert any("line-one" in chunk for chunk in seen)
+    assert any("line-two" in chunk for chunk in seen)
 
 
 def test_run_weekly_job_stops_on_failure(monkeypatch):
@@ -93,7 +171,7 @@ def test_run_weekly_job_stops_on_failure(monkeypatch):
     assert result["state"] == "failed"
     ft = next(s for s in result["steps"] if s["id"] == "fetch-fulltext")
     assert ft["status"] == "failed"
-    later = next(s for s in result["steps"] if s["id"] == "build")
+    later = next(s for s in result["steps"] if s["id"] == "stats")
     assert later["status"] == "pending"
 
 
@@ -368,6 +446,15 @@ def test_build_weekly_argv_upgrade_flags():
     # Missing key → off (fast weekly default)
     missing = oj.build_weekly_argv("extract", base)
     assert missing[-1] == "--no-upgrade-reextract"
+    # Same flag also gates fetch-fulltext cooled retry + Tier 2
+    assert oj.build_weekly_argv("fetch-fulltext", base) == [
+        "fetch-fulltext",
+        "--no-retry",
+        "--skip-pdf",
+    ]
+    assert oj.build_weekly_argv(
+        "fetch-fulltext", {**base, "upgrade_abstract_fulltext": True}
+    ) == ["fetch-fulltext", "--pdf-retry-limit", "50"]
 
 
 def test_create_weekly_job_stores_upgrade_flag(monkeypatch):

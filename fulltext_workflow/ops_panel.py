@@ -68,7 +68,8 @@ def _render_status_body() -> None:
     ]
     st.markdown("　".join(step_lines))
 
-    with st.expander("日志（最近 200 行）", expanded=False):
+    with st.expander("日志（最近 200 行）", expanded=state == "running"):
+        st.caption("长步骤（如 fetch-fulltext / extract）会实时追加；约每 2 秒刷新。")
         st.code(tail_log(job["job_id"], max_lines=200) or "（暂无日志）", language="text")
 
     if state == "running":
@@ -120,10 +121,24 @@ def _render_weekly_section() -> None:
         )
 
     upgrade_abstract = st.checkbox(
-        "升级先前仅摘要文献（补全文后完整重抽）",
+        "升级先前仅摘要文献（冷却重试 + Tier2 PDF + 完整重抽）",
         value=False,
         key="ops_upgrade_abstract_fulltext",
-        help="开启后 extract 会对曾摘要抽取且现已有全文的论文 clear 并重抽，可能很慢。默认关闭以加快周常。",
+        help=(
+            "开启后：冷却期满失败重试、跑 Tier2 PDF/MinerU、"
+            "并对摘要→全文论文 clear 重抽（可能较慢）。"
+            "默认关闭：仅对本周新 pending 做 JATS；跳过冷却重试与 Tier2；不升级重抽。"
+        ),
+    )
+    pdf_retry_limit = st.number_input(
+        "Tier2 PDF 上限（勾选升级时生效，0=不限）",
+        min_value=0,
+        max_value=2000,
+        value=50,
+        step=10,
+        key="ops_pdf_retry_limit",
+        disabled=not upgrade_abstract,
+        help="仅在勾选「升级先前仅摘要文献」时生效；控制本轮 ScanSci+MinerU 最多尝试篇数。",
     )
 
     if st.button(
@@ -139,6 +154,7 @@ def _render_weekly_section() -> None:
                 extract_limit=int(extract_limit),
                 skip_enrich=bool(skip_enrich),
                 upgrade_abstract_fulltext=bool(upgrade_abstract),
+                pdf_retry_limit=int(pdf_retry_limit),
             )
             st.success(f"已启动周常任务 {job['job_id']}")
             st.rerun()
@@ -221,7 +237,7 @@ def render_ops_tab(focus_hint: str = "") -> None:
     """Render the Gap UI「运维」tab: weekly job control + clear ops memory."""
     st.subheader("周常一键更新")
     st.caption(
-        "等价于后台依次执行 `-Stage weekly` 的 10 个步骤；"
+        "等价于后台依次执行 `-Stage weekly` 的 8 个步骤（不含 build/analyze）；"
         "启动后可切换到其他标签页，任务在后台独立进程运行。"
     )
     _render_weekly_section()

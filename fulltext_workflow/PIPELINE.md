@@ -185,7 +185,7 @@ flowchart TD
 2. ScanSci PDF + MinerU → `raw/pdfs/`、`raw/mineru_output/`
 3. 均失败则标记 `full_text_status=unavailable`，后续 extract 退回摘要
 
-**重试：** 默认把冷却期满（`FULLTEXT_RETRY_COOLDOWN_DAYS`，默认 7 天）的 `unavailable` 重置为 `pending` 再抓（按 `fulltext_pdf_attempts` 递增冷却：7→14→28→56 天）。`jats_unavailable` 不在此重试，留待下次 PDF 阶段。JATS 不限量；PDF/MinerU 受 `FULLTEXT_PDF_RETRY_LIMIT`（默认 500）限制——超出限额的论文保持 `jats_unavailable`（deferred），优先尝试 `fulltext_pdf_attempts=0` 的论文，**不会**批量标记为 `unavailable`。`--no-retry` 关闭重试；`--force-retry` 忽略冷却（仅 `unavailable`）。周常 `fetch-fulltext` 使用默认行为，无需额外步骤。
+**重试：** 默认把冷却期满（`FULLTEXT_RETRY_COOLDOWN_DAYS`，默认 7 天）的 `unavailable` 重置为 `pending` 再抓（按 `fulltext_pdf_attempts` 递增冷却：7→14→28→56 天）。`jats_unavailable` 不在此重试，留待下次 PDF 阶段。JATS 不限量；PDF/MinerU 受 `FULLTEXT_PDF_RETRY_LIMIT`（默认 500）或 CLI `--pdf-retry-limit` 限制——超出限额的论文保持 `jats_unavailable`（deferred），优先尝试 `fulltext_pdf_attempts=0` 的论文，**不会**批量标记为 `unavailable`。`--no-retry` 关闭冷却重试；`--skip-pdf` 跳过 Tier 2；`--force-retry` 忽略冷却（仅 `unavailable`）。运维周常默认勾选关闭时传 `--no-retry --skip-pdf`（本周新 pending 仅试 JATS）；勾选「升级先前仅摘要文献」时启用冷却重试 + Tier2，并用表单「Tier2 PDF 上限」传 `--pdf-retry-limit`（默认 50）。
 
 ---
 

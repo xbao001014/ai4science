@@ -260,8 +260,9 @@ V-01 常用字段：`disease_id`、`task_type`、`min_followup_months`、`requir
 | 操作 | 作用 |
 |------|------|
 | 回溯天数 / 抽取上限 / SkipEnrich | 同 `run_pipeline.ps1 -Stage weekly` 的 `-SinceDays` / `-ExtractLimit` / `-SkipEnrich` |
-| 升级先前仅摘要文献 | 补全文后对曾摘要抽取的论文 clear 并重抽；**默认关闭**以加快周常 |
-| **启动周常更新** | 后台依次执行 weekly 的 10 步；已有任务在跑时按钮禁用 |
+| 升级先前仅摘要文献 | 开启：冷却重试 + Tier2 PDF/MinerU + 摘要→全文重抽；**默认关闭**（`--no-retry --skip-pdf` + `--no-upgrade-reextract`），本周新 pending 仅试 JATS |
+| Tier2 PDF 上限 | 仅勾选升级时生效；传 `--pdf-retry-limit N`（默认 50；`0`=不限） |
+| **启动周常更新** | 后台依次执行 weekly 的 8 步（不含 build/analyze）；已有任务在跑时按钮禁用 |
 | 进度条 + 步骤图标 | 查看各阶段 pending / running / succeeded / skipped / failed |
 | 日志 expander | 最近 200 行 stdout |
 | **刷新状态** | 手动刷新（支持时约 2 秒自动轮询） |

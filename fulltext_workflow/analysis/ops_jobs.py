@@ -24,8 +24,6 @@ WEEKLY_STEPS: list[dict[str, str]] = [
     {"id": "compute-gap-lifecycle", "label": "compute-gap-lifecycle"},
     {"id": "hotspot-report", "label": "hotspot-report"},
     {"id": "hotspot-brief", "label": "hotspot-brief"},
-    {"id": "build", "label": "build"},
-    {"id": "analyze", "label": "analyze"},
     {"id": "stats", "label": "stats"},
 ]
 
@@ -109,6 +107,7 @@ def create_weekly_job(
     extract_limit: int = 0,
     skip_enrich: bool = False,
     upgrade_abstract_fulltext: bool = False,
+    pdf_retry_limit: int = 50,
 ) -> dict:
     job_id = new_job_id("weekly")
     job = {
@@ -120,6 +119,7 @@ def create_weekly_job(
             "extract_limit": extract_limit,
             "skip_enrich": skip_enrich,
             "upgrade_abstract_fulltext": upgrade_abstract_fulltext,
+            "pdf_retry_limit": int(pdf_retry_limit),
         },
         "pid": None,
         "started_at": None,
@@ -137,6 +137,14 @@ def build_weekly_argv(step_id: str, params: dict) -> list[str] | None:
         return None
     if step_id == "fetch":
         return ["fetch", "--since-days", str(params["since_days"])]
+    if step_id == "fetch-fulltext":
+        # Checkbox off (default): JATS for new pending only — no cooled requeue,
+        # no Tier-2 PDF/MinerU backlog (the usual multi-hour cost). On: full path
+        # with explicit pdf_retry_limit (default 50; 0 = unlimited).
+        if params.get("upgrade_abstract_fulltext"):
+            limit = params.get("pdf_retry_limit", 50)
+            return ["fetch-fulltext", "--pdf-retry-limit", str(int(limit))]
+        return ["fetch-fulltext", "--no-retry", "--skip-pdf"]
     if step_id == "extract":
         argv = [
             "extract",
@@ -151,12 +159,9 @@ def build_weekly_argv(step_id: str, params: dict) -> list[str] | None:
         return argv
     if step_id in {
         "enrich-s2",
-        "fetch-fulltext",
         "compute-gap-lifecycle",
         "hotspot-report",
         "hotspot-brief",
-        "build",
-        "analyze",
         "stats",
     }:
         return [step_id]
@@ -196,9 +201,12 @@ def _utc_now() -> str:
 
 
 def _default_run_step(argv: list[str], log_fh) -> int:
+    """Run one main.py step, streaming stdout/stderr into log_fh as it arrives."""
     root = Path(__file__).resolve().parents[1]
-    cmd = [sys.executable, str(root / "main.py"), *argv]
-    proc = subprocess.run(
+    # -u: unbuffered child stdout so tqdm/print appear during long steps
+    cmd = [sys.executable, "-u", str(root / "main.py"), *argv]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.Popen(
         cmd,
         cwd=str(root),
         stdout=subprocess.PIPE,
@@ -206,10 +214,17 @@ def _default_run_step(argv: list[str], log_fh) -> int:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
+        bufsize=1,
     )
-    log_fh.write(proc.stdout or "")
-    log_fh.flush()
-    return int(proc.returncode)
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            log_fh.write(line)
+            log_fh.flush()
+    finally:
+        proc.stdout.close()
+    return int(proc.wait())
 
 
 def run_weekly_job(
@@ -252,6 +267,8 @@ def run_weekly_job(
         log_path = _log_path(job_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as log_fh:
+            log_fh.write(f"\n========== {step['id']} ==========\n")
+            log_fh.flush()
             rc = run_step_fn(argv, log_fh)
 
         step["finished_at"] = _utc_now()
@@ -355,9 +372,17 @@ def _default_spawn(job_id: str) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = log_path.open("a", encoding="utf-8")
     try:
-        kwargs: dict = {"cwd": str(root), "stdout": log_fh, "stderr": subprocess.STDOUT}
+        kwargs: dict = {
+            "cwd": str(root),
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_fh,
+            "stderr": subprocess.STDOUT,
+        }
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            # CREATE_NO_WINDOW: no empty console popup. Avoid DETACHED_PROCESS
+            # which often allocates a blank console window on Windows.
+            no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | no_window
         else:
             kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **kwargs)
@@ -373,6 +398,7 @@ def start_weekly_job(
     extract_limit: int = 0,
     skip_enrich: bool = False,
     upgrade_abstract_fulltext: bool = False,
+    pdf_retry_limit: int = 50,
     spawn_fn: Callable[[str], int] | None = None,
 ) -> dict:
     if spawn_fn is None:
@@ -387,6 +413,7 @@ def start_weekly_job(
         extract_limit=extract_limit,
         skip_enrich=skip_enrich,
         upgrade_abstract_fulltext=upgrade_abstract_fulltext,
+        pdf_retry_limit=pdf_retry_limit,
     )
     try:
         pid = int(spawn_fn(job["job_id"]))

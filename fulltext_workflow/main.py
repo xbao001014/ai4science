@@ -63,11 +63,13 @@ def cmd_fetch_fulltext(args: argparse.Namespace) -> None:
     retry = not getattr(args, "no_retry", False)
     force_retry = bool(getattr(args, "force_retry", False))
     pdf_limit = getattr(args, "pdf_retry_limit", None)
+    skip_pdf = bool(getattr(args, "skip_pdf", False))
     fetch_all_fulltext(
         cache_xml=True,
         retry=retry,
         force_retry=force_retry,
         pdf_retry_limit=pdf_limit,
+        skip_pdf=skip_pdf,
     )
     print("\n[Fetch-Fulltext] Stats:", db_stats())
 
@@ -551,6 +553,11 @@ def main() -> None:
         type=int,
         default=None,
         help="Max PDF/MinerU attempts this run (default: config FULLTEXT_PDF_RETRY_LIMIT; 0=unlimited)",
+    )
+    p_ft.add_argument(
+        "--skip-pdf",
+        action="store_true",
+        help="Skip Tier 2 ScanSci PDF + MinerU (JATS only; leave jats_unavailable deferred)",
     )
 
     p_ext = sub.add_parser("extract", help="LLM section extraction")

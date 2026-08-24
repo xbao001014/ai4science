@@ -72,11 +72,13 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py import-if                   # 默认 data/jcr.csv
 & $py main.py fetch-fulltext
 & $py main.py fetch-fulltext --no-retry
+& $py main.py fetch-fulltext --no-retry --skip-pdf
 & $py main.py fetch-fulltext --force-retry
 & $py main.py fetch-fulltext --pdf-retry-limit 100
 # env: FULLTEXT_RETRY_COOLDOWN_DAYS=7  FULLTEXT_PDF_RETRY_LIMIT=500
 #      FULLTEXT_PUBLISHER_DIRECT=true   # needs campus/VPN IP; IEEE+Elsevier before ScanSci
 # PDF 队列按 fulltext_pdf_attempts 升序优先从未尝试；失败重试冷却 7→14→28→56 天
+# --skip-pdf: 跳过 Tier2 PDF/MinerU（运维周常默认勾选关闭时使用）
 & $py main.py stats
 ```
 
@@ -87,7 +89,8 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py extract --limit 0 --core-only --upgrade-reextract
 & $py main.py extract --limit 30
 # env: FULLTEXT_UPGRADE_REEXTRACT=true  (default) auto-reextract abstract→fulltext upgrades
-# weekly ops job passes --no-upgrade-reextract by default (checkbox off)
+# weekly ops checkbox off (default): fetch-fulltext --no-retry --skip-pdf + extract --no-upgrade-reextract
+# weekly ops checkbox on: fetch-fulltext --pdf-retry-limit N (default 50) + extract --upgrade-reextract
 ```
 
 ### Pilot re-extract

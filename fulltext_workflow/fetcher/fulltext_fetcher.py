@@ -102,6 +102,7 @@ def fetch_all_fulltext(
     retry: bool = True,
     force_retry: bool = False,
     pdf_retry_limit: int | None = None,
+    skip_pdf: bool = False,
 ) -> dict[str, int]:
     """Three-tier fulltext acquisition (tiers 1–2; tier 3 is abstract at extract)."""
     if pdf_retry_limit is None:
@@ -133,12 +134,20 @@ def fetch_all_fulltext(
             "SELECT COUNT(*) FROM papers WHERE full_text_status='jats_unavailable'"
         ).fetchone()[0]
 
-    effective_limit = None if pdf_retry_limit == 0 else pdf_retry_limit
-    pdf_attempt_cap = jats_pool if effective_limit is None else min(jats_pool, effective_limit)
-    pdf_skipped_by_limit = max(0, jats_pool - pdf_attempt_cap)
+    if skip_pdf:
+        print("[Fulltext] Tier 2: skipped (--skip-pdf)")
+        pdf_ok = 0
+        pdf_attempt_cap = 0
+        pdf_skipped_by_limit = jats_pool
+    else:
+        effective_limit = None if pdf_retry_limit == 0 else pdf_retry_limit
+        pdf_attempt_cap = (
+            jats_pool if effective_limit is None else min(jats_pool, effective_limit)
+        )
+        pdf_skipped_by_limit = max(0, jats_pool - pdf_attempt_cap)
 
-    print("[Fulltext] Tier 2: ScanSci PDF + MinerU")
-    pdf_ok = fetch_pdf_mineru_fallback(limit=effective_limit)
+        print("[Fulltext] Tier 2: ScanSci PDF + MinerU")
+        pdf_ok = fetch_pdf_mineru_fallback(limit=effective_limit)
 
     with get_conn() as conn:
         deferred = conn.execute(
@@ -164,10 +173,11 @@ def fetch_all_fulltext(
         "pdf_available": pdf,
         "unavailable": unavail,
         "jats_unavailable_before_tier2": jats_pool,
+        "skip_pdf": skip_pdf,
     }
     print(
         f"[Fulltext] Done: retried={retried}, JATS={jats}, MinerU-PDF={pdf}, "
         f"abstract-only={unavail}, pdf_deferred={deferred}, "
-        f"pdf_skipped_by_limit={pdf_skipped_by_limit}"
+        f"pdf_skipped_by_limit={pdf_skipped_by_limit}, skip_pdf={skip_pdf}"
     )
     return stats

@@ -203,6 +203,38 @@ def test_pdf_fallback_limit_leaves_untried_as_jats_unavailable(monkeypatch):
     assert rows["1"] == ("jats_unavailable", 1)  # not attempted this run
 
 
+def test_fetch_all_fulltext_skip_pdf(monkeypatch):
+    from fetcher import fulltext_fetcher as ff
+
+    _tmp_db(monkeypatch)
+    pid = upsert_paper(
+        {"pmid": "60", "doi": "10.1/60", "title": "T", "year": 2025}
+    )
+    mark_fulltext_status(pid, "jats_unavailable")
+    called = {"pdf": False}
+
+    def _pdf(**kwargs):
+        called["pdf"] = True
+        return 0
+
+    monkeypatch.setattr(ff, "fetch_jats_fulltext", lambda cache_xml=True: None)
+    monkeypatch.setattr(ff, "fetch_pdf_mineru_fallback", _pdf)
+    monkeypatch.setattr(
+        ff, "repair_misclassified_unavailable_without_pdf_attempt", lambda: 0
+    )
+
+    stats = ff.fetch_all_fulltext(retry=False, skip_pdf=True)
+    assert called["pdf"] is False
+    assert stats["skip_pdf"] is True
+    assert stats["pdf_attempted"] == 0
+    assert stats["pdf_skipped_by_limit"] >= 1
+    with get_conn() as conn:
+        st = conn.execute(
+            "SELECT full_text_status FROM papers WHERE id=?", (pid,)
+        ).fetchone()[0]
+    assert st == "jats_unavailable"
+
+
 def test_fetch_all_does_not_finalize_deferred(monkeypatch):
     from fetcher import fulltext_fetcher as ff
 
