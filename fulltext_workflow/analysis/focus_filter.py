@@ -270,6 +270,64 @@ def _pmids_phrase_or(phrases: list[str]) -> list[str]:
     """)
 
 
+def _pmids_disease_or_title(phrases: list[str]) -> list[str]:
+    """Match title or TARGETS_DISEASE only — ignore Dataset/Task/Method names."""
+    title_fc = _phrase_or_expr("p.title", phrases)
+    disease_fc = _phrase_or_expr("e.name", phrases)
+    return _q_pmids(f"""
+        SELECT DISTINCT pmid FROM (
+            SELECT p.pmid FROM papers p WHERE {title_fc}
+            UNION
+            SELECT r.source_pmid AS pmid FROM relations r
+            JOIN entities e ON r.object_id = e.id
+            WHERE e.type = 'Disease'
+              AND r.relation = 'TARGETS_DISEASE'
+              AND COALESCE(r.status, 'active') = 'active'
+              AND {disease_fc}
+        )
+    """)
+
+
+def _pmids_full_phrase_disease_or_title(keyword: str) -> list[str]:
+    safe = _escape_sql_like(keyword.strip())
+    return _q_pmids(f"""
+        SELECT DISTINCT pmid FROM (
+            SELECT p.pmid FROM papers p
+            WHERE LOWER(p.title) LIKE LOWER('%{safe}%')
+            UNION
+            SELECT r.source_pmid AS pmid FROM relations r
+            JOIN entities e ON r.object_id = e.id
+            WHERE e.type = 'Disease'
+              AND r.relation = 'TARGETS_DISEASE'
+              AND COALESCE(r.status, 'active') = 'active'
+              AND LOWER(e.name) LIKE LOWER('%{safe}%')
+        )
+    """)
+
+
+def _pmids_token_scored_disease_or_title(tokens: list[str]) -> list[str]:
+    min_hits = _keyword_min_hits(len(tokens))
+    title_score = _token_score_expr("p.title", tokens)
+    disease_score = _token_score_expr("e.name", tokens)
+    return _q_pmids(f"""
+        SELECT pmid FROM (
+            SELECT p.pmid,
+                {title_score} + COALESCE((
+                    SELECT MAX({disease_score})
+                    FROM relations r
+                    JOIN entities e ON r.object_id = e.id
+                    WHERE r.source_pmid = p.pmid
+                      AND e.type = 'Disease'
+                      AND r.relation = 'TARGETS_DISEASE'
+                      AND COALESCE(r.status, 'active') = 'active'
+                ), 0) AS match_score
+            FROM papers p
+        )
+        WHERE match_score >= {min_hits}
+        ORDER BY match_score DESC
+    """)
+
+
 def resolve_topic_pmids(keyword: str) -> tuple[list[str], str]:
     """
     Multi-level topic match: concept phrases → full phrase → token score → key bigrams.
@@ -308,6 +366,47 @@ def resolve_topic_pmids(keyword: str) -> tuple[list[str], str]:
                 if len(bigrams) > 3:
                     shown += "..."
                 return pmids, f"key_phrases({shown})"
+
+    return [], "no_match"
+
+
+def resolve_v03_topic_pmids(keyword: str) -> tuple[list[str], str]:
+    """
+    V-03 topic match: same fallback ladder as resolve_topic_pmids, but only via
+    paper title or TARGETS_DISEASE (never Dataset/Task/Method entity names).
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        return [], "empty"
+
+    from analysis.disease_synonyms import expand_focus_terms, resolve_disease_concept
+
+    concept = resolve_disease_concept(kw)
+    if concept:
+        exp = expand_focus_terms(kw)
+        phrases = exp.get("phrases") or []
+        if phrases:
+            pmids = _pmids_disease_or_title(phrases)
+            if pmids:
+                return pmids, f"disease_or_title_concept({exp['concept_id']})"
+
+    pmids = _pmids_full_phrase_disease_or_title(kw)
+    if pmids:
+        return pmids, "disease_or_title_full_phrase"
+
+    tokens = meaningful_keyword_tokens(kw)
+    if len(tokens) >= 2:
+        pmids = _pmids_token_scored_disease_or_title(tokens)
+        if pmids:
+            return pmids, f"disease_or_title_token_score({','.join(tokens)})"
+        bigrams = keyword_bigrams(tokens)
+        if bigrams:
+            pmids = _pmids_disease_or_title(bigrams)
+            if pmids:
+                shown = "; ".join(bigrams[:3])
+                if len(bigrams) > 3:
+                    shown += "..."
+                return pmids, f"disease_or_title_key_phrases({shown})"
 
     return [], "no_match"
 

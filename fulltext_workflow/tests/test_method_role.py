@@ -100,6 +100,23 @@ def test_expanded_tool_seeds():
         assert classify_method_role(name) == "tool"
 
 
+def test_high_frequency_unknown_catchups():
+    assert classify_method_role("lasso regression") == "classical_ml"
+    assert classify_method_role("svm-rfe") == "classical_ml"
+    assert classify_method_role("k-means clustering") == "classical_ml"
+    assert classify_method_role("multilayer perceptron") == "classical_ml"
+    assert classify_method_role("mask r-cnn") == "backbone"
+    assert classify_method_role("deeplabv3+") == "backbone"
+    assert classify_method_role("nnunet") == "backbone"
+    assert classify_method_role("grad-cam") == "tool"
+    assert classify_method_role("shap") == "tool"
+    assert classify_method_role("spatial transcriptomics") == "tool"
+    assert classify_method_role(
+        "weighted gene co-expression network analysis (wgcna)"
+    ) == "tool"
+    assert classify_method_role("gene set enrichment analysis (gsea)") == "tool"
+
+
 def test_backbone_missings():
     assert classify_method_role("hover-net") == "backbone"
     assert classify_method_role("segformer") == "backbone"

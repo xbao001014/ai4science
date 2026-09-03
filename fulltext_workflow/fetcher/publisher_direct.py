@@ -1,4 +1,8 @@
-"""Campus-IP publisher PDF direct download (IEEE / Elsevier). Opt-in via config."""
+"""Campus-IP publisher PDF direct download (IEEE only). Opt-in via config.
+
+Elsevier/ScienceDirect is intentionally omitted: anti-bot cookies block
+scripted pdfft downloads; those DOIs fall through to ScanSci OA racing.
+"""
 from __future__ import annotations
 
 import re
@@ -8,10 +12,9 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-Publisher = Literal["ieee", "elsevier"]
+Publisher = Literal["ieee"]
 
 _IEEE_PREFIX = "10.1109/"
-_ELSEVIER_PREFIX = "10.1016/"
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -22,8 +25,6 @@ def publisher_for_doi(doi: str) -> Publisher | None:
     d = (doi or "").strip().lower()
     if d.startswith(_IEEE_PREFIX):
         return "ieee"
-    if d.startswith(_ELSEVIER_PREFIX):
-        return "elsevier"
     return None
 
 
@@ -151,81 +152,6 @@ def _try_ieee(doi: str, output_path: Path, *, timeout: float = 25.0) -> dict[str
     return _fail("ieee_direct", "ieee_pdf_not_found")
 
 
-def _extract_elsevier_pii(resolved: str, html: str) -> str | None:
-    """Extract Elsevier PII from ScienceDirect or linkinghub landing URLs."""
-    patterns = (
-        r"/science/article/pii/([A-Z0-9]+)",
-        r"/retrieve/pii/([A-Z0-9]+)",
-    )
-    for text in (resolved, html):
-        for pat in patterns:
-            m = re.search(pat, text, re.I)
-            if m:
-                return m.group(1)
-    return None
-
-
-def _extract_elsevier_pdf_urls(resolved: str, html: str) -> list[str]:
-    urls: list[str] = []
-    m = re.search(
-        r'citation_pdf_url["\s]+content=["\']([^"\']+)["\']',
-        html,
-        re.I,
-    )
-    if m:
-        urls.append(m.group(1))
-    # ScienceDirect PII pdfft (from article page or linkinghub retrieve/pii)
-    pii = _extract_elsevier_pii(resolved, html)
-    if pii:
-        urls.append(
-            f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft"
-            "?isDTMRedir=true&download=true"
-        )
-        urls.append(
-            f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft"
-        )
-    for m in re.finditer(r'href=["\']([^"\']+\.pdf[^"\']*)["\']', html, re.I):
-        href = m.group(1)
-        if href.startswith("/"):
-            host = f"{urlparse(resolved).scheme}://{urlparse(resolved).netloc}"
-            href = host + href
-        if href.startswith("http"):
-            urls.append(href)
-    # de-dupe preserve order
-    seen: set[str] = set()
-    out: list[str] = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
-
-
-def _try_elsevier(doi: str, output_path: Path, *, timeout: float = 25.0) -> dict[str, Any]:
-    resolved = _resolve_doi_url(doi, timeout=timeout)
-    if not resolved:
-        return _fail("elsevier_direct", "doi_resolve_failed")
-    html = ""
-    try:
-        r = _session().get(resolved, timeout=timeout, allow_redirects=True)
-        if r.status_code >= 400:
-            return _fail("elsevier_direct", f"landing_http_{r.status_code}")
-        html = r.text[:300_000]
-        resolved = r.url or resolved
-    except requests.RequestException as e:
-        return _fail("elsevier_direct", f"landing_error:{type(e).__name__}")
-
-    for url in _extract_elsevier_pdf_urls(resolved, html):
-        if _download_url_to_path(url, output_path, timeout=timeout):
-            return {
-                "success": True,
-                "file": str(output_path),
-                "source": "elsevier_direct",
-                "reason": "",
-            }
-    return _fail("elsevier_direct", "elsevier_pdf_not_found")
-
-
 def try_publisher_direct(
     doi: str,
     output_path: Path,
@@ -235,6 +161,4 @@ def try_publisher_direct(
     pub = publisher_for_doi(doi)
     if pub is None:
         return _fail("none", "unsupported_publisher")
-    if pub == "ieee":
-        return _try_ieee(doi, output_path, timeout=timeout)
-    return _try_elsevier(doi, output_path, timeout=timeout)
+    return _try_ieee(doi, output_path, timeout=timeout)

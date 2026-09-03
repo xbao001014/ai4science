@@ -50,9 +50,9 @@ MINERU_OUTPUT_DIR: str = str(_ROOT / "raw" / "mineru_output")
 # ── PDF fallback (ScanSci + MinerU) ──────────────────────────────────────────
 SCANSCI_STRATEGY: str = os.getenv("SCANSCI_STRATEGY", "oa_first")
 SCANSCI_RATE_DELAY: float = float(os.getenv("SCANSCI_RATE_DELAY", "1.0"))
-# Campus/VPN IP direct for IEEE (10.1109/) / Elsevier (10.1016/); default off
+# Campus/VPN IP direct for IEEE (10.1109/) only; Elsevier omitted (anti-bot). Default on.
 FULLTEXT_PUBLISHER_DIRECT: bool = os.getenv(
-    "FULLTEXT_PUBLISHER_DIRECT", "false"
+    "FULLTEXT_PUBLISHER_DIRECT", "true"
 ).lower() in ("1", "true", "yes", "on")
 MINERU_BACKEND: str = os.getenv("MINERU_BACKEND", "pipeline")
 MINERU_MODEL_SOURCE: str = os.getenv("MINERU_MODEL_SOURCE", "modelscope")
@@ -162,10 +162,11 @@ OPENAI_API_BASE: str = _env_first(
 OPENAI_API_KEY: str = _env_first(
     "OPENAI_API_KEY", "DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"
 )
-LLM_MODEL: str = _env_first("LLM_MODEL", default="deepseek-v4-flash")
+# Bailian: deepseek-v4-flash is preview; use snapshot deepseek-v4-flash-0731 (stable)
+LLM_MODEL: str = _env_first("LLM_MODEL", default="deepseek-v4-flash-0731")
 # extract: section triple extraction; agent: gap-debate / idea-pipeline / gap_ui
 LLM_MODEL_EXTRACT: str = _env_first("LLM_MODEL_EXTRACT", default=LLM_MODEL)
-LLM_MODEL_AGENT: str = _env_first("LLM_MODEL_AGENT", default="qwen3.7-plus")
+LLM_MODEL_AGENT: str = _env_first("LLM_MODEL_AGENT", default="qwen3.8-max")
 LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "16384"))
 LLM_MAX_INPUT_CHARS: int = int(os.getenv("LLM_MAX_INPUT_CHARS", "800000"))
 LLM_MAX_TOOL_RESULT_CHARS: int = int(

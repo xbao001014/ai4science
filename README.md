@@ -83,10 +83,11 @@ build_kg_paper/
 
 ## 能力概览
 
-1. **建库**：PubMed → 引用/IF → 全文 → LLM 抽取 → KG  
-2. **周更**：EDAT 增量 + 周热点报告 / LLM 简报  
+1. **建库**：PubMed → 引用/IF → 全文（冷却重试）→ LLM 抽取（摘要→全文可自动重抽）→ KG  
+2. **周更**：EDAT 增量 + 周热点报告 / LLM 简报（CLI 或 Gap UI「运维」后台）  
 3. **Gap**：静态 SQL 报告 · 三角色辩论 · ops memory 软去重  
-4. **可行性**：方信病理 LIS landscape + idea-pipeline  
+4. **可行性**：方信病理 LIS landscape（API 实测池，无估计 floor）+ idea-pipeline  
+5. **运维 UI**：一键 weekly + 清空 ops memory  
 
 ---
 

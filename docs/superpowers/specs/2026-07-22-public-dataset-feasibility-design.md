@@ -14,17 +14,27 @@
 |----|------|
 | 算法 | 确定性 KG 规则（无 LLM 打分；无病种→公开集策展表） |
 | 入口 | idea-pipeline Stage 2 自动+落库；gap_ui「数据可行性」V-03；Proposal 必调工具 |
-| 选集 | 论文中介（`resolve_topic_pmids`），**不**用数据集名匹配 focus |
+| 选集 | 论文中介（`resolve_v03_topic_pmids`：仅标题 / `TARGETS_DISEASE`），再经 focus-primary 过滤；**不**用数据集名匹配 focus |
 | 与方信 | 并行通道；方信仍为主队列规则 |
 
 ## 数据流
 
 ```
 extract (access_class) → entities / USES_DATASET
-focus/gap → resolve_topic_pmids → 相关 papers
+focus/gap → resolve_v03_topic_pmids (title|TARGETS_DISEASE)
+→ filter_focus_primary_pmids（排除跨部位多病种论文）
 → V-03 public_dataset_assess → public_dataset_assessments
 → gap_ui V-03 / idea-pipeline Stage 2 / idea_agent Proposal
 ```
+
+### Focus-primary 规则
+
+一篇论文可为 V-03 贡献 `USES_DATASET`，当且仅当：
+
+1. **标题**命中 focus 概念短语；或
+2. `TARGETS_DISEASE` 含 focus（或同部位概念），且**不**含与 focus **部位不相交**的其他疾病概念（例如 breast + colon 对肠癌 focus → 不贡献，避免 BreakHis 等异部位基准混入）。
+
+数据集名仍可不含 focus（如乳腺癌 focus 下的 Camelyon17）。
 
 ## 报告 JSON
 

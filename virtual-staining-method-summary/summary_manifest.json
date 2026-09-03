@@ -1,0 +1,373 @@
+{
+  "model": "qwen3.8-max",
+  "results": [
+    {
+      "pmid": "27373749",
+      "status": "generated",
+      "file": "PMID_27373749_Stain Normalization using Sparse AutoEncoders (StaNoSA)_ Application to digital pathology.md",
+      "chars": 10327,
+      "source": "manual_pdf",
+      "source_file": "27373749.pdf",
+      "source_pages": 30,
+      "source_chars": 61354,
+      "prompt_evidence_chars": 61823
+    },
+    {
+      "pmid": "29533895",
+      "status": "generated",
+      "file": "PMID_29533895_Adversarial Stain Transfer for Histopathology Image Analysis.md",
+      "chars": 10492,
+      "source": "local_db_fulltext",
+      "source_sections": 14,
+      "prompt_evidence_chars": 66349
+    },
+    {
+      "pmid": "30728961",
+      "status": "generated",
+      "file": "PMID_30728961_PhaseStain_ the digital staining of label-free quantitative phase microscopy images using deep learning.md",
+      "chars": 6251,
+      "source_sections": 14,
+      "source_chars": 31847
+    },
+    {
+      "pmid": "31632974",
+      "status": "generated",
+      "file": "PMID_31632974_A High-Performance System for Robust Stain Normalization of Whole-Slide Images in Histopathology.md",
+      "chars": 9935,
+      "source": "local_db_fulltext",
+      "source_sections": 24,
+      "prompt_evidence_chars": 43807
+    },
+    {
+      "pmid": "31872065",
+      "status": "generated",
+      "file": "PMID_31872065_Real-time intraoperative diagnosis by deep neural network driven multiphoton virtual histology.md",
+      "chars": 10198,
+      "source": "local_db_fulltext",
+      "source_sections": 12,
+      "prompt_evidence_chars": 32869
+    },
+    {
+      "pmid": "32238879",
+      "status": "generated",
+      "file": "PMID_32238879_A machine learning algorithm for simulating immunohistochemistry_ development of SOX10 virtual IHC and evaluation on pri.md",
+      "chars": 10107,
+      "source": "manual_pdf",
+      "source_file": "32238879.pdf",
+      "source_pages": 22,
+      "source_chars": 48550,
+      "prompt_evidence_chars": 48891
+    },
+    {
+      "pmid": "33718644",
+      "status": "generated",
+      "file": "PMID_33718644_Mutual stain conversion between Giemsa and Papanicolaou in cytological images using cycle generative adversarial network.md",
+      "chars": 5605,
+      "source_sections": 13,
+      "source_chars": 17429
+    },
+    {
+      "pmid": "33784619",
+      "status": "generated",
+      "file": "PMID_33784619_Unpaired Stain Transfer Using Pathology-Consistent Constrained Generative Adversarial Networks.md",
+      "chars": 11427,
+      "source": "local_db_fulltext",
+      "source_sections": 26,
+      "prompt_evidence_chars": 72067
+    },
+    {
+      "pmid": "34362386",
+      "status": "generated",
+      "file": "PMID_34362386_Normalization of HE-stained histological images using cycle consistent generative adversarial networks.md",
+      "chars": 9485,
+      "source": "local_db_fulltext",
+      "source_sections": 25,
+      "prompt_evidence_chars": 46585
+    },
+    {
+      "pmid": "34795202",
+      "status": "generated",
+      "file": "PMID_34795202_Biopsy-free in vivo virtual histology of skin using deep learning.md",
+      "chars": 11322,
+      "source": "local_db_fulltext",
+      "source_sections": 18,
+      "prompt_evidence_chars": 72043
+    },
+    {
+      "pmid": "34805215",
+      "status": "generated",
+      "file": "PMID_34805215_StainNet_ A Fast and Robust Stain Normalization Network.md",
+      "chars": 8588,
+      "source": "local_db_fulltext",
+      "source_sections": 20,
+      "prompt_evidence_chars": 32725
+    },
+    {
+      "pmid": "35026572",
+      "status": "generated",
+      "file": "PMID_35026572_Stain transfer using Generative Adversarial Networks and disentangled features.md",
+      "chars": 11736,
+      "source": "manual_pdf",
+      "source_file": "35026572.pdf",
+      "source_pages": 12,
+      "source_chars": 76515,
+      "prompt_evidence_chars": 71139
+    },
+    {
+      "pmid": "35810588",
+      "status": "generated",
+      "file": "PMID_35810588_MVFStain_ Multiple virtual functional stain histopathology images generation based on specific domain mapping.md",
+      "chars": 11707,
+      "source": "manual_pdf",
+      "source_file": "35810588.pdf",
+      "source_pages": 12,
+      "source_chars": 60629,
+      "prompt_evidence_chars": 60810
+    },
+    {
+      "pmid": "35877646",
+      "status": "generated",
+      "file": "PMID_35877646_StainCUT_ Stain Normalization with Contrastive Learning.md",
+      "chars": 9926,
+      "source": "local_db_fulltext",
+      "source_sections": 16,
+      "prompt_evidence_chars": 42881
+    },
+    {
+      "pmid": "36113326",
+      "status": "generated",
+      "file": "PMID_36113326_Colour adaptive generative networks for stain normalisation of histopathology images.md",
+      "chars": 10417,
+      "source": "manual_pdf",
+      "source_file": "36113326.pdf",
+      "source_pages": 13,
+      "source_chars": 78985,
+      "prompt_evidence_chars": 71600
+    },
+    {
+      "pmid": "36268068",
+      "status": "generated",
+      "file": "PMID_36268068_Improving unsupervised stain-to-stain translation using self-supervision and meta-learning.md",
+      "chars": 7412,
+      "source_sections": 20,
+      "source_chars": 41098
+    },
+    {
+      "pmid": "36328671",
+      "status": "generated",
+      "file": "PMID_36328671_CycleGAN for virtual stain transfer_ Is seeing really believing_.md",
+      "chars": 11381,
+      "source": "manual_pdf",
+      "source_file": "36328671.pdf",
+      "source_pages": 18,
+      "source_chars": 77998,
+      "prompt_evidence_chars": 70909
+    },
+    {
+      "pmid": "36473344",
+      "status": "generated",
+      "file": "PMID_36473344_Stain normalization using score-based diffusion model through stain separation and overlapped moving window patch strate.md",
+      "chars": 11897,
+      "source": "manual_pdf",
+      "source_file": "36473344.pdf",
+      "source_pages": 7,
+      "source_chars": 32754,
+      "prompt_evidence_chars": 32857
+    },
+    {
+      "pmid": "36764189",
+      "status": "generated",
+      "file": "PMID_36764189_Unpaired virtual histological staining using prior-guided generative adversarial networks.md",
+      "chars": 14128,
+      "source": "manual_pdf",
+      "source_file": "36764189.pdf",
+      "source_pages": 10,
+      "source_chars": 53198,
+      "prompt_evidence_chars": 53347
+    },
+    {
+      "pmid": "36801642",
+      "status": "generated",
+      "file": "PMID_36801642_Unstained Tissue Imaging and Virtual Hematoxylin and Eosin Staining of Histologic Whole Slide Images.md",
+      "chars": 11420,
+      "source": "manual_pdf",
+      "source_file": "36801642.pdf",
+      "source_pages": 12,
+      "source_chars": 61624,
+      "prompt_evidence_chars": 61805
+    },
+    {
+      "pmid": "36844704",
+      "status": "generated",
+      "file": "PMID_36844704_Unsupervised many-to-many stain translation for histological image augmentation to improve classification accuracy.md",
+      "chars": 6246,
+      "source_sections": 21,
+      "source_chars": 40252
+    },
+    {
+      "pmid": "37040684",
+      "status": "generated",
+      "file": "PMID_37040684_Comparison of deep learning models for digital H&E staining from unpaired label-free multispectral microscopy images.md",
+      "chars": 10371,
+      "source": "manual_pdf",
+      "source_file": "37040684.pdf",
+      "source_pages": 14,
+      "source_chars": 67455,
+      "prompt_evidence_chars": 67668
+    },
+    {
+      "pmid": "37223268",
+      "status": "generated",
+      "file": "PMID_37223268_The effect of neural network architecture on virtual H&E staining_ Systematic assessment of histological feasibility.md",
+      "chars": 8296,
+      "source_sections": 20,
+      "source_chars": 54289
+    },
+    {
+      "pmid": "37749108",
+      "status": "generated",
+      "file": "PMID_37749108_Deep learning-enabled realistic virtual histology with ultraviolet photoacoustic remote sensing microscopy.md",
+      "chars": 6155,
+      "source_sections": 27,
+      "source_chars": 66096
+    },
+    {
+      "pmid": "37852162",
+      "status": "generated",
+      "file": "PMID_37852162_FFPE++_ Improving the quality of formalin-fixed paraffin-embedded tissue imaging via contrastive unpaired image-to-image.md",
+      "chars": 12553,
+      "source": "manual_pdf",
+      "source_file": "37852162.pdf",
+      "source_pages": 16,
+      "source_chars": 69685,
+      "prompt_evidence_chars": 69930
+    },
+    {
+      "pmid": "37932315",
+      "status": "generated",
+      "file": "PMID_37932315_Virtual staining for pixel-wise and quantitative analysis of single cell images.md",
+      "chars": 7791,
+      "source": "local_db_fulltext",
+      "source_sections": 16,
+      "prompt_evidence_chars": 25035
+    },
+    {
+      "pmid": "38198253",
+      "status": "generated",
+      "file": "PMID_38198253_Unsupervised Multi-Domain Progressive Stain Transfer Guided by Style Encoding Dictionary.md",
+      "chars": 13125,
+      "source": "manual_pdf",
+      "source_file": "38198253.pdf",
+      "source_pages": 13,
+      "source_chars": 62766,
+      "prompt_evidence_chars": 62963
+    },
+    {
+      "pmid": "38231822",
+      "status": "generated",
+      "file": "PMID_38231822_Automated Whole Slide Imaging for Label-Free Histology Using Photon Absorption Remote Sensing Microscopy.md",
+      "chars": 12542,
+      "source": "local_db_fulltext",
+      "source_sections": 17,
+      "prompt_evidence_chars": 66247
+    },
+    {
+      "pmid": "38282056",
+      "status": "generated",
+      "file": "PMID_38282056_Dual contrastive learning based image-to-image translation of unstained skin tissue into virtually stained H&E images.md",
+      "chars": 6247,
+      "source_sections": 19,
+      "source_chars": 69251
+    },
+    {
+      "pmid": "38325706",
+      "status": "generated",
+      "file": "PMID_38325706_Virtual Staining of Nonfixed Tissue Histology.md",
+      "chars": 4637,
+      "source_sections": 14,
+      "source_chars": 44612
+    },
+    {
+      "pmid": "38574542",
+      "status": "generated",
+      "file": "PMID_38574542_Multi-domain stain normalization for digital pathology_ A cycle-consistent adversarial network for whole slide images.md",
+      "chars": 12979,
+      "source": "manual_pdf",
+      "source_file": "38574542.pdf",
+      "source_pages": 12,
+      "source_chars": 71615,
+      "prompt_evidence_chars": 71796
+    },
+    {
+      "pmid": "38948152",
+      "status": "generated",
+      "file": "PMID_38948152_Deep learning-based virtual H& E staining from label-free autofluorescence lifetime images.md",
+      "chars": 7927,
+      "source_sections": 15,
+      "source_chars": 43060
+    },
+    {
+      "pmid": "39069201",
+      "status": "generated",
+      "file": "PMID_39069201_Clinical-Grade Validation of an Autofluorescence Virtual Staining System With Human Experts and a Deep Learning System f.md",
+      "chars": 9850,
+      "source": "manual_pdf",
+      "source_file": "39069201.pdf",
+      "source_pages": 12,
+      "source_chars": 56854,
+      "prompt_evidence_chars": 57035
+    },
+    {
+      "pmid": "39087085",
+      "status": "generated",
+      "file": "PMID_39087085_Transformation from hematoxylin-and-eosin staining to Ki-67 immunohistochemistry digital staining images using deep lear.md",
+      "chars": 11887,
+      "source": "local_db_fulltext",
+      "source_sections": 23,
+      "prompt_evidence_chars": 42657
+    },
+    {
+      "pmid": "39223152",
+      "status": "generated",
+      "file": "PMID_39223152_Deep learning-based virtual staining, segmentation, and classification in label-free photoacoustic histology of human sp.md",
+      "chars": 8411,
+      "source_sections": 27,
+      "source_chars": 43741
+    },
+    {
+      "pmid": "39636222",
+      "status": "generated",
+      "file": "PMID_39636222_Autofluorescence Virtual Staining System for H&E Histology and Multiplex Immunofluorescence Applied to Immuno-Oncology B.md",
+      "chars": 6838,
+      "source_sections": 20,
+      "source_chars": 36263
+    },
+    {
+      "pmid": "40158294",
+      "status": "generated",
+      "file": "PMID_40158294_Artificial intelligence-based virtual staining platform for identifying tumor-associated macrophages from hematoxylin an.md",
+      "chars": 10331,
+      "source": "manual_pdf",
+      "source_file": "40158294.pdf",
+      "source_pages": 18,
+      "source_chars": 39960,
+      "prompt_evidence_chars": 40237
+    },
+    {
+      "pmid": "41118427",
+      "status": "generated",
+      "file": "PMID_41118427_Scalable, trustworthy generative model for virtual multi-staining from H&E whole slide images.md",
+      "chars": 8407,
+      "source_sections": 31,
+      "source_chars": 76540
+    },
+    {
+      "pmid": "41888143",
+      "status": "generated",
+      "file": "PMID_41888143_Generative AI for misalignment-resistant virtual staining to accelerate histopathology workflows.md",
+      "chars": 7663,
+      "source_sections": 33,
+      "source_chars": 57466
+    }
+  ]
+}

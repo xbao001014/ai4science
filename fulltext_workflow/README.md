@@ -5,7 +5,7 @@
 - PubMed 元数据 → 全文（JATS / PDF+MinerU）→ 分章节 LLM 抽取 → NetworkX 建图  
 - 静态 Gap 报告、多智能体辩论、周热点、ops memory 软去重  
 - 方信 LIS 数据可行性 + 研究方案（idea-pipeline）  
-- Streamlit 七标签页 UI（`gap_ui.py`）
+- Streamlit 八标签页 UI（`gap_ui.py`，含「运维」周更）
 
 独立数据库：`data/kg_fulltext.db`（不依赖已移除的主程序库）。
 
@@ -57,6 +57,7 @@ FETCH_EDAT_DAYS=14
 & $py main.py compute-gap-lifecycle
 & $py main.py build | viz | analyze | stats
 & $py main.py hotspot-report | hotspot-brief
+& $py main.py backfill-method-roles [--force]
 & $py main.py bootstrap-landscape [--force]
 & $py main.py gap-debate --focus "…" -o output/gap_debate_report.md
 & $py main.py idea-pipeline --focus "digital pathology" --top 3
@@ -64,26 +65,29 @@ FETCH_EDAT_DAYS=14
 
 完整参数与周更说明见 [SCRIPTS.md](SCRIPTS.md) / [PIPELINE.md](PIPELINE.md)。
 
-## Gap UI（七标签页）
+## Gap UI（八标签页）
 
-Debate Process · Weekly Hotspot · Visualization · Evidence & Literature · Gap Report · Data Feasibility · Research Proposal
+Debate Process · Weekly Hotspot · Visualization · Evidence & Literature · Gap Report · Data Feasibility · Research Proposal · **运维**
 
-侧边栏默认开启 **Use ops memory** / **Persist this run**。
+侧边栏默认开启 **Use ops memory** / **Persist this run**。「运维」可后台跑 weekly，并清空 ops memory。
 
 ## 能力模块
 
 | 模块 | 作用 |
 |------|------|
-| `fetcher/` | PubMed、全文、引用 enrichment |
-| `extractor/` | 分章节 LLM 三元组抽取（粒度政策见 [extractor/GRANULARITY.md](extractor/GRANULARITY.md)） |
+| `fetcher/` | PubMed、全文（冷却重试）、引用 enrichment |
+| `extractor/` | 分章节 LLM 三元组抽取（粒度政策见 [extractor/GRANULARITY.md](extractor/GRANULARITY.md)；摘要→全文自动重抽） |
 | `graph/` + `viz/` | NetworkX / Pyvis |
 | `analysis/gap_tools.py` | SQL Gap + impact 加权 |
 | `analysis/gap_lifecycle.py` | limitation 时间画像 |
-| `analysis/weekly_hotspot.py` | 周发表热点 + WoW |
+| `analysis/weekly_hotspot.py` | 周发表热点 + WoW + method_role |
+| `analysis/method_role.py` | Method 架构角色分类 / 回填 |
 | `analysis/ops_memory.py` | 周常辩论记忆软去重 |
+| `analysis/ops_jobs.py` | Gap UI 运维后台周更 |
 | `gap_agent.py` | Opportunity Scout × Evidence Reviewer × Final Synthesizer |
 | `idea_agent.py` + `pipeline.py` | 可行性门控 + 方案生成 |
-| `feasibility/` | 方信 LIS HTTP 客户端 |
+| `feasibility/` | 方信 LIS（API-faithful pools，无估计 floor） |
+| `ops_panel.py` | 运维 Tab UI |
 
 ## 数据路径
 
@@ -106,3 +110,7 @@ Debate Process · Weekly Hotspot · Visualization · Evidence & Literature · Ga
 - [`api_document.md`](../api_document.md) — 方信病理 API  
 - [`pathology_data_api_spec.md`](../pathology_data_api_spec.md) — 可行性闭环规格  
 - [`docs/superpowers/specs/2026-07-15-ops-memory-design.md`](../docs/superpowers/specs/2026-07-15-ops-memory-design.md) — Ops memory 设计  
+- [`docs/superpowers/specs/2026-08-04-gap-ui-ops-weekly-job-design.md`](../docs/superpowers/specs/2026-08-04-gap-ui-ops-weekly-job-design.md) — Gap UI 运维 / weekly job  
+- [`docs/superpowers/specs/2026-08-04-feasibility-api-faithful-pools-design.md`](../docs/superpowers/specs/2026-08-04-feasibility-api-faithful-pools-design.md) — V-01 API-faithful pools  
+- [`docs/superpowers/specs/2026-08-05-abstract-fulltext-upgrade-reextract-design.md`](../docs/superpowers/specs/2026-08-05-abstract-fulltext-upgrade-reextract-design.md) — 摘要→全文自动重抽  
+

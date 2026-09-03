@@ -1,0 +1,278 @@
+{
+  "model": "qwen3.8-max",
+  "results": [
+    {
+      "pmid": "29531073",
+      "status": "generated",
+      "file": "PMID_29531073_Predicting cancer outcomes from histology and genomics using convolutional networks.md",
+      "chars": 7145,
+      "source_sections": 17,
+      "source_chars": 35374
+    },
+    {
+      "pmid": "31510656",
+      "status": "generated",
+      "file": "PMID_31510656_Deep learning with multimodal representation for pancancer prognosis prediction.md",
+      "chars": 6693,
+      "source_sections": 20,
+      "source_chars": 29229
+    },
+    {
+      "pmid": "31797610",
+      "status": "skipped",
+      "file": "PMID_31797610_PAGE-Net_ Interpretable and Integrative Deep Learning for Survival Analysis Using Histopathological Images and Genomic D.md"
+    },
+    {
+      "pmid": "32729045",
+      "status": "generated",
+      "file": "PMID_32729045_Multiparametric MRI and Whole Slide Image-Based Pretreatment Prediction of Pathological Response to Neoadjuvant Chemorad.md",
+      "chars": 5863,
+      "source_sections": 20,
+      "source_chars": 24003
+    },
+    {
+      "pmid": "32881682",
+      "status": "skipped",
+      "file": "PMID_32881682_Pathomic Fusion_ An Integrated Framework for Fusing Histopathology and Genomic Features for Cancer Diagnosis and Prognos.md"
+    },
+    {
+      "pmid": "33838393",
+      "status": "generated",
+      "file": "PMID_33838393_Combining CNN-based histologic whole slide image analysis and patient data to improve skin cancer classification.md",
+      "chars": 6524,
+      "source_sections": 22,
+      "source_chars": 37157
+    },
+    {
+      "pmid": "34275655",
+      "status": "skipped",
+      "file": "PMID_34275655_Integration of histopathological images and multi-dimensional omics analyses predicts molecular features and prognosis i.md"
+    },
+    {
+      "pmid": "35073937",
+      "status": "generated",
+      "file": "PMID_35073937_Development of a novel combined nomogram model integrating deep learning-pathomics, radiomics and immunoscore to predict.md",
+      "chars": 5088,
+      "source_sections": 9,
+      "source_chars": 1622
+    },
+    {
+      "pmid": "35358054",
+      "status": "generated",
+      "file": "PMID_35358054_Vision-Language Transformer for Interpretable Pathology Visual Question Answering.md",
+      "chars": 12965,
+      "source": "manual_pdf",
+      "source_file": "35358054.pdf",
+      "source_pages": 10,
+      "source_chars": 46471,
+      "prompt_evidence_chars": 46620
+    },
+    {
+      "pmid": "35676445",
+      "status": "generated",
+      "file": "PMID_35676445_Prostate cancer therapy personalization via multi-modal deep learning on randomized phase III clinical trials.md",
+      "chars": 6841,
+      "source_sections": 15,
+      "source_chars": 29323
+    },
+    {
+      "pmid": "35944502",
+      "status": "skipped",
+      "file": "PMID_35944502_Pan-cancer integrative histology-genomic analysis via multimodal deep learning.md"
+    },
+    {
+      "pmid": "36038778",
+      "status": "generated",
+      "file": "PMID_36038778_Multimodal integration of radiology, pathology and genomics for prediction of response to PD-(L)1 blockade in patients w.md",
+      "chars": 7558,
+      "source_sections": 34,
+      "source_chars": 50976
+    },
+    {
+      "pmid": "36682215",
+      "status": "skipped",
+      "file": "PMID_36682215_Hierarchical multimodal fusion framework based on noisy label learning and attention mechanism for cancer classification.md"
+    },
+    {
+      "pmid": "36991216",
+      "status": "generated",
+      "file": "PMID_36991216_Multimodal deep learning to predict prognosis in adult and pediatric brain tumors.md",
+      "chars": 7173,
+      "source_sections": 35,
+      "source_chars": 58506
+    },
+    {
+      "pmid": "37030860",
+      "status": "skipped",
+      "file": "PMID_37030860_Survival Prediction via Hierarchical Multimodal Co-Attention Transformer_ A Computational Histology-Radiology Solution.md"
+    },
+    {
+      "pmid": "37592105",
+      "status": "generated",
+      "file": "PMID_37592105_A visual-language foundation model for pathology image analysis using medical Twitter.md",
+      "chars": 4913,
+      "source_sections": 5,
+      "source_chars": 17711
+    },
+    {
+      "pmid": "38504017",
+      "status": "skipped",
+      "file": "PMID_38504017_A visual-language foundation model for computational pathology.md"
+    },
+    {
+      "pmid": "38504018",
+      "status": "generated",
+      "file": "PMID_38504018_Towards a general-purpose foundation model for computational pathology.md",
+      "chars": 8135,
+      "source": "local_db_fulltext",
+      "source_sections": 1,
+      "prompt_evidence_chars": 13744
+    },
+    {
+      "pmid": "38742142",
+      "status": "generated",
+      "file": "PMID_38742142_Quilt-1M_ One Million Image-Text Pairs for Histopathology.md",
+      "chars": 10288,
+      "source": "manual_pdf",
+      "source_file": "38742142.pdf",
+      "source_pages": 19,
+      "source_chars": 54669,
+      "prompt_evidence_chars": 54962
+    },
+    {
+      "pmid": "38778098",
+      "status": "generated",
+      "file": "PMID_38778098_A whole-slide foundation model for digital pathology from real-world data.md",
+      "chars": 13184,
+      "source": "local_db_fulltext",
+      "source_sections": 25,
+      "prompt_evidence_chars": 40557
+    },
+    {
+      "pmid": "38866050",
+      "status": "generated",
+      "file": "PMID_38866050_A multimodal generative AI copilot for human pathology.md",
+      "chars": 6202,
+      "source_sections": 18,
+      "source_chars": 59873
+    },
+    {
+      "pmid": "39232164",
+      "status": "generated",
+      "file": "PMID_39232164_A pathology foundation model for cancer diagnosis and prognosis prediction.md",
+      "chars": 13162,
+      "source": "local_db_fulltext",
+      "source_sections": 12,
+      "prompt_evidence_chars": 49146
+    },
+    {
+      "pmid": "39572531",
+      "status": "generated",
+      "file": "PMID_39572531_In-context learning enables multimodal large language models to classify cancer pathology images.md",
+      "chars": 6378,
+      "source_sections": 24,
+      "source_chars": 35524
+    },
+    {
+      "pmid": "39637859",
+      "status": "generated",
+      "file": "PMID_39637859_Interpretable multi-modal artificial intelligence model for predicting gastric cancer response to neoadjuvant chemothera.md",
+      "chars": 6929,
+      "source_sections": 31,
+      "source_chars": 77505
+    },
+    {
+      "pmid": "39779851",
+      "status": "generated",
+      "file": "PMID_39779851_A vision-language foundation model for precision oncology.md",
+      "chars": 8520,
+      "source_sections": 6,
+      "source_chars": 45523
+    },
+    {
+      "pmid": "40051298",
+      "status": "generated",
+      "file": "PMID_40051298_Interpretable Multimodal Fusion Model for Bridged Histology and Genomics Survival Prediction in Pan-Cancer.md",
+      "chars": 10462,
+      "source": "local_db_fulltext",
+      "source_sections": 21,
+      "prompt_evidence_chars": 32589
+    },
+    {
+      "pmid": "40121304",
+      "status": "generated",
+      "file": "PMID_40121304_Predicting response to neoadjuvant chemotherapy in muscle-invasive bladder cancer via interpretable multimodal deep lear.md",
+      "chars": 8214,
+      "source_sections": 26,
+      "source_chars": 44653
+    },
+    {
+      "pmid": "40442373",
+      "status": "generated",
+      "file": "PMID_40442373_A visual-omics foundation model to bridge histopathology with spatial transcriptomics.md",
+      "chars": 7080,
+      "source_sections": 30,
+      "source_chars": 66404
+    },
+    {
+      "pmid": "40463538",
+      "status": "generated",
+      "file": "PMID_40463538_Comparing Computational Pathology Foundation Models using Representational Similarity Analysis.md",
+      "chars": 13323,
+      "source": "local_db_fulltext",
+      "source_sections": 32,
+      "prompt_evidence_chars": 72057
+    },
+    {
+      "pmid": "41193692",
+      "status": "generated",
+      "file": "PMID_41193692_A multimodal whole-slide foundation model for pathology.md",
+      "chars": 8756,
+      "source_sections": 67,
+      "source_chars": 97965
+    },
+    {
+      "pmid": "41230238",
+      "status": "generated",
+      "file": "PMID_41230238_Multimodal Data Fusion for Whole-Slide Histopathology Image Classification.md",
+      "chars": 7275,
+      "source_sections": 17,
+      "source_chars": 37808
+    },
+    {
+      "pmid": "41387679",
+      "status": "generated",
+      "file": "PMID_41387679_A multimodal knowledge-enhanced whole-slide pathology foundation model.md",
+      "chars": 7874,
+      "source_sections": 71,
+      "source_chars": 91120
+    },
+    {
+      "pmid": "41554842",
+      "status": "generated",
+      "file": "PMID_41554842_UroFusion-X_ a unified multimodal deep learning framework for robust diagnosis, subtyping, and prognosis of urological c.md",
+      "chars": 11972,
+      "source": "local_db_fulltext",
+      "source_sections": 33,
+      "prompt_evidence_chars": 72049
+    },
+    {
+      "pmid": "41870128",
+      "status": "generated",
+      "file": "PMID_41870128_A cancer-type-aware framework for robust multimodal survival prediction under missing modalities.md",
+      "chars": 14440,
+      "source": "local_db_fulltext",
+      "source_sections": 24,
+      "prompt_evidence_chars": 55683
+    },
+    {
+      "pmid": "42332139",
+      "status": "generated",
+      "file": "PMID_42332139_Handling missing modalities in multimodal survival prediction for non-small cell lung cancer.md",
+      "chars": 12131,
+      "source": "local_db_fulltext",
+      "source_sections": 27,
+      "prompt_evidence_chars": 72049
+    }
+  ]
+}

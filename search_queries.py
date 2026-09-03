@@ -233,6 +233,28 @@ PUBMED_QUERY_GROUPS: list[dict] = [
         ),
     },
 
+    # ── 虚拟染色 / 染色翻译 / 图像转换（与 stain normalization 区分）────────
+    {
+        "name": "virtual_staining_image_translation",
+        "enabled": True,
+        "query": (
+            "(virtual staining[Title/Abstract] OR virtual stain[Title/Abstract]"
+            " OR digital staining[Title/Abstract] OR computational staining[Title/Abstract]"
+            " OR stain translation[Title/Abstract] OR stain-to-stain[Title/Abstract]"
+            " OR stain transfer[Title/Abstract]"
+            ' OR "virtual H&E"[Title/Abstract] OR virtual IHC[Title/Abstract]'
+            " OR virtual multiplex[Title/Abstract]"
+            " OR image-to-image translation[Title/Abstract])"
+            " AND (pathology[Title/Abstract] OR histopathology[Title/Abstract]"
+            " OR histology[Title/Abstract] OR whole slide image[Title/Abstract]"
+            " OR digital pathology[Title/Abstract] OR WSI[Title/Abstract])"
+            " AND (deep learning[Title/Abstract] OR neural network[Title/Abstract]"
+            " OR artificial intelligence[Title/Abstract] OR machine learning[Title/Abstract]"
+            " OR GAN[Title/Abstract] OR generative[Title/Abstract]"
+            " OR CycleGAN[Title/Abstract] OR pix2pix[Title/Abstract])"
+        ),
+    },
+
     # ═══════════════════════════════════════════════════════════════════════
     # 以下为对齐方信 Landscape 病种的定向补齐查询组
     # ═══════════════════════════════════════════════════════════════════════

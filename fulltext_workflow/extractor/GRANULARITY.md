@@ -210,7 +210,7 @@ Method 实体另存 `entities.method_role`（`backbone|aggregator|classical_ml|t
 
 Proposal：方信为主队列；公开数据集可作预训练/外验/对比，正文必须标注 `public dataset: <name>`；方信可行时不得仅用公开数据替代。
 
-下游消费：**V-03**（`analysis/public_dataset_feasibility.py` / 工具 `public_dataset_assess`）按 focus 相关论文选出 `access_class=public` 的数据集，供 idea-pipeline / gap_ui / Research Proposal 并行参考（不并入方信 `feasibility_score`）。
+下游消费：**V-03**（`analysis/public_dataset_feasibility.py` / 工具 `public_dataset_assess`）按 focus 相关论文（标题 / `TARGETS_DISEASE` + focus-primary）选出 `access_class=public` 的数据集，供 idea-pipeline / gap_ui / Research Proposal 并行参考（不并入方信 `feasibility_score`）。跨部位多病种论文不贡献异部位公开基准。
 
 维护：新基准数据集追加到 `PUBLIC_DATASET_ALIASES`，并补 `tests/test_dataset_access.py`。
 
@@ -244,7 +244,7 @@ cd fulltext_workflow
 | `tests/test_entity_normalize.py` | 粒度与关系修复单测 |
 | `tests/test_dataset_access.py` | Dataset 公开/私有解析单测 |
 | `tests/test_public_dataset_feasibility.py` | V-03 状态与论文中介选集 |
-| `../search_queries.py` | PubMed 检索主题（病理 AI，14 组启用） |
+| `../search_queries.py` | PubMed 检索主题（病理 AI，17 组启用） |
 | `scripts/bootstrap_raw_sample.py` | 从 `raw/` 装载样本并抽取 |
 | `scripts/reset_extraction.py` | 重置已抽取结果以便重抽 |
 

@@ -69,9 +69,9 @@ Runner 入口固定为 `python -m analysis.ops_jobs --run-job <job_id>`（同一
 | 5 | compute-gap-lifecycle | `compute-gap-lifecycle` |
 | 6 | hotspot-report | `hotspot-report` |
 | 7 | hotspot-brief | `hotspot-brief` |
-| 8 | build | `build` |
-| 9 | analyze | `analyze` |
-| 10 | stats | `stats` |
+| 8 | stats | `stats` |
+
+（周更不含 `build` / `analyze`；需要时用 `-Stage build` / `-Stage analyze` 或 CLI 单独跑。）
 
 默认参数：`since_days=14`，`extract_limit=0`，`skip_enrich=false`。
 

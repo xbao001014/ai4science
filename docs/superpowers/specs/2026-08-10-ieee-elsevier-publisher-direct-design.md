@@ -1,9 +1,13 @@
 # Design: IEEE / Elsevier Publisher Direct PDF (Campus IP)
 
 **Date:** 2026-08-10  
-**Status:** Approved  
+**Status:** Approved (amended 2026-08-10: Elsevier removed from runtime — ScienceDirect anti-bot cookies)  
 **Depends on:** `fetcher/scansci_fetcher.py`, `fetcher/fulltext_fetcher.py` (Tier 2 PDF path), `config.py`, ScanSci `oa_first` fallback  
 **Related PMIDs (manual acceptance):** `37030860` (IEEE), `36682215` / `34275655` (Elsevier); also useful: `32881682` (IEEE, local LibGen PDF already present)
+
+## Amendment (2026-08-10)
+
+**Elsevier / ScienceDirect removed from the live fetch path.** Campus probes showed `pdfft` returns HTTP 403 HTML under anti-bot cookie walls; scripted download is unreliable without a browser session. Runtime `publisher_for_doi` only matches `10.1109/` (IEEE). `10.1016/` DOIs skip publisher-direct and use ScanSci OA racing only. Spec sections above that still mention Elsevier describe the original design intent and are superseded by this amendment for implementation.
 
 ## Problem
 

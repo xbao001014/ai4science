@@ -1058,8 +1058,9 @@ def render_data_feasibility_tab(focus_hint: str = "") -> None:
 
             st.markdown(f"**{FEAS_API_META['V-03']['name']}** · `{FEAS_API_META['V-03']['endpoint']}`")
             st.caption(
-                "经 focus 相关论文选出 USES_DATASET 中 access_class=public 的集合；"
-                "数据集名不必包含 focus 关键词。"
+                "经 focus 相关论文（标题 / TARGETS_DISEASE，且 focus-primary）"
+                "选出 USES_DATASET 中 access_class=public 的集合；"
+                "数据集名不必包含 focus 关键词；跨部位多病种论文不贡献异部位基准。"
             )
             v03_kw = st.text_input(
                 "关键词 / 空白描述",

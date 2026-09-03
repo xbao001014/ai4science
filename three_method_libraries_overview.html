@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>计算病理三大方法库概览</title>
+  <style>
+    :root {
+      --ink: #182234;
+      --muted: #657187;
+      --line: #dce2ea;
+      --soft: #f4f7fa;
+      --paper: #ffffff;
+      --navy: #17385f;
+      --blue: #3975c6;
+      --teal: #168b86;
+      --amber: #d98c18;
+      --violet: #7657b8;
+      --shadow: 0 14px 40px rgba(24, 34, 52, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #eef2f6;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    .page { max-width: 1260px; margin: 0 auto; background: var(--paper); min-height: 100vh; box-shadow: var(--shadow); }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 62px 68px 50px;
+      color: #fff;
+      background: linear-gradient(128deg, #132f50 0%, #1d4d77 64%, #1e716f 100%);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 420px;
+      height: 420px;
+      right: -120px;
+      top: -220px;
+      border: 70px solid rgba(255,255,255,.07);
+      border-radius: 50%;
+    }
+    .eyebrow { letter-spacing: .16em; font-size: 13px; opacity: .78; }
+    h1 { margin: 10px 0 12px; font-size: clamp(32px, 5vw, 54px); line-height: 1.18; font-weight: 650; }
+    .hero p { max-width: 880px; margin: 0; font-size: 17px; opacity: .88; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 26px; font-size: 13px; opacity: .8; }
+    main { padding: 44px 54px 64px; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: -78px; position: relative; z-index: 2; }
+    .stat { background: #fff; padding: 20px 22px; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+    .stat strong { display: block; font-size: 34px; line-height: 1.1; color: var(--navy); }
+    .stat span { display: block; margin-top: 7px; color: var(--muted); font-size: 14px; }
+    section { margin-top: 54px; scroll-margin-top: 20px; }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 13px; margin-bottom: 24px; }
+    h2 { margin: 0; font-size: 27px; line-height: 1.25; color: var(--navy); }
+    .section-head p { margin: 0; color: var(--muted); font-size: 14px; max-width: 580px; text-align: right; }
+    .module-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+    .module { border: 1px solid var(--line); border-top: 5px solid var(--color); border-radius: 11px; padding: 24px; background: #fff; }
+    .module h3 { margin: 0 0 5px; font-size: 21px; color: var(--navy); }
+    .module .count { font-size: 13px; color: var(--color); font-weight: 600; }
+    .module p { color: var(--muted); font-size: 14px; }
+    .module ul { padding-left: 19px; margin: 15px 0 0; font-size: 14px; }
+    .module li + li { margin-top: 7px; }
+    .module.mm { --color: var(--blue); }
+    .module.sg { --color: var(--teal); }
+    .module.vs { --color: var(--amber); }
+    .principles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
+    .principle { background: var(--soft); border-left: 4px solid var(--navy); padding: 18px 19px; border-radius: 0 9px 9px 0; }
+    .principle strong { display: block; margin-bottom: 5px; color: var(--navy); }
+    .principle span { color: var(--muted); font-size: 14px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+    .tab {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 7px;
+      padding: 9px 14px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+    }
+    .tab.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+    .tab:focus-visible { outline: 3px solid rgba(57,117,198,.25); outline-offset: 2px; }
+    .coverage-panel { display: none; }
+    .coverage-panel.active { display: grid; grid-template-columns: minmax(320px, .88fr) minmax(0, 1.5fr); gap: 36px; }
+    .coverage-copy h3 { margin: 0 0 8px; color: var(--navy); font-size: 22px; }
+    .coverage-copy p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+    .coverage-copy .mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .coverage-copy .mini div { background: var(--soft); padding: 12px; border-radius: 8px; }
+    .coverage-copy .mini strong { display: block; font-size: 22px; color: var(--navy); }
+    .coverage-copy .mini span { font-size: 12px; color: var(--muted); }
+    .bars { display: grid; gap: 11px; align-content: start; }
+    .bar-row { display: grid; grid-template-columns: minmax(145px, 1.1fr) minmax(130px, 2fr) 34px; gap: 12px; align-items: center; font-size: 13px; }
+    .bar-label { color: var(--ink); }
+    .track { height: 10px; border-radius: 999px; background: #e8edf2; overflow: hidden; }
+    .fill { height: 100%; border-radius: 999px; background: var(--bar-color); }
+    .bar-value { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .spectrum { display: grid; grid-template-columns: 130px repeat(5, minmax(0,1fr)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .spectrum > div { padding: 13px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; }
+    .spectrum > div:nth-child(6n) { border-right: 0; }
+    .spectrum .head { background: var(--soft); font-weight: 600; color: var(--navy); }
+    .spectrum .rowhead { font-weight: 600; color: var(--navy); }
+    .spectrum .last { border-bottom: 0; }
+    .content-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }
+    .content-block { padding: 21px 22px; border: 1px solid var(--line); border-radius: 10px; }
+    .content-block h3 { margin: 0 0 10px; color: var(--navy); font-size: 18px; }
+    .content-block p { margin: 0; color: var(--muted); font-size: 14px; }
+    .content-block .tagline { display: block; color: var(--violet); font-size: 12px; letter-spacing: .05em; margin-bottom: 7px; }
+    .boundary { display: grid; grid-template-columns: .85fr 1.15fr; gap: 22px; }
+    .boundary-note { background: var(--navy); color: #fff; padding: 27px; border-radius: 11px; }
+    .boundary-note h3 { margin: 0 0 10px; font-size: 21px; }
+    .boundary-note p { margin: 0; opacity: .84; font-size: 14px; }
+    .boundary-list { margin: 0; padding: 4px 0 0 21px; }
+    .boundary-list li + li { margin-top: 10px; }
+    .status-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .status-table th, .status-table td { text-align: left; padding: 12px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .status-table th { color: var(--navy); background: var(--soft); }
+    .status-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .ok { color: #087c69; font-weight: 600; }
+    .next { margin-top: 22px; padding: 20px 22px; background: #fff7e9; border-left: 4px solid var(--amber); border-radius: 0 9px 9px 0; }
+    .next strong { color: #8b5a0f; }
+    footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+    @media (max-width: 900px) {
+      .hero { padding: 48px 28px 90px; }
+      main { padding: 34px 24px 50px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .module-grid, .principles { grid-template-columns: 1fr; }
+      .coverage-panel.active, .boundary { grid-template-columns: 1fr; }
+      .spectrum { grid-template-columns: 110px repeat(5, minmax(130px,1fr)); overflow-x: auto; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .section-head p { text-align: left; }
+    }
+    @media (max-width: 560px) {
+      .stats { grid-template-columns: 1fr; margin-top: -68px; }
+      .content-grid { grid-template-columns: 1fr; }
+      .bar-row { grid-template-columns: 120px 1fr 28px; gap: 8px; }
+      .coverage-copy .mini { grid-template-columns: 1fr; }
+    }
+    @media print {
+      body { background: #fff; }
+      .page { box-shadow: none; }
+      .hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .tabs { display: none; }
+      .coverage-panel { display: grid !important; grid-template-columns: .9fr 1.4fr; page-break-inside: avoid; margin-bottom: 28px; }
+      section { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <div class="eyebrow">COMPUTATIONAL PATHOLOGY · METHOD LIBRARIES</div>
+    <h1>计算病理三大方法库概览</h1>
+    <p>面向病理多模态融合、病理图像分割与虚拟染色的循证方法库。页面总结选取范围、筛选原则、方法谱系、当前覆盖与证据边界。</p>
+    <div class="hero-meta"><span>数据快照：2026-08-31</span><span>本地全文 / 人工核验 PDF</span><span>逐篇结构化方法总结</span></div>
+  </header>
+
+  <main>
+    <div class="stats" aria-label="方法库总体统计">
+      <div class="stat"><strong>112</strong><span>完整方法总结</span></div>
+      <div class="stat"><strong>3</strong><span>专题方法库</span></div>
+      <div class="stat"><strong>2016–2026</strong><span>主要文献时间跨度</span></div>
+      <div class="stat"><strong>0</strong><span>本地候选待总结</span></div>
+    </div>
+
+    <section id="scope">
+      <div class="section-head"><h2>一、选取范围</h2><p>三个模块共用“病理场景 + 方法贡献 + 可核验证据”的边界，但各自回答不同研究问题。</p></div>
+      <div class="module-grid">
+        <article class="module mm">
+          <h3>多模态融合</h3><div class="count">35 篇 · 2018–2026</div>
+          <p>关注病理图像与其他信息源的联合表示、对齐、交互和联合预测，而不是单张病理图像内部的多尺度特征融合。</p>
+          <ul><li>病理 + 基因组 / 转录组 / 空间组学</li><li>病理 + 临床变量 / 放射影像</li><li>病理图像 + 文本、报告与视觉语言预训练</li><li>缺失模态鲁棒融合与多模态基础模型</li></ul>
+        </article>
+        <article class="module sg">
+          <h3>病理图像分割</h3><div class="count">38 篇 · 2016–2026</div>
+          <p>关注组织病理、细胞病理和明场显微图像中可输出掩码的方法，覆盖语义、实例及联合任务。</p>
+          <ul><li>细胞核、全细胞与腺体实例分割</li><li>肾小球、组织区域和肿瘤区域分割</li><li>检测—分割—分类联合建模</li><li>弱监督、交互式、跨染色及基础模型</li></ul>
+        </article>
+        <article class="module vs">
+          <h3>虚拟染色</h3><div class="count">39 篇 · 2017–2026</div>
+          <p>关注具有明确目标染色含义的图像生成，包括无标记成像到 H&amp;E、染色间转换与虚拟 IHC / 多重染色。</p>
+          <ul><li>相位、光声、自体荧光等无标记输入</li><li>配对、无配对、弱配对与多域转换</li><li>结构保持、错位鲁棒和 WSI 扩展</li><li>临床可读性、定量标志物与可信验证</li></ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="principles">
+      <div class="section-head"><h2>二、选取原则</h2><p>引用用于发现代表作，全文证据决定能否进入完整方法总结。</p></div>
+      <div class="principles">
+        <div class="principle"><strong>高引与创新双通道</strong><span>既保留奠基性、高引用论文，也纳入引用尚未积累但在对齐、生成、泛化或可信评价上有明确创新的近期工作。</span></div>
+        <div class="principle"><strong>病理场景为必要条件</strong><span>输入或输出必须涉及组织病理、细胞病理、数字病理或相关组织学成像；纯自然图像、纯放射或主题邻接工作不直接纳入。</span></div>
+        <div class="principle"><strong>核心贡献必须属于主题</strong><span>分割不能只是普通预处理；虚拟染色必须生成具有目标染色语义的图像；多模态必须存在真正的跨模态联合建模。</span></div>
+        <div class="principle"><strong>全文证据优先</strong><span>只有本地全文或人工核验 PDF 足以确认结构、训练、数据流和实验设计时，才生成与正式论文同等级的完整总结。</span></div>
+        <div class="principle"><strong>创新需经基线与消融核验</strong><span>区分“增加了一个模态/数据源”和“提出了新机制”；核查单模态、简单拼接、模块消融、外部验证及复现信息。</span></div>
+        <div class="principle"><strong>禁止跨论文粗暴排名</strong><span>不同数据集、标注协议、划分和指标不可直接比较；引用、Dice、AJI、PQ 或视觉相似度均不单独代表方法优越性。</span></div>
+      </div>
+    </section>
+
+    <section id="coverage">
+      <div class="section-head"><h2>三、当前方法谱系覆盖</h2><p>点击模块切换。条形长度表示该方法族在当前库中的论文数量，而非性能或推荐等级。</p></div>
+      <div class="tabs" role="tablist" aria-label="方法库切换">
+        <button class="tab active" role="tab" aria-selected="true" data-target="mm">多模态融合</button>
+        <button class="tab" role="tab" aria-selected="false" data-target="sg">病理分割</button>
+        <button class="tab" role="tab" aria-selected="false" data-target="vs">虚拟染色</button>
+      </div>
+
+      <div class="coverage-panel active" id="panel-mm" role="tabpanel">
+        <div class="coverage-copy"><h3>多模态融合：从拼接到对齐与鲁棒交互</h3><p>覆盖早期病理—组学联合生存建模、协同注意力与交互式融合、病理—放射跨尺度建模、视觉语言预训练、空间组学，以及缺失模态条件下的稳健预测。</p><div class="mini"><div><strong>35</strong><span>论文</span></div><div><strong>16</strong><span>细分轨道</span></div><div><strong>35/35</strong><span>全文总结</span></div></div></div>
+        <div class="bars" data-color="#3975c6">
+          <div class="bar-row"><span class="bar-label">病理—组学/多组学</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="bar-value">12</span></div>
+          <div class="bar-row"><span class="bar-label">病理—文本/视觉语言</span><div class="track"><div class="fill" style="width:75%"></div></div><span class="bar-value">9</span></div>
+          <div class="bar-row"><span class="bar-label">放射—病理跨尺度</span><div class="track"><div class="fill" style="width:42%"></div></div><span class="bar-value">5</span></div>
+          <div class="bar-row"><span class="bar-label">单模态对照与受控基准</span><div class="track"><div class="fill" style="width:33%"></div></div><span class="bar-value">4</span></div>
+          <div class="bar-row"><span class="bar-label">缺失模态鲁棒融合</span><div class="track"><div class="fill" style="width:25%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">病理—临床融合</span><div class="track"><div class="fill" style="width:17%"></div></div><span class="bar-value">2</span></div>
+        </div>
+      </div>
+
+      <div class="coverage-panel" id="panel-sg" role="tabpanel">
+        <div class="coverage-copy"><h3>病理分割：从边界建模到通用基础模型</h3><p>覆盖核与腺体实例分割、组织结构语义分割、联合检测与分型、弱标注与交互式分割、跨染色泛化、扩散式分割和 SAM / Transformer 类模型。</p><div class="mini"><div><strong>38</strong><span>论文</span></div><div><strong>18</strong><span>细分轨道</span></div><div><strong>38/38</strong><span>全文总结</span></div></div></div>
+        <div class="bars" data-color="#168b86">
+          <div class="bar-row"><span class="bar-label">核/细胞实例与语义</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="bar-value">10</span></div>
+          <div class="bar-row"><span class="bar-label">挑战、数据集与基准</span><div class="track"><div class="fill" style="width:50%"></div></div><span class="bar-value">5</span></div>
+          <div class="bar-row"><span class="bar-label">组织区域与结构</span><div class="track"><div class="fill" style="width:50%"></div></div><span class="bar-value">5</span></div>
+          <div class="bar-row"><span class="bar-label">腺体实例分割</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">联合分割—分类</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">跨染色泛化</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">Transformer / SAM 基础模型</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">全细胞、交互、弱监督等</span><div class="track"><div class="fill" style="width:60%"></div></div><span class="bar-value">6</span></div>
+        </div>
+      </div>
+
+      <div class="coverage-panel" id="panel-vs" role="tabpanel">
+        <div class="coverage-copy"><h3>虚拟染色：从颜色映射到可信生成</h3><p>覆盖无标记成像到 H&amp;E、染色标准化、无配对与多域转换、虚拟 IHC / 多重染色、结构保真、错位鲁棒、全切片扩展和临床级验证。</p><div class="mini"><div><strong>39</strong><span>论文</span></div><div><strong>19</strong><span>细分轨道</span></div><div><strong>39/39</strong><span>全文总结</span></div></div></div>
+        <div class="bars" data-color="#d98c18">
+          <div class="bar-row"><span class="bar-label">无标记/活体/非固定到 H&amp;E</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="bar-value">10</span></div>
+          <div class="bar-row"><span class="bar-label">染色标准化</span><div class="track"><div class="fill" style="width:80%"></div></div><span class="bar-value">8</span></div>
+          <div class="bar-row"><span class="bar-label">无配对与染色间转换</span><div class="track"><div class="fill" style="width:60%"></div></div><span class="bar-value">6</span></div>
+          <div class="bar-row"><span class="bar-label">虚拟 IHC / 多重染色</span><div class="track"><div class="fill" style="width:50%"></div></div><span class="bar-value">5</span></div>
+          <div class="bar-row"><span class="bar-label">临床与病理医师验证</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">架构与可信性基准</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="bar-value">3</span></div>
+          <div class="bar-row"><span class="bar-label">多域转换</span><div class="track"><div class="fill" style="width:20%"></div></div><span class="bar-value">2</span></div>
+          <div class="bar-row"><span class="bar-label">结构保持与错位鲁棒</span><div class="track"><div class="fill" style="width:20%"></div></div><span class="bar-value">2</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="comparison">
+      <div class="section-head"><h2>四、三个模块的研究坐标</h2><p>从输入、核心问题、输出、证据重点和主要风险五个维度理解三个方法库的互补关系。</p></div>
+      <div style="overflow-x:auto">
+        <div class="spectrum" role="table" aria-label="三个方法库比较">
+          <div class="head">模块</div><div class="head">典型输入</div><div class="head">核心问题</div><div class="head">典型输出</div><div class="head">证据重点</div><div class="head">主要风险</div>
+          <div class="rowhead">多模态融合</div><div>病理 + 组学/临床/放射/文本</div><div>对齐、交互、联合预测、缺失模态</div><div>生存、诊断、分型、检索、问答</div><div>单模态与拼接基线、模态消融、外部队列</div><div>信息泄漏、配对偏差、增模态假创新</div>
+          <div class="rowhead">病理分割</div><div>H&amp;E、特殊染色、细胞学/明场图像</div><div>像素归属、实例分离、对象分型与泛化</div><div>语义/实例掩码、边界、细胞类型</div><div>标注协议、对象尺度、AJI/PQ/Dice、跨中心</div><div>粘连对象、域偏移、标注成本、指标不可横比</div>
+          <div class="rowhead last">虚拟染色</div><div class="last">无标记图像、H&amp;E 或其他真实染色</div><div class="last">染色映射、结构保真、错位与可信生成</div><div class="last">虚拟 H&amp;E、IHC、多重/功能性染色</div><div class="last">结构与细胞保真、定量一致性、专家验证</div><div class="last">幻觉、配准误差、视觉逼真≠诊断有效</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="content">
+      <div class="section-head"><h2>五、当前涵盖内容总结</h2><p>方法库已经从“代表作清单”扩展为可用于方法选型、基线设计和研究缺口识别的结构化知识底座。</p></div>
+      <div class="content-grid">
+        <div class="content-block"><span class="tagline">MULTIMODAL</span><h3>融合机制主干已形成</h3><p>覆盖早期特征拼接和联合生存网络、门控与 Kronecker 交互、协同注意力与 Transformer、多尺度放射—病理融合、病理视觉语言对齐、空间组学桥接，以及缺失模态条件下的鲁棒学习。库内同时保留单模态 WSI 基础模型和受控比较论文作为评价坐标。</p></div>
+        <div class="content-block"><span class="tagline">SEGMENTATION</span><h3>任务、监督和架构三条线并行</h3><p>从早期边界感知核分割、腺体实例分割和 U-Net 系方法，扩展到 HoVer 类联合分割—分类、点标注与交互式方法、跨染色泛化、扩散分割、CellViT / CellSAM / SegAnyPath，以及 MoNuSeg、CoNIC 等数据和挑战基准。</p></div>
+        <div class="content-block"><span class="tagline">VIRTUAL STAINING</span><h3>从视觉转换走向临床可信性</h3><p>覆盖 CycleGAN 类无配对转换、对比学习和扩散归一化、无标记相位/光声/自体荧光成像、虚拟 IHC 与多重染色、WSI 无缝合成、错位鲁棒生成，以及病理医师判读、标志物定量和外部临床验证。</p></div>
+        <div class="content-block"><span class="tagline">STRUCTURED EVIDENCE</span><h3>每篇论文保持统一证据结构</h3><p>逐篇总结统一记录元数据、核心问题、详细结构与数据流、公式和维度、实现提示、资源开销、迁移条件、实验与消融、方法评价、复现难点及证据不足项；伪代码栏目按当前约定保留为空。</p></div>
+      </div>
+    </section>
+
+    <section id="boundary">
+      <div class="section-head"><h2>六、证据边界与使用方式</h2><p>方法库适合做研究导航和比较框架，不等同于跨论文排行榜或临床指南。</p></div>
+      <div class="boundary">
+        <div class="boundary-note"><h3>核心判断</h3><p>“有全文”不等于“所有细节都可恢复”；每篇总结以本地可核验文本为边界。缺少公式、精确维度、参数量或外部验证时，明确标记“未说明”或“本地证据不足”。</p></div>
+        <ul class="boundary-list">
+          <li>引用数是带日期的 OpenAlex / 本地快照，只用于候选发现与排序，不作为创新性结论。</li>
+          <li>不同论文的数据集、病例构成、划分策略、扫描设备、标注和指标不同，不进行直接数值排名。</li>
+          <li>基准/数据集、算法、临床验证、基础模型和使用范式应分角色比较，避免把资源贡献写成网络创新。</li>
+          <li>虚拟染色的像素相似度不能代替病理诊断一致性；多模态性能增益需排除信息量增加和数据泄漏；分割需关注实例级与跨域泛化。</li>
+          <li>推荐先用 overview 建立谱系，再进入逐篇 summary 核验结构、训练和实验细节，最终回看原始全文。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="status">
+      <div class="section-head"><h2>七、完成状态与下一阶段</h2><p>所有本地候选均已生成完整总结，剩余工作集中在通用外部基线卡和持续周更。</p></div>
+      <table class="status-table">
+        <thead><tr><th>模块</th><th class="num">当前总结</th><th class="num">本地候选待处理</th><th class="num">外部基线卡</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>多模态融合</td><td class="num">35</td><td class="num">0</td><td class="num">10</td><td class="ok">本地全文阶段完成</td></tr>
+          <tr><td>病理图像分割</td><td class="num">38</td><td class="num">0</td><td class="num">12</td><td class="ok">本地全文阶段完成</td></tr>
+          <tr><td>虚拟染色</td><td class="num">39</td><td class="num">0</td><td class="num">7</td><td class="ok">本地全文阶段完成</td></tr>
+          <tr><td><strong>合计</strong></td><td class="num"><strong>112</strong></td><td class="num"><strong>0</strong></td><td class="num"><strong>29</strong></td><td class="ok">完整总结库可用</td></tr>
+        </tbody>
+      </table>
+      <div class="next"><strong>建议下一阶段：</strong>为 29 项通用外部方法建立“精简基线卡”，重点记录原始任务、核心算子、进入病理场景时的角色和公平比较约束；随后把周更文献按同一筛选协议持续追加到 selected、summary、overview 和缺口矩阵。</div>
+    </section>
+
+    <footer><span>来源：三个主题的 screening_protocol、selected_papers、method_summaries、overview 与 coverage_gap_matrix。</span><span>生成日期：2026-08-31</span></footer>
+  </main>
+</div>
+
+<script>
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const panels = Array.from(document.querySelectorAll('.coverage-panel'));
+  document.querySelectorAll('.bars').forEach(group => {
+    const color = group.dataset.color;
+    group.querySelectorAll('.fill').forEach(fill => fill.style.setProperty('--bar-color', color));
+  });
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+      panels.forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
+      document.getElementById('panel-' + tab.dataset.target).classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>

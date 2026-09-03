@@ -1,28 +1,24 @@
-# Final whole-branch review fixes
+# Final-review fixes — WSI assume annotations disclosure
 
-## 2026-08-03
+**Status:** DONE
 
-### Changes
+## Summary
 
-- Exported `normalize_feasibility_field_lists` from `analysis/feasibility_tools.py`
-  and reused it for feasibility requests and baseline canonicalization.
-- Canonical feasibility specs now normalize aliases, case, ordering, duplicates,
-  and omit `hypothesis_id`.
-- `feasibility_assess` cache reads/writes now use canonical specs; equivalent
-  alias/case/order/hypothesis-ID calls share one cache entry.
-- Reset `session_guards.relaxed_seen` at each Critic-round boundary, preserving
-  rejection in the observing round without poisoning later rounds.
-- Added alias-equivalence, true tighter-annotation, immutable-baseline,
-  canonical-cache, bare `tool_error`, and per-round accept-gate regressions.
+Fixed final-review disclosure gaps without touching `assessment.py` scoring. Observed annotations (raw>0) were mislabeled as full「接口实测 / API-verified」; UI, prompts, and PIPELINE now state that under the temporary flag all `required_annotations` score at `has_wsi`, raw_observed may be sparse, and disclosure is mandatory.
 
-### Test output
+## Files changed
 
-```text
-> .venv\Scripts\python.exe -m pytest tests/test_idea_session_guards.py tests/test_idea_agent_baseline_accept.py tests/test_idea_agent_tool_slim.py -v
-collected 29 items
-============================= 29 passed in 3.98s ==============================
+- `fulltext_workflow/gap_ui.py` — expander labels + caption
+- `fulltext_workflow/idea_agent.py` — Generator §9 + Critic rules
+- `fulltext_workflow/PIPELINE.md` — 临时策略 paragraph
 
-> .venv\Scripts\python.exe -m pytest tests/test_feasibility.py -v
-collected 18 items
-============================= 18 passed in 3.66s ==============================
+## Tests
+
 ```
+pytest tests/test_feasibility_sparse_annotation_floor.py tests/test_feasibility.py -v
+24 passed in 2.68s
+```
+
+## Concerns
+
+None. No commit per instructions.

@@ -15,6 +15,7 @@ from analysis.weekly_hotspot import (  # noqa: E402
     compute_emerging_entities,
     compute_emerging_limitations,
     compute_weekly_hotspots,
+    count_excluded_future_pub_dates,
     count_window_papers,
 )
 from db.schema import get_conn, init_db, insert_relation, upsert_entity, upsert_paper  # noqa: E402
@@ -73,6 +74,30 @@ def _link_method(pmid: str, paper_id: int, method: str) -> None:
         eid,
         source_pmid=pmid,
         extraction_granularity="fulltext",
+    )
+
+
+def _iso_future(days_ahead: int) -> str:
+    dt = datetime.now(timezone.utc) + timedelta(days=days_ahead)
+    return dt.strftime("%Y-%m-%d")
+
+
+def _add_paper_future(
+    *,
+    pmid: str,
+    title: str,
+    pub_days_ahead: int,
+    precision: str,
+) -> int:
+    pub = _iso_future(pub_days_ahead)
+    return upsert_paper(
+        {
+            "pmid": pmid,
+            "title": title,
+            "pub_date": pub,
+            "year": int(pub[:4]),
+            "date_precision": precision,
+        }
     )
 
 
@@ -164,3 +189,63 @@ def test_limitations_follow_pub_date(monkeypatch):
     )
     rows = compute_emerging_limitations(window_days=14, limit=10)
     assert any(r["limitation"] == "small cohort" for r in rows)
+
+
+def test_future_pub_date_excluded_from_window_day_and_month(monkeypatch):
+    _tmp_db(monkeypatch)
+    _add_paper(pmid="51", title="recent valid", pub_days_ago=3, precision="day")
+    _add_paper_future(pmid="52", title="future day", pub_days_ahead=30, precision="day")
+    _add_paper_future(pmid="53", title="future month", pub_days_ahead=60, precision="month")
+    assert count_window_papers(14) == 1
+    assert count_excluded_future_pub_dates(14) == 2
+
+
+def test_future_disease_not_heating(monkeypatch):
+    _tmp_db(monkeypatch)
+    p_future = _add_paper_future(
+        pmid="61",
+        title="ahead of print lupus",
+        pub_days_ahead=45,
+        precision="day",
+    )
+    did = upsert_entity("lupus nephritis", "Disease")
+    insert_relation(
+        "Paper",
+        p_future,
+        "TARGETS_DISEASE",
+        "Disease",
+        did,
+        source_pmid="61",
+        extraction_granularity="fulltext",
+    )
+    p_recent = _add_paper(
+        pmid="62",
+        title="recent breast",
+        pub_days_ago=4,
+        precision="day",
+    )
+    bid = upsert_entity("breast cancer", "Disease")
+    insert_relation(
+        "Paper",
+        p_recent,
+        "TARGETS_DISEASE",
+        "Disease",
+        bid,
+        source_pmid="62",
+        extraction_granularity="fulltext",
+    )
+    rows = compute_emerging_entities(
+        "Disease", window_days=14, prior_days=14, min_recent=1, limit=20
+    )
+    names = {r["name"] for r in rows}
+    assert "breast cancer" in names
+    assert "lupus nephritis" not in names
+
+
+def test_payload_reports_future_exclusion_count(monkeypatch):
+    _tmp_db(monkeypatch)
+    _add_paper(pmid="71", title="ok", pub_days_ago=2, precision="day")
+    _add_paper_future(pmid="72", title="future", pub_days_ahead=20, precision="day")
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14)
+    assert payload["papers_in_window"] == 1
+    assert payload["papers_excluded_future_pub_date"] == 1

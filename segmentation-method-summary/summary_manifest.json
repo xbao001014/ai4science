@@ -1,0 +1,365 @@
+{
+  "model": "qwen3.8-max",
+  "results": [
+    {
+      "pmid": "26415167",
+      "status": "generated",
+      "file": "PMID_26415167_An Automatic Learning-Based Framework for Robust Nucleus Segmentation.md",
+      "chars": 12296,
+      "source": "local_db_fulltext",
+      "source_sections": 14,
+      "prompt_evidence_chars": 72039
+    },
+    {
+      "pmid": "26863654",
+      "status": "generated",
+      "file": "PMID_26863654_Locality Sensitive Deep Learning for Detection and Classification of Nuclei in Routine Colon Cancer Histology Images.md",
+      "chars": 13743,
+      "source": "local_db_fulltext",
+      "source_sections": 19,
+      "prompt_evidence_chars": 67834
+    },
+    {
+      "pmid": "27898306",
+      "status": "generated",
+      "file": "PMID_27898306_DCAN_ Deep contour-aware networks for object instance segmentation from histology images.md",
+      "chars": 7808,
+      "source": "manual_pdf",
+      "source_file": "27898306.pdf",
+      "source_pages": 12,
+      "source_chars": 75469,
+      "prompt_evidence_chars": 71036
+    },
+    {
+      "pmid": "28154470",
+      "status": "generated",
+      "file": "PMID_28154470_A Deep Convolutional Neural Network for segmenting and classifying epithelial and stromal regions in histopathological i.md",
+      "chars": 9308,
+      "source": "manual_pdf",
+      "source_file": "28154470.pdf",
+      "source_pages": 27,
+      "source_chars": 52058,
+      "prompt_evidence_chars": 52479
+    },
+    {
+      "pmid": "28287963",
+      "status": "generated",
+      "file": "PMID_28287963_A Dataset and a Technique for Generalized Nuclear Segmentation for Computational Pathology.md",
+      "chars": 5813,
+      "source_sections": 22,
+      "source_chars": 71900
+    },
+    {
+      "pmid": "28358671",
+      "status": "generated",
+      "file": "PMID_28358671_Gland Instance Segmentation Using Deep Multichannel Neural Networks.md",
+      "chars": 6449,
+      "source_sections": 19,
+      "source_chars": 63661
+    },
+    {
+      "pmid": "29018612",
+      "status": "generated",
+      "file": "PMID_29018612_Segmentation and classification of colon glands with deep convolutional neural networks and total variation regularizati.md",
+      "chars": 11471,
+      "source": "local_db_fulltext",
+      "source_sections": 26,
+      "prompt_evidence_chars": 47915
+    },
+    {
+      "pmid": "30580111",
+      "status": "generated",
+      "file": "PMID_30580111_Micro-Net_ A unified model for segmentation of various objects in microscopy images.md",
+      "chars": 7139,
+      "source_sections": 20,
+      "source_chars": 65760
+    },
+    {
+      "pmid": "30594772",
+      "status": "generated",
+      "file": "PMID_30594772_MILD-Net_ Minimal information loss dilated network for gland instance segmentation in colon histology images.md",
+      "chars": 8323,
+      "source_sections": 19,
+      "source_chars": 78334
+    },
+    {
+      "pmid": "31317118",
+      "status": "generated",
+      "file": "PMID_31317118_Segmentation of Glomeruli Within Trichrome Images Using Deep Learning.md",
+      "chars": 4686,
+      "source_sections": 18,
+      "source_chars": 20308
+    },
+    {
+      "pmid": "31561183",
+      "status": "generated",
+      "file": "PMID_31561183_Hover-Net_ Simultaneous segmentation and classification of nuclei in multi-tissue histology images.md",
+      "chars": 7615,
+      "source_sections": 18,
+      "source_chars": 88194
+    },
+    {
+      "pmid": "31647422",
+      "status": "generated",
+      "file": "PMID_31647422_A Multi-Organ Nucleus Segmentation Challenge.md",
+      "chars": 5629,
+      "source_sections": 23,
+      "source_chars": 71500
+    },
+    {
+      "pmid": "32712523",
+      "status": "generated",
+      "file": "PMID_32712523_Triple U-net_ Hematoxylin-aware nuclei segmentation with progressive dense feature aggregation.md",
+      "chars": 11744,
+      "source": "manual_pdf",
+      "source_file": "32712523.pdf",
+      "source_pages": 11,
+      "source_chars": 60819,
+      "prompt_evidence_chars": 60984
+    },
+    {
+      "pmid": "32746112",
+      "status": "generated",
+      "file": "PMID_32746112_Weakly Supervised Deep Nuclei Segmentation Using Partial Points Annotation in Histopathology Images.md",
+      "chars": 8080,
+      "source_sections": 21,
+      "source_chars": 69103
+    },
+    {
+      "pmid": "32769053",
+      "status": "generated",
+      "file": "PMID_32769053_NuClick_ A deep learning framework for interactive segmentation of microscopic images.md",
+      "chars": 8909,
+      "source": "manual_pdf",
+      "source_file": "32769053.pdf",
+      "source_pages": 14,
+      "source_chars": 84659,
+      "prompt_evidence_chars": 70769
+    },
+    {
+      "pmid": "32835732",
+      "status": "generated",
+      "file": "PMID_32835732_Development and evaluation of deep learning-based segmentation of histologic structures in the kidney cortex with multip.md",
+      "chars": 8604,
+      "source": "manual_pdf",
+      "source_file": "32835732.pdf",
+      "source_pages": 30,
+      "source_chars": 60833,
+      "prompt_evidence_chars": 61302
+    },
+    {
+      "pmid": "32903361",
+      "status": "generated",
+      "file": "PMID_32903361_An automatic nuclei segmentation method based on deep convolutional neural networks for histopathology images.md",
+      "chars": 9309,
+      "source": "local_db_fulltext",
+      "source_sections": 26,
+      "prompt_evidence_chars": 37168
+    },
+    {
+      "pmid": "33154175",
+      "status": "generated",
+      "file": "PMID_33154175_Deep Learning-Based Segmentation and Quantification in Experimental Kidney Histopathology.md",
+      "chars": 7971,
+      "source": "manual_pdf",
+      "source_file": "33154175.pdf",
+      "source_pages": 17,
+      "source_chars": 69156,
+      "prompt_evidence_chars": 69417
+    },
+    {
+      "pmid": "33190012",
+      "status": "generated",
+      "file": "PMID_33190012_NucleiSegNet_ Robust deep learning architecture for the nuclei segmentation of liver cancer histopathology images.md",
+      "chars": 12050,
+      "source": "manual_pdf",
+      "source_file": "33190012.pdf",
+      "source_pages": 8,
+      "source_chars": 41354,
+      "prompt_evidence_chars": 41472
+    },
+    {
+      "pmid": "33216724",
+      "status": "generated",
+      "file": "PMID_33216724_Deep Learning Methods for Lung Cancer Segmentation in Whole-Slide Histopathology Images-The ACDC@LungHP Challenge 2019.md",
+      "chars": 11780,
+      "source": "local_db_fulltext",
+      "source_sections": 14,
+      "prompt_evidence_chars": 51232
+    },
+    {
+      "pmid": "35367734",
+      "status": "generated",
+      "file": "PMID_35367734_TSFD-Net_ Tissue specific feature distillation network for nuclei segmentation and classification.md",
+      "chars": 11620,
+      "source": "manual_pdf",
+      "source_file": "35367734.pdf",
+      "source_pages": 15,
+      "source_chars": 70302,
+      "prompt_evidence_chars": 70531
+    },
+    {
+      "pmid": "36007483",
+      "status": "generated",
+      "file": "PMID_36007483_Boundary-aware glomerulus segmentation_ Toward one-to-many stain generalization.md",
+      "chars": 10246,
+      "source": "manual_pdf",
+      "source_file": "36007483.pdf",
+      "source_pages": 13,
+      "source_chars": 62188,
+      "prompt_evidence_chars": 62385
+    },
+    {
+      "pmid": "36410209",
+      "status": "generated",
+      "file": "PMID_36410209_One model is all you need_ Multi-task learning enables simultaneous histology image segmentation and classification.md",
+      "chars": 11549,
+      "source": "manual_pdf",
+      "source_file": "36410209.pdf",
+      "source_pages": 16,
+      "source_chars": 97157,
+      "prompt_evidence_chars": 71818
+    },
+    {
+      "pmid": "36438040",
+      "status": "generated",
+      "file": "PMID_36438040_A dual decoder U-Net-based model for nuclei instance segmentation in hematoxylin and eosin-stained histological images.md",
+      "chars": 5786,
+      "source_sections": 17,
+      "source_chars": 27999
+    },
+    {
+      "pmid": "36599960",
+      "status": "generated",
+      "file": "PMID_36599960_Tubule-U-Net_ a novel dataset and deep learning-based tubule segmentation framework in whole slide images of breast canc.md",
+      "chars": 11144,
+      "source": "local_db_fulltext",
+      "source_sections": 19,
+      "prompt_evidence_chars": 30394
+    },
+    {
+      "pmid": "37305563",
+      "status": "generated",
+      "file": "PMID_37305563_Densely Convolutional Spatial Attention Network for nuclei segmentation of histological images for computational patholo.md",
+      "chars": 6241,
+      "source_sections": 27,
+      "source_chars": 39789
+    },
+    {
+      "pmid": "37778210",
+      "status": "generated",
+      "file": "PMID_37778210_Enhancing gland segmentation in colon histology images using an instance-aware diffusion model.md",
+      "chars": 10053,
+      "source": "manual_pdf",
+      "source_file": "37778210.pdf",
+      "source_pages": 10,
+      "source_chars": 53790,
+      "prompt_evidence_chars": 53939
+    },
+    {
+      "pmid": "37788295",
+      "status": "generated",
+      "file": "PMID_37788295_Cervical cell's nucleus segmentation through an improved UNet architecture.md",
+      "chars": 8495,
+      "source": "local_db_fulltext",
+      "source_sections": 31,
+      "prompt_evidence_chars": 43256
+    },
+    {
+      "pmid": "38157647",
+      "status": "generated",
+      "file": "PMID_38157647_CoNIC Challenge_ Pushing the frontiers of nuclear detection, segmentation, classification and counting.md",
+      "chars": 5649,
+      "source_sections": 4,
+      "source_chars": 24376
+    },
+    {
+      "pmid": "38292472",
+      "status": "generated",
+      "file": "PMID_38292472_Improving generalization capability of deep learning-based nuclei instance segmentation by non-deterministic train time .md",
+      "chars": 7689,
+      "source": "local_db_fulltext",
+      "source_sections": 11,
+      "prompt_evidence_chars": 40230
+    },
+    {
+      "pmid": "38507894",
+      "status": "generated",
+      "file": "PMID_38507894_CellViT_ Vision Transformers for precise cell segmentation and classification.md",
+      "chars": 12541,
+      "source": "manual_pdf",
+      "source_file": "38507894.pdf",
+      "source_pages": 16,
+      "source_chars": 117197,
+      "prompt_evidence_chars": 69506
+    },
+    {
+      "pmid": "38781811",
+      "status": "generated",
+      "file": "PMID_38781811_Cyto R-CNN and CytoNuke Dataset_ Towards reliable whole-cell segmentation in bright-field histological images.md",
+      "chars": 8431,
+      "source": "local_db_fulltext",
+      "source_sections": 24,
+      "prompt_evidence_chars": 55681
+    },
+    {
+      "pmid": "39440549",
+      "status": "generated",
+      "file": "PMID_39440549_CellSAM_ Advancing Pathologic Image Cell Segmentation via Asymmetric Large-Scale Vision Model Feature Distillation Aggre.md",
+      "chars": 9846,
+      "source": "manual_pdf",
+      "source_file": "39440549.pdf",
+      "source_pages": 15,
+      "source_chars": 65507,
+      "prompt_evidence_chars": 65736
+    },
+    {
+      "pmid": "39528162",
+      "status": "generated",
+      "file": "PMID_39528162_Cell Segmentation With Globally Optimized Boundaries (CSGO)_ A Deep Learning Pipeline for Whole-Cell Segmentation in Hem.md",
+      "chars": 9790,
+      "source": "manual_pdf",
+      "source_file": "39528162.pdf",
+      "source_pages": 17,
+      "source_chars": 45913,
+      "prompt_evidence_chars": 46174
+    },
+    {
+      "pmid": "39773093",
+      "status": "generated",
+      "file": "PMID_39773093_HistoNeXt_ dual-mechanism feature pyramid network for cell nuclear segmentation and classification.md",
+      "chars": 6790,
+      "source_sections": 35,
+      "source_chars": 47172
+    },
+    {
+      "pmid": "40030236",
+      "status": "generated",
+      "file": "PMID_40030236_SegAnyPath_ A Foundation Model for Multi- Resolution Stain-Variant and Multi-Task Pathology Image Segmentation.md",
+      "chars": 10969,
+      "source": "manual_pdf",
+      "source_file": "40030236.pdf",
+      "source_pages": 14,
+      "source_chars": 81049,
+      "prompt_evidence_chars": 71519
+    },
+    {
+      "pmid": "41286516",
+      "status": "generated",
+      "file": "PMID_41286516_Evaluating cell AI foundation models in kidney pathology with human-in-the-loop enrichment.md",
+      "chars": 13867,
+      "source": "local_db_fulltext",
+      "source_sections": 48,
+      "prompt_evidence_chars": 45103
+    },
+    {
+      "pmid": "42581240",
+      "status": "generated",
+      "file": "PMID_42581240_Benchmarking Deep Segmentation Architectures for Histopathological Nuclei Segmentation_ A Controlled Study of Transfer L.md",
+      "chars": 9521,
+      "source": "local_db_fulltext",
+      "source_sections": 19,
+      "prompt_evidence_chars": 72043
+    }
+  ]
+}

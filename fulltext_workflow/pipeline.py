@@ -133,7 +133,7 @@ def run_idea_pipeline(
     focus: str | None = None,
     top_n: int = 3,
     debate_rounds: int = 2,
-    idea_rounds: int = 3,
+    idea_rounds: int = 2,
     gap_report_path: str | None = None,
     skip_debate: bool = False,
     skip_ideas: bool = False,

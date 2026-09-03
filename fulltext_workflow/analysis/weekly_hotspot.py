@@ -91,14 +91,39 @@ def _eligible_pub_predicate(alias: str = "p") -> str:
     )
 
 
+def _pub_date_not_future(alias: str = "p") -> str:
+    """Exclude future-dated records (ahead-of-print / bad pub_date)."""
+    return f"date({alias}.pub_date) <= date('now')"
+
+
+def _window_pub_predicate(alias: str = "p") -> str:
+    """Eligible pub_date within [now-N, now] publication windows."""
+    return f"{_eligible_pub_predicate(alias)} AND {_pub_date_not_future(alias)}"
+
+
 def count_window_papers(window_days: int) -> int:
     """Count papers with eligible pub_date in the recent publication window."""
     recent_start, _, _ = _window_params(window_days, 0)
     row = _q(
         f"""
         SELECT COUNT(*) AS n FROM papers p
+        WHERE {_window_pub_predicate('p')}
+          AND date(p.pub_date) >= date('now', ?)
+        """,
+        (recent_start,),
+    )
+    return int(row[0]["n"]) if row else 0
+
+
+def count_excluded_future_pub_dates(window_days: int) -> int:
+    """Eligible day/month papers in-window by lower bound but pub_date > today."""
+    recent_start, _, _ = _window_params(window_days, 0)
+    row = _q(
+        f"""
+        SELECT COUNT(*) AS n FROM papers p
         WHERE {_eligible_pub_predicate('p')}
           AND date(p.pub_date) >= date('now', ?)
+          AND date(p.pub_date) > date('now')
         """,
         (recent_start,),
     )
@@ -146,17 +171,17 @@ def _compute_emerging_method_entities(
     limit: int,
 ) -> list[dict[str, Any]]:
     """Aggregate applied-Method edges by canonical, counting distinct PMIDs."""
-    eligible = _eligible_pub_predicate("p")
+    window_pub = _window_pub_predicate("p")
     edge_rows = _q(
         f"""
         WITH recent_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
         )
@@ -255,18 +280,18 @@ def compute_emerging_entities(
     relation_filter = (
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )
-    eligible = _eligible_pub_predicate("p")
+    window_pub = _window_pub_predicate("p")
 
     rows = _q(
         f"""
         WITH recent_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
         )
@@ -315,7 +340,7 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
         "AND r.relation = 'APPLIES_METHOD'" if entity_type == "Method" else ""
     )
     name_filter = "" if entity_type == "Method" else "AND e.name = ?"
-    eligible = _eligible_pub_predicate("p")
+    window_pub = _window_pub_predicate("p")
     rows = _q(
         f"""
         SELECT DISTINCT p.pmid, e.name
@@ -325,7 +350,7 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
         WHERE e.type = ?
           {relation_filter}
           {name_filter}
-          AND {eligible}
+          AND {window_pub}
           AND date(p.pub_date) >= date('now', ?)
         ORDER BY COALESCE(p.citation_count, 0) DESC, p.year DESC
         """,
@@ -453,18 +478,18 @@ def compute_hot_combo_boards(
     prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, prior_start, prior_end = _window_params(window, prior)
-    eligible = _eligible_pub_predicate("p")
+    window_pub = _window_pub_predicate("p")
 
     rows = _q(
         f"""
         WITH recent_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
             SELECT pmid FROM papers p
-            WHERE {eligible}
+            WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
         )
@@ -570,7 +595,7 @@ def compute_emerging_limitations(
     window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
     top_n = limit if limit is not None else config.HOTSPOT_TOP_N
     recent_start, _, _ = _window_params(window, 0)
-    eligible = _eligible_pub_predicate("p")
+    window_pub = _window_pub_predicate("p")
 
     rows = _q(
         f"""
@@ -582,7 +607,7 @@ def compute_emerging_limitations(
         JOIN papers p ON r.source_pmid = p.pmid
         WHERE r.relation = 'REPORTS_LIMITATION'
           AND COALESCE(r.status, 'active') = 'active'
-          AND {eligible}
+          AND {window_pub}
           AND date(p.pub_date) >= date('now', ?)
         GROUP BY e.id
         HAVING recent_cnt >= 1
@@ -607,6 +632,7 @@ def compute_weekly_hotspots(
     wid = week_id()
     in_window = count_window_papers(window)
     excluded = count_excluded_low_precision(window)
+    excluded_future = count_excluded_future_pub_dates(window)
 
     methods = compute_emerging_entities(
         "Method", window_days=window, prior_days=prior, min_recent=min_r
@@ -662,6 +688,7 @@ def compute_weekly_hotspots(
         # Persist column / older callers still use papers_ingested.
         "papers_ingested": in_window,
         "papers_excluded_low_precision": excluded,
+        "papers_excluded_future_pub_date": excluded_future,
         "emerging_methods": emerging_methods,
         "active_methods": active_methods,
         "heating_diseases": diseases,
@@ -1169,9 +1196,13 @@ def generate_hotspot_report(
         f"- Prior comparison window: **{data['prior_window_days']} days**",
         f"- Papers in window: **{data.get('papers_in_window', data.get('papers_ingested', 0))}**",
         f"- Excluded (year/unknown in window): **{data.get('papers_excluded_low_precision', 0)}**",
+        f"- Excluded (future pub_date in window): "
+        f"**{data.get('papers_excluded_future_pub_date', 0)}**",
         "",
         "> Velocity = (recent_cnt − prior_cnt) / max(prior_cnt, 1). "
         "Week-over-week uses **persisted snapshots**, not publication windows alone.",
+        "> Hotspot boards use **`pub_date`** (not PubMed EDAT). "
+        "EDAT=0 with non-zero pub_date window is normal when papers were indexed earlier.",
         "",
     ]
     lines.extend(_format_wow_section(comparison))

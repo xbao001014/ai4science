@@ -3,7 +3,7 @@
 #   .\run_pipeline.ps1                  # interactive menu
 #   .\run_pipeline.ps1 -Stage all       # full pipeline (no gap-debate)
 #   .\run_pipeline.ps1 -Stage fetch     # single stage
-#   .\run_pipeline.ps1 -Stage weekly    # weekly: EDAT → extract → lifecycle → hotspot → build/analyze
+#   .\run_pipeline.ps1 -Stage weekly    # weekly: EDAT → extract → lifecycle → hotspot → stats
 #   .\run_pipeline.ps1 -Stage db        # DB only: fetch → enrich → fulltext → extract
 
 param(
@@ -133,8 +133,6 @@ switch ($Stage) {
         Invoke-Step "compute-gap-lifecycle" @("compute-gap-lifecycle")
         Invoke-Step "hotspot-report" @("hotspot-report")
         Invoke-Step "hotspot-brief" @("hotspot-brief")
-        Invoke-Step "build" @("build")
-        Invoke-Step "analyze" @("analyze")
         Invoke-Step "stats" @("stats")
     }
     "quick" {
