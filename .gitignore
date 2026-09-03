@@ -41,6 +41,7 @@ env/
 .conda/
 
 # ── Local agent / SDD scratch (do not upload) ─────────────────────────────────
+tmp/
 .worktrees/
 .superpowers/
 docs/*
