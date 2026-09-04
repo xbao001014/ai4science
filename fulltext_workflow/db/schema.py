@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -148,6 +149,54 @@ CREATE INDEX IF NOT EXISTS idx_relations_subj ON relations(subject_type, subject
 CREATE INDEX IF NOT EXISTS idx_relations_obj ON relations(object_type, object_id);
 CREATE INDEX IF NOT EXISTS idx_relations_rel ON relations(relation);
 CREATE INDEX IF NOT EXISTS idx_relations_gran ON relations(extraction_granularity);
+
+-- One relation can have multiple independent evidence spans.  Keep these rows
+-- separate instead of relying on the legacy semicolon-joined evidence_quote.
+CREATE TABLE IF NOT EXISTS relation_evidence (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    relation_id             INTEGER NOT NULL REFERENCES relations(id) ON DELETE CASCADE,
+    source_pmid             TEXT,
+    evidence_section        TEXT,
+    evidence_quote          TEXT NOT NULL,
+    evidence_start          INTEGER,
+    evidence_end            INTEGER,
+    evidence_status         TEXT DEFAULT 'unverified',
+    support_status          TEXT DEFAULT 'unchecked',
+    support_reason          TEXT,
+    extraction_granularity  TEXT DEFAULT 'abstract',
+    extraction_pass         TEXT DEFAULT 'section',
+    evidence_sha256         TEXT NOT NULL,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(relation_id, evidence_sha256, evidence_start, evidence_end)
+);
+CREATE INDEX IF NOT EXISTS idx_relation_evidence_relation ON relation_evidence(relation_id);
+CREATE INDEX IF NOT EXISTS idx_relation_evidence_pmid ON relation_evidence(source_pmid);
+CREATE INDEX IF NOT EXISTS idx_relation_evidence_support ON relation_evidence(support_status);
+
+-- Section-level observability for the complete extraction path. This records
+-- silent truncation, model empties and policy/grounding losses without storing
+-- the source text or any API credential.
+CREATE TABLE IF NOT EXISTS extraction_audits (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id                INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+    source_pmid             TEXT,
+    section_type            TEXT NOT NULL,
+    section_title           TEXT,
+    extraction_granularity  TEXT DEFAULT 'abstract',
+    source_chars            INTEGER DEFAULT 0,
+    sent_chars              INTEGER DEFAULT 0,
+    truncated               INTEGER DEFAULT 0,
+    parsed                  INTEGER DEFAULT 0,
+    postprocessed           INTEGER DEFAULT 0,
+    retained                INTEGER DEFAULT 0,
+    outcome                 TEXT NOT NULL,
+    empty_reason            TEXT,
+    recall_check_reason     TEXT,
+    rejected_json           TEXT DEFAULT '[]',
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_extraction_audits_pmid ON extraction_audits(source_pmid);
+CREATE INDEX IF NOT EXISTS idx_extraction_audits_outcome ON extraction_audits(outcome);
 
 CREATE TABLE IF NOT EXISTS pathology_landscape (
     disease_id      TEXT PRIMARY KEY,
@@ -964,7 +1013,7 @@ def insert_relation(
     status: str = "active",
     superseded_by: int | None = None,
     extraction_pass: str = "section",
-) -> None:
+) -> int:
     with get_conn() as conn:
         existing = conn.execute(
             """SELECT id, extraction_granularity, evidence_quote, status, superseded_by
@@ -980,11 +1029,11 @@ def insert_relation(
                 and status == "active"
                 and extraction_pass != "fulltext_reconcile"
             ):
-                return
+                return existing["id"]
             gran = existing["extraction_granularity"]
             _rank = {"fulltext": 3, "mineru_pdf": 2, "abstract": 1}
             if _rank.get(gran, 0) > _rank.get(extraction_granularity, 0):
-                return
+                return existing["id"]
             quote = existing["evidence_quote"] or ""
             if evidence_quote and evidence_quote not in quote:
                 quote = f"{quote}; {evidence_quote}".strip("; ")
@@ -1019,7 +1068,7 @@ def insert_relation(
                     existing["id"],
                 ),
             )
-            return
+            return existing["id"]
 
         conn.execute(
             """INSERT INTO relations
@@ -1046,6 +1095,99 @@ def insert_relation(
                 extraction_pass,
             ),
         )
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def insert_relation_evidence(
+    relation_id: int,
+    *,
+    source_pmid: str = "",
+    evidence_section: str = "",
+    evidence_quote: str,
+    evidence_start: int | None = None,
+    evidence_end: int | None = None,
+    evidence_status: str = "unverified",
+    support_status: str = "unchecked",
+    support_reason: str = "",
+    extraction_granularity: str = "abstract",
+    extraction_pass: str = "section",
+) -> int | None:
+    """Persist one independently addressable evidence span for a relation."""
+    if not evidence_quote.strip():
+        return None
+    digest = hashlib.sha256(evidence_quote.encode("utf-8")).hexdigest()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO relation_evidence
+               (relation_id, source_pmid, evidence_section, evidence_quote,
+                evidence_start, evidence_end, evidence_status, support_status,
+                support_reason, extraction_granularity, extraction_pass,
+                evidence_sha256)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                relation_id,
+                source_pmid or None,
+                evidence_section or None,
+                evidence_quote,
+                evidence_start,
+                evidence_end,
+                evidence_status,
+                support_status,
+                support_reason or None,
+                extraction_granularity,
+                extraction_pass,
+                digest,
+            ),
+        )
+        row = conn.execute(
+            """SELECT id FROM relation_evidence
+               WHERE relation_id=? AND evidence_sha256=?
+                 AND evidence_start IS ? AND evidence_end IS ?""",
+            (relation_id, digest, evidence_start, evidence_end),
+        ).fetchone()
+        return row["id"] if row else None
+
+
+def insert_extraction_audit(
+    paper_id: int | None,
+    *,
+    source_pmid: str = "",
+    section_type: str,
+    section_title: str = "",
+    extraction_granularity: str = "abstract",
+    audit: dict[str, Any],
+) -> int:
+    """Persist one section extraction outcome for replay and quality analysis."""
+    rejected = audit.get("rejected")
+    if not isinstance(rejected, list):
+        rejected = []
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO extraction_audits
+               (paper_id, source_pmid, section_type, section_title,
+                extraction_granularity, source_chars, sent_chars, truncated,
+                parsed, postprocessed, retained, outcome, empty_reason,
+                recall_check_reason, rejected_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                paper_id,
+                source_pmid or None,
+                section_type,
+                section_title or None,
+                extraction_granularity,
+                int(audit.get("source_chars") or 0),
+                int(audit.get("sent_chars") or 0),
+                1 if audit.get("truncated") else 0,
+                int(audit.get("parsed") or 0),
+                int(audit.get("postprocessed") or 0),
+                int(audit.get("retained") or 0),
+                str(audit.get("outcome") or "unknown"),
+                audit.get("empty_reason"),
+                audit.get("recall_check_reason"),
+                json.dumps(rejected, ensure_ascii=False, default=str),
+            ),
+        )
+        return int(cur.lastrowid)
 
 
 def supersede_relation(relation_id: int, superseded_by: int | None) -> None:

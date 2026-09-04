@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from extractor.improvement_actions import parse_recommendation_rows
+from extractor.evidence_grounding import locate_quote
 from extractor.study_prompts.shared import RECONCILE_SHARED_CORE
 
 _SECTION_PRIORITY: tuple[str, ...] = (
@@ -120,6 +121,9 @@ def _parse_name_quote_rows(rows: Any) -> list[dict[str, str]]:
             {
                 "name": name,
                 "quote": str(row.get("quote") or "").strip(),
+                "evidence_section": str(row.get("evidence_section") or "").strip(),
+                "evidence_start": row.get("evidence_start"),
+                "evidence_end": row.get("evidence_end"),
             }
         )
     return out
@@ -142,6 +146,9 @@ def _parse_binding_rows(rows: Any) -> list[dict[str, str]]:
                 "disease": disease,
                 "dataset": str(row.get("dataset") or "").strip(),
                 "quote": str(row.get("quote") or "").strip(),
+                "evidence_section": str(row.get("evidence_section") or "").strip(),
+                "evidence_start": row.get("evidence_start"),
+                "evidence_end": row.get("evidence_end"),
             }
         )
     return out
@@ -166,6 +173,9 @@ def _parse_limitation_rows(rows: Any) -> list[dict[str, Any]]:
                 "canonical": canonical,
                 "merges": merges,
                 "quote": str(row.get("quote") or "").strip(),
+                "evidence_section": str(row.get("evidence_section") or "").strip(),
+                "evidence_start": row.get("evidence_start"),
+                "evidence_end": row.get("evidence_end"),
             }
         )
     return out
@@ -182,6 +192,57 @@ def parse_reconcile_payload(raw: dict) -> dict:
         "surveyed_methods": _parse_name_quote_rows(raw.get("surveyed_methods")),
         "covered_diseases": _parse_name_quote_rows(raw.get("covered_diseases")),
         "recommendations": parse_recommendation_rows(raw.get("recommendations")),
+    }
+
+
+def ground_reconcile_payload(
+    payload: dict, sections: list[dict]
+) -> tuple[dict, dict[str, Any]]:
+    """Hard-gate every Pass-2 row that claims a quote to a source section.
+
+    Dataset actions are separately constrained to Pass-1 entities and therefore
+    are not counted here. All other reconcile products require a locatable quote.
+    """
+    grounded = parse_reconcile_payload(payload)
+    specs = (
+        ("surveyed_methods", "quote"),
+        ("covered_diseases", "quote"),
+        ("limitations", "quote"),
+        ("bindings", "quote"),
+        ("recommendations", "evidence_quote"),
+    )
+    checked = accepted = 0
+    rejected_rows: list[dict[str, str]] = []
+    for key, quote_key in specs:
+        kept = []
+        for row in grounded.get(key, []):
+            checked += 1
+            quote = str(row.get(quote_key) or "").strip()
+            match = None
+            for sec in sections:
+                content = str(sec.get("content") or "")
+                span = locate_quote(content, quote)
+                if span is not None:
+                    match = (sec, content, span)
+                    break
+            if match is None:
+                rejected_rows.append({"collection": key, "reason": "evidence_quote_not_located"})
+                continue
+            sec, content, (start, end) = match
+            item = dict(row)
+            item[quote_key] = content[start:end]
+            item["evidence_section"] = str(sec.get("section_type") or "other")
+            item["evidence_start"] = start
+            item["evidence_end"] = end
+            kept.append(item)
+            accepted += 1
+        grounded[key] = kept
+    return grounded, {
+        "checked": checked,
+        "accepted": accepted,
+        "rejected": len(rejected_rows),
+        "rejected_rows": rejected_rows,
+        "grounding": "literal_quote_location_hard_gate",
     }
 
 
@@ -518,7 +579,7 @@ def _apply_survey_cover(
 ) -> None:
     if not _should_apply_survey_cover(study_type):
         return
-    from db.schema import insert_relation, upsert_entity
+    from db.schema import insert_relation, insert_relation_evidence, upsert_entity
     from extractor.entity_normalize import normalize_entity_name
 
     for row in surveyed:
@@ -526,7 +587,7 @@ def _apply_survey_cover(
         if not name:
             continue
         entity_id = upsert_entity(name, "Method")
-        insert_relation(
+        relation_id = insert_relation(
             "Paper",
             paper_id,
             "SURVEYS_METHOD",
@@ -534,16 +595,27 @@ def _apply_survey_cover(
             entity_id,
             source_pmid=pmid,
             evidence_quote=row.get("quote") or "",
-            evidence_section="fulltext_reconcile",
+            evidence_section=row.get("evidence_section") or "fulltext_reconcile",
             extraction_pass="fulltext_reconcile",
             status="active",
+        )
+        insert_relation_evidence(
+            relation_id,
+            source_pmid=pmid,
+            evidence_section=row.get("evidence_section") or "fulltext_reconcile",
+            evidence_quote=row.get("quote") or "",
+            evidence_start=row.get("evidence_start"),
+            evidence_end=row.get("evidence_end"),
+            evidence_status="located",
+            extraction_granularity="fulltext",
+            extraction_pass="fulltext_reconcile",
         )
     for row in covered:
         name = normalize_entity_name(row["name"], "Disease")
         if not name:
             continue
         entity_id = upsert_entity(name, "Disease")
-        insert_relation(
+        relation_id = insert_relation(
             "Paper",
             paper_id,
             "COVERS_DISEASE",
@@ -551,9 +623,20 @@ def _apply_survey_cover(
             entity_id,
             source_pmid=pmid,
             evidence_quote=row.get("quote") or "",
-            evidence_section="fulltext_reconcile",
+            evidence_section=row.get("evidence_section") or "fulltext_reconcile",
             extraction_pass="fulltext_reconcile",
             status="active",
+        )
+        insert_relation_evidence(
+            relation_id,
+            source_pmid=pmid,
+            evidence_section=row.get("evidence_section") or "fulltext_reconcile",
+            evidence_quote=row.get("quote") or "",
+            evidence_start=row.get("evidence_start"),
+            evidence_end=row.get("evidence_end"),
+            evidence_status="located",
+            extraction_granularity="fulltext",
+            extraction_pass="fulltext_reconcile",
         )
 
 
@@ -564,6 +647,7 @@ def _apply_limitation_merges(
 ) -> None:
     from db.schema import (
         insert_relation,
+        insert_relation_evidence,
         list_relations_for_pmid,
         supersede_relation,
         upsert_entity,
@@ -590,7 +674,7 @@ def _apply_limitation_merges(
                 if _limitation_name_matches(rel["object_name"], merge_name):
                     supersede_relation(rel["id"], canonical_id)
         # Always leave an active canonical edge (reactivate if needed).
-        insert_relation(
+        relation_id = insert_relation(
             "Paper",
             paper_id,
             "REPORTS_LIMITATION",
@@ -598,9 +682,20 @@ def _apply_limitation_merges(
             canonical_id,
             source_pmid=pmid,
             evidence_quote=lim.get("quote") or "",
-            evidence_section="fulltext_reconcile",
+            evidence_section=lim.get("evidence_section") or "fulltext_reconcile",
             extraction_pass="fulltext_reconcile",
             status="active",
+        )
+        insert_relation_evidence(
+            relation_id,
+            source_pmid=pmid,
+            evidence_section=lim.get("evidence_section") or "fulltext_reconcile",
+            evidence_quote=lim.get("quote") or "",
+            evidence_start=lim.get("evidence_start"),
+            evidence_end=lim.get("evidence_end"),
+            evidence_status="located",
+            extraction_granularity="fulltext",
+            extraction_pass="fulltext_reconcile",
         )
 
 

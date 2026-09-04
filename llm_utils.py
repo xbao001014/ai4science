@@ -15,4 +15,7 @@ def llm_extra_body(base_url: str) -> dict:
 def truncate_for_llm(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    return text[:max_chars] + "\n... [truncated]"
+    marker = "\n... [truncated]"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)] + marker

@@ -9,6 +9,7 @@ from openai import APIError, OpenAI
 
 import config
 from llm_utils import llm_extra_body, truncate_for_llm
+from analysis.evidence_contract import compact_json
 
 _client = OpenAI(
     api_key=config.OPENAI_API_KEY,
@@ -104,11 +105,13 @@ def _safe_invoke_tool(fn: Any, fn_args: dict[str, Any]) -> dict[str, Any]:
     """Call a tool with only supported parameters; never raise to caller."""
     try:
         sig = inspect.signature(fn)
-        filtered = {
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        filtered = fn_args if accepts_kwargs else {
             k: v for k, v in fn_args.items()
             if k in sig.parameters
         }
-        return fn(**filtered)
+        result = fn(**filtered)
+        return result if isinstance(result, dict) else {"data": result}
     except TypeError as exc:
         return {"error": str(exc), "received_args": fn_args}
     except Exception as exc:
@@ -264,6 +267,9 @@ def run_tool_agent(
     max_tokens: int | None = None,
     max_sql_calls: int | None = None,
     disallow_duplicate_tools: bool = False,
+    max_tool_calls: int | None = None,
+    first_tool: str | None = None,
+    required_tools: tuple[str, ...] = (),
 ) -> Generator[dict, None, None]:
     """
     Run one agent through its tool-calling loop.
@@ -285,6 +291,13 @@ def run_tool_agent(
     active_schemas = list(tool_schemas)
     force_text_next = False
     called_tool_names: set[str] = set()
+    successful_tools: set[str] = set()
+    attempted_calls = 0
+    def phase_status():
+        missing = sorted(set(required_tools) - successful_tools)
+        return {"type":"phase_status", "role":role, "successful_tools":sorted(successful_tools),
+                "missing_required_tools":missing, "tool_attempts":attempted_calls,
+                "validation_status":"needs_verification" if missing else "complete"}
     if max_sql_calls is not None:
         print(
             f"[tool-agent] role={role} max_sql_calls={max_sql_calls}",
@@ -314,7 +327,10 @@ def run_tool_agent(
                 model=config.LLM_MODEL_AGENT,
                 messages=messages,
                 tools=active_schemas if active_schemas else None,
-                tool_choice="auto" if active_schemas else "none",
+                tool_choice=({"type":"function", "function":{"name":first_tool}}
+                             if first_tool and first_tool not in successful_tools
+                             and any(s["function"]["name"] == first_tool for s in active_schemas)
+                             else ("auto" if active_schemas else "none")),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 extra_body=llm_extra_body(config.OPENAI_API_BASE),
@@ -334,7 +350,8 @@ def run_tool_agent(
             yield {"type": "thinking", "role": role, "content": msg.content}
 
         finish = response.choices[0].finish_reason
-        if not msg.tool_calls or finish == "stop":
+        if not msg.tool_calls:
+            yield phase_status()
             return
 
         stop_after_tools = False
@@ -345,6 +362,11 @@ def run_tool_agent(
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             fn_args = _parse_tool_arguments(tc.function.arguments)
+            try:
+                parsed_args = json.loads(tc.function.arguments or "{}")
+                argument_error = not isinstance(parsed_args, dict)
+            except (json.JSONDecodeError, TypeError):
+                argument_error = True
             turn_tool_names.append(fn_name)
 
             yield {
@@ -364,7 +386,24 @@ def run_tool_agent(
 
             recovered_content: str | None = None
             budget_blocked = False
-            if (
+            contract_error = None
+            if argument_error:
+                contract_error = "invalid_tool_arguments: expected a valid JSON object; no tool executed"
+            elif (
+                text_only_this_turn and fn_name in tools
+                and not (fn_name == "execute_kg_sql" and max_sql_calls is not None
+                         and sql_counter["n"] >= max_sql_calls)
+            ):
+                contract_error = "tools_disabled: finish with message content; no tool executed"
+            elif first_tool and first_tool not in successful_tools and fn_name != first_tool:
+                contract_error = f"prerequisite_missing: successfully call {first_tool} before other tools"
+            elif max_tool_calls is not None and attempted_calls >= max_tool_calls:
+                contract_error = "tool_budget_exhausted: finish with available evidence"
+            if contract_error:
+                result = {"error":contract_error}
+                result_str = json.dumps(result)
+                yield {"type":"tool_error", "role":role, "name":fn_name, "error":contract_error, "call_id":tc.id}
+            elif (
                 fn_name == "execute_kg_sql"
                 and max_sql_calls is not None
                 and (
@@ -410,6 +449,8 @@ def run_tool_agent(
                     "call_id": tc.id,
                 }
             elif fn_name in tools:
+                attempted_calls += 1
+                yield {"type":"tool_execution", "role":role, "name":fn_name, "args":fn_args, "call_id":tc.id}
                 result = _safe_invoke_tool(tools[fn_name], fn_args)
                 called_tool_names.add(fn_name)
                 if (
@@ -450,12 +491,8 @@ def run_tool_agent(
                         "call_id": tc.id,
                     }
                 else:
-                    result_str = json.dumps(result, ensure_ascii=False, indent=2)
-                    if len(result_str) > config.LLM_MAX_TOOL_RESULT_CHARS:
-                        result_str = (
-                            result_str[: config.LLM_MAX_TOOL_RESULT_CHARS]
-                            + "\n... [truncated]"
-                        )
+                    successful_tools.add(fn_name)
+                    result_str = compact_json(result, config.LLM_MAX_TOOL_RESULT_CHARS)
                     yield {
                         "type": "tool_result",
                         "role": role,
@@ -522,7 +559,28 @@ def run_tool_agent(
                 return
 
         if stop_after_tools:
+            yield phase_status()
             return
+
+        if max_tool_calls is not None and attempted_calls >= max_tool_calls:
+            active_schemas = []
+            messages.append({"role":"user", "content":"Tool budget exhausted. Produce the required final output now; explicitly disclose missing verification."})
+
+    # Exhaustion is not success. Reserve a single tool-free completion for usable output.
+    messages.append({"role":"user", "content":"Iteration limit reached. No more tools. Produce the required final JSON review or full Markdown report now using available evidence. Missing verification is not acceptance."})
+    yield {"type":"llm_request_start", "role":role, "iteration":max_iters+1, "max_iters":max_iters+1, "finalization":True}
+    try:
+        response = _client.chat.completions.create(model=config.LLM_MODEL_AGENT, messages=messages,
+            tool_choice="none", temperature=temperature, max_tokens=max_tokens,
+            extra_body=llm_extra_body(config.OPENAI_API_BASE))
+        final = response.choices[0].message
+        if final.content and not final.tool_calls:
+            messages.append({"role":"assistant", "content":final.content})
+        else:
+            yield {"type":"error", "role":role, "content":"Finalization returned no tool-free output"}
+    except Exception as exc:
+        yield {"type":"error", "role":role, "content":str(exc)}
+    yield phase_status()
 
 
 def best_assistant_content(

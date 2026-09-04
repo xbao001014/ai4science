@@ -46,6 +46,15 @@ class Triple(BaseModel):
     metric_value: Optional[str] = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence_quote: Optional[str] = Field(default=None, max_length=300)
+    # Offsets refer to the input section, not the entire paper or a PDF page.
+    evidence_start: Optional[int] = Field(default=None, ge=0)
+    evidence_end: Optional[int] = Field(default=None, ge=0)
+    evidence_status: Literal["unverified", "located"] = "unverified"
+    # Advisory only until calibrated against independent domain-expert labels.
+    evidence_support_status: Literal[
+        "unchecked", "supported", "mentioned_only", "contradicted", "unclear"
+    ] = "unchecked"
+    evidence_support_reason: Optional[str] = Field(default=None, max_length=80)
     polarity: Literal["asserted", "hypothesized"] = "asserted"
     # Dataset-only hint from LLM; resolved to entities.access_class at ingest.
     access_hint: Optional[Literal["public", "private", "unknown"]] = None

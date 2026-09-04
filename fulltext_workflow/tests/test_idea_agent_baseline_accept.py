@@ -151,6 +151,12 @@ def test_relaxed_attempt_only_blocks_the_current_critic_round(monkeypatch):
                 "name": "feasibility_assess",
                 "error": "feasibility_spec_relaxed",
             }
+        # Each round must carry fresh successful evidence under the acceptance
+        # contract. The first round remains blocked by its relaxation attempt.
+        yield {"type": "tool_result", "name": "feasibility_assess",
+               "result": {"feasibility_score": 0.9, "available_cohort_size": 1000}}
+        yield {"type": "tool_result", "name": "public_dataset_assess",
+               "result": {"datasets": []}}
         messages.append(
             {
                 "role": "assistant",

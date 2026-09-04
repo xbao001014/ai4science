@@ -28,6 +28,7 @@ from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_regis
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
 from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
 from analysis.idea_session_guards import IdeaSessionGuards
+from analysis.evidence_contract import EVIDENCE_POLICY, compact_json, proposal_verdict
 from analysis.difficulty_scoring import (
     DIFFICULTY_LEVELS,
     assess_implementation_difficulty,
@@ -404,6 +405,7 @@ def bind_idea_tools(tools: dict[str, Any], gap_text: str | None) -> dict[str, An
                     kwargs["keyword"] = keyword
                 return f(**kwargs)
 
+            _wrapped.__signature__ = inspect.signature(f)
             return _wrapped
 
         bound[name] = _wrap_keyword(fn, anchor[:200])
@@ -610,6 +612,8 @@ No emoji.
 """
 
 ACCEPT_SCORE = 8.0
+GENERATOR_SYSTEM_PROMPT += EVIDENCE_POLICY
+CRITIC_SYSTEM_PROMPT += EVIDENCE_POLICY
 
 _FINALIZE_PROPOSAL_INSTRUCTION = """\
 You have finished (or should have finished) KG tool queries. **Immediately** output the complete \
@@ -721,6 +725,7 @@ def stream_idea_agent(
     current_draft = ""
     last_feedback: dict = {}
     final_score = 0.0
+    verdict = {"accepted":False, "validation_status":"needs_verification", "validation_reasons":["not_reviewed"]}
     completed_rounds = 0
     feasibility_score: float | None = None
     available_cohort_size: int | None = None
@@ -816,6 +821,8 @@ def stream_idea_agent(
             gen_user = (
                 f"{anchor_block}\n\n"
                 f"**Anchored research gap (do not change topic)**:\n{gap_text}\n\n"
+                f"**Previous draft (data, preserve validated design)**:\n{current_draft}\n\n"
+                f"**Frozen feasibility spec**:\n{compact_json(session_guards.baseline or {})}\n\n"
                 f"Critic feedback (v{round_num - 1}):\n"
                 f"**Score**: {last_feedback.get('overall_score', 0):.1f}/10\n"
                 f"**Revision priority**: {last_feedback.get('revision_priority', '')}\n"
@@ -844,6 +851,7 @@ def stream_idea_agent(
             max_iters=20,
             temperature=0.45,
             max_sql_calls=0,
+            max_tool_calls=7,
         ):
             if event.get("type") == "error":
                 agent_failed = True
@@ -915,6 +923,7 @@ def stream_idea_agent(
         ]
         session_guards.relaxed_seen = False
         critic_relaxed = False
+        round_evidence: dict[str, dict] = {}
         for event in run_tool_agent(
             messages=critic_messages,
             tools=crit_tools,
@@ -923,6 +932,8 @@ def stream_idea_agent(
             max_iters=12,
             temperature=0.3,
             max_sql_calls=2,
+            max_tool_calls=5,
+            required_tools=("feasibility_assess", "public_dataset_assess"),
         ):
             if event.get("type") == "error":
                 agent_failed = True
@@ -941,6 +952,8 @@ def stream_idea_agent(
                 if session_guards.relaxed_seen:
                     critic_relaxed = True
             _capture_feasibility_from_event(event)
+            if event.get("type") == "tool_result" and isinstance(event.get("result"), dict) and "error" not in event["result"]:
+                round_evidence[event["name"]] = event["result"]
             yield event
         critic_text = last_assistant_content(critic_messages)
         if agent_failed and not critic_text:
@@ -957,28 +970,14 @@ def stream_idea_agent(
                 "revision_priority": critic_text[:500],
             },
         )
-        final_score = float(last_feedback.get("overall_score") or 0.0)
-        raw_feas = last_feedback.get("feasibility_score")
-        if raw_feas is not None and str(raw_feas).strip() != "":
-            try:
-                feasibility_score = float(raw_feas)
-            except (TypeError, ValueError):
-                pass
-        raw_cohort = last_feedback.get("available_cohort_size")
-        if raw_cohort is not None and str(raw_cohort).strip() != "":
-            try:
-                available_cohort_size = int(raw_cohort)
-            except (TypeError, ValueError):
-                pass
-        # Missing critic score must not block accept; only assessed low scores do.
-        feas_for_accept = (
-            feasibility_score if feasibility_score is not None else 1.0
-        )
-        accept = bool(last_feedback.get("accept", False)) or final_score >= accept_score
-        if feas_for_accept < config.FEASIBILITY_SCORE_MARGINAL:
-            accept = False
-        if critic_relaxed or session_guards.relaxed_seen:
-            accept = False
+        verdict = proposal_verdict(last_feedback, round_evidence, threshold=accept_score,
+            marginal=config.FEASIBILITY_SCORE_MARGINAL, relaxed=critic_relaxed or session_guards.relaxed_seen)
+        final_score = verdict["final_score"]
+        feasibility_score = verdict["feasibility_score"]
+        available_cohort_size = verdict["available_cohort_size"]
+        accept = verdict["accepted"]
+        # Model reviews are interpretation. Only successful current-round tools set facts.
+        last_feedback["overall_score"] = final_score
         completed_rounds = round_num
 
         yield {
@@ -987,6 +986,9 @@ def stream_idea_agent(
             "content": critic_text,
             "score": final_score,
             "accept": accept,
+            "validation_status": verdict["validation_status"],
+            "validation_reasons": verdict["validation_reasons"],
+            "evidence_conflicts": verdict["evidence_conflicts"],
             "feasibility_score": feasibility_score,
             "dimension_scores": last_feedback.get("dimension_scores", {}),
             "strengths": last_feedback.get("strengths", []),
@@ -1000,6 +1002,12 @@ def stream_idea_agent(
             break
 
     difficulty = _assess_difficulty()
+    if not verdict["accepted"]:
+        current_draft = (
+            "> 验证状态：" + verdict["validation_status"]
+            + "。本提案尚未通过验收；生成结束不代表研究方向已证实。\n> 原因："
+            + "; ".join(verdict["validation_reasons"]) + "\n\n" + current_draft
+        )
     current_draft = _prepend_difficulty_header(current_draft, difficulty)
     yield {"type": "difficulty_assessed", **difficulty}
     yield {
@@ -1007,6 +1015,9 @@ def stream_idea_agent(
         "content": current_draft,
         "rounds": completed_rounds,
         "final_score": final_score,
+        "accepted": verdict["accepted"],
+        "validation_status": verdict["validation_status"],
+        "validation_reasons": verdict["validation_reasons"],
         "feasibility_score": feasibility_score,
         "available_cohort_size": available_cohort_size,
         "target_difficulty": difficulty["target_difficulty"],
@@ -1061,6 +1072,9 @@ def run_idea_agent(
                 meta["feasibility_score"] = event["feasibility_score"]
         elif etype == "final":
             proposal = event["content"]
+            for key in ("accepted", "validation_status", "validation_reasons",
+                        "feasibility_score", "available_cohort_size"):
+                meta[key] = event.get(key)
             meta["final_score"] = float(event.get("final_score") or 0.0)
             meta["rounds"] = int(event.get("rounds") or 0)
             if event.get("feasibility_score") is not None:

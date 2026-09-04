@@ -68,7 +68,7 @@ General rules:
   - Extract only facts clearly stated in the section text
   - Include evidence_quote: short verbatim phrase (max 200 chars)
   - polarity: asserted for confirmed facts, hypothesized for future work
-  - Aim for 3-15 triples per section
+  - Return 0-15 supported triples; there is no minimum and no padding quota
   - Use lowercase concise entity names
 
 Entity disambiguation:
@@ -151,7 +151,7 @@ Limitation policy:
 
 Examples:
   TEXT: "We trained ResNet-50 with transfer learning on WSIs, using Adam and early stopping."
-  GOOD: Method="resnet-50" via APPLIES_METHOD, Task="classification", Modality="wsi"
+  GOOD: Method="resnet-50" via APPLIES_METHOD, Modality="wsi"; no unstated Task
   BAD: Method="transfer learning", Method="adam", Method="early stopping", Method="deep learning"
 
   TEXT: "We propose SSL-HistoNet and compare against CLAM and ResNet-50 on the same cohort."
@@ -187,7 +187,7 @@ Examples:
   BAD: Disease="lung cancer", Disease="nsclc", Disease="tumor"
 
   TEXT: "Limitations include retrospective single-center design with 87 patients."
-  GOOD: Limitation="retrospective single-center design", Limitation="small sample size"
+  GOOD: Limitation="retrospective single-center design"; patient count alone does not establish a small-sample limitation
   BAD: Limitation="study limitations"
 
 Respond with JSON. For Paper→X relations use subject
@@ -202,7 +202,7 @@ Object type MUST match the relation as listed above.
    "object": {"name": "clam", "type": "Method"}, "metric_value": null,
    "confidence": 1.0, "evidence_quote": "...", "polarity": "asserted"},
   {"subject": {"name": "paper", "type": "Method"}, "relation": "PERFORMS_TASK",
-   "object": {"name": "classification", "type": "Task"}, "metric_value": null,
+   "object": {"name": "tumor classification", "type": "Task"}, "metric_value": null,
    "confidence": 1.0, "evidence_quote": "...", "polarity": "asserted"},
   {"subject": {"name": "paper", "type": "Method"}, "relation": "ACHIEVES_METRIC",
    "object": {"name": "auc", "type": "Metric"}, "metric_value": "0.98",

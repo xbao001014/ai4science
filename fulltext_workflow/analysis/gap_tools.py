@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import re
 from typing import Any, Callable
 
@@ -144,6 +145,129 @@ def tool_author_stated_gaps(focus: str | None = None) -> dict:
     if focus:
         desc += f" (focus: {focus})"
     return {"description": desc, "count": len(rows), "data": rows}
+
+
+def _retrieval_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if len(token) >= 3
+    }
+
+
+def tool_literature_evidence_search(
+    query: str,
+    focus: str | None = None,
+    top_k: int = 10,
+    cutoff_year: int | None = None,
+) -> dict:
+    """Retrieve individually attributable KG evidence with an explicit cutoff.
+
+    This is a corpus search, not proof of worldwide presence or absence. Results
+    never combine multiple quotes and then assign the aggregate to one PMID.
+    """
+    q = str(query or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    top_k = max(1, min(int(top_k or 10), 50))
+    cutoff = int(cutoff_year or datetime.now().year)
+    f = normalize_focus(focus)
+    focus_clause = focus_pmid_in_clause("p.pmid", f) if f else ""
+    rows = _q(
+        f"""
+        SELECT p.pmid AS source_pmid, p.title, p.abstract, p.year,
+               r.relation, e.name AS entity_name,
+               COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote) AS evidence_quote,
+               COALESCE(NULLIF(rev.evidence_section, ''), r.evidence_section) AS evidence_section,
+               COALESCE(rev.support_status, 'unchecked') AS support_status
+        FROM relations r
+        JOIN papers p ON p.pmid = r.source_pmid
+        JOIN entities e ON e.id = r.object_id
+        LEFT JOIN relation_evidence rev ON rev.id = (
+            SELECT MIN(x.id) FROM relation_evidence x
+            WHERE x.relation_id = r.id AND TRIM(x.evidence_quote) != ''
+        )
+        WHERE COALESCE(r.status, 'active') = 'active'
+          AND p.year IS NOT NULL AND p.year <= ?
+          AND TRIM(COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote, '')) != ''
+          {focus_clause}
+        ORDER BY p.year DESC, r.id
+        LIMIT 500
+        """,
+        (cutoff,),
+    )
+    query_tokens = _retrieval_tokens(q)
+    ranked: list[tuple[float, dict]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        pmid = str(row.get("source_pmid") or "").strip()
+        quote = str(row.get("evidence_quote") or "").strip()
+        relation = str(row.get("relation") or "")
+        if not re.fullmatch(r"\d+", pmid) or not quote:
+            continue
+        key = (pmid, relation, quote)
+        if key in seen:
+            continue
+        seen.add(key)
+        quote_overlap = len(query_tokens & _retrieval_tokens(quote))
+        title_overlap = len(query_tokens & _retrieval_tokens(row.get("title") or ""))
+        abstract_overlap = len(query_tokens & _retrieval_tokens(row.get("abstract") or ""))
+        entity_overlap = len(query_tokens & _retrieval_tokens(row.get("entity_name") or ""))
+        matched_terms = query_tokens & (
+            _retrieval_tokens(quote)
+            | _retrieval_tokens(row.get("title") or "")
+            | _retrieval_tokens(row.get("abstract") or "")
+            | _retrieval_tokens(row.get("entity_name") or "")
+        )
+        score = 4 * quote_overlap + 2 * title_overlap + abstract_overlap + entity_overlap
+        minimum_terms = 1 if len(query_tokens) <= 1 else 2
+        if score <= 0 or len(matched_terms) < minimum_terms:
+            continue
+        role = (
+            "opportunity_evidence"
+            if relation in {"REPORTS_LIMITATION", "PROPOSES_IMPROVEMENT"}
+            else "completed_work_counterevidence"
+            if relation in {"APPLIES_METHOD", "USES_DATASET", "EVALUATED_ON"}
+            else "context"
+        )
+        evidence_id = "EV-" + hashlib.sha256(
+            f"{pmid}\n{relation}\n{quote}".encode("utf-8")
+        ).hexdigest()[:16]
+        ranked.append((score, {
+            "evidence_id": evidence_id,
+            "source_pmid": pmid,
+            "title": row.get("title") or "",
+            "year": int(row["year"]),
+            "relation": relation,
+            "entity_name": row.get("entity_name") or "",
+            "evidence_section": row.get("evidence_section") or "",
+            "evidence_quote": quote,
+            "text": quote,
+            "kind": "source",
+            "evidence_role": role,
+            "support_status": row.get("support_status") or "unchecked",
+            "retrieval_score": score,
+        }))
+    ranked.sort(key=lambda item: (-item[0], -item[1]["year"], item[1]["source_pmid"]))
+    records = [item for _, item in ranked[:top_k]]
+    latest = _q("SELECT MAX(year) AS latest_year, COUNT(*) AS papers FROM papers")
+    snapshot = latest[0] if latest else {}
+    return {
+        "description": "Ranked, individually attributable literature evidence from the local KG",
+        "source_records": records,
+        "retrieval_metadata": {
+            "query": q,
+            "focus": f,
+            "cutoff_year": cutoff,
+            "top_k": top_k,
+            "scanned_records": len(rows),
+            "retrieved_records": len(records),
+            "corpus_latest_year": snapshot.get("latest_year"),
+            "corpus_papers": int(snapshot.get("papers") or 0),
+            "absence_scope": "in_corpus_only",
+            "empty_result_meaning": "No matching attributable evidence in this KG snapshot; not global absence.",
+        },
+    }
 
 
 def tool_improvement_suggestions_by_topic(focus: str | None = None) -> dict:
@@ -941,6 +1065,7 @@ SQL_TOOLS: dict[str, Callable[..., dict]] = {
     "execute_kg_sql": tool_execute_kg_sql,
     "corpus_focus_coverage": tool_corpus_focus_coverage,
     "author_stated_gaps": tool_author_stated_gaps,
+    "literature_evidence_search": tool_literature_evidence_search,
     "improvement_suggestions_by_topic": tool_improvement_suggestions_by_topic,
     "limitation_impact_rank": tool_limitation_impact_rank,
     "limitation_temporal_profile": tool_limitation_temporal_profile,
@@ -997,6 +1122,27 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                 },
                 "required": ["sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "literature_evidence_search",
+            "description": (
+                "Search individually attributable KG evidence records. Returns exact PMID, quote, "
+                "year, evidence_role, corpus snapshot and cutoff. Use to find both author-stated "
+                "opportunities and completed-work counterevidence. Empty means only in-corpus absence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Scoped disease/task/method evidence query"},
+                    "focus": {"type": "string", "description": "Optional mandatory topic filter"},
+                    "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "cutoff_year": {"type": "integer", "description": "Exclude papers after this year"},
+                },
+                "required": ["query"],
             },
         },
     },

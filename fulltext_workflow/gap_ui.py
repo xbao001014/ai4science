@@ -2904,6 +2904,8 @@ def main() -> None:
                                 st.session_state["proposal_rounds"] = rl
                         elif et == "final":
                             st.session_state["proposal"] = event.get("content", "")
+                            st.session_state["proposal_validation_status"] = event.get("validation_status", "needs_verification")
+                            st.session_state["proposal_accepted"] = event.get("accepted", False)
                             st.session_state["final_rounds"] = event.get("rounds", 1)
                             st.session_state["final_score"] = event.get("final_score", 0.0)
                             feas_score = event.get("feasibility_score")
@@ -2950,7 +2952,7 @@ def main() -> None:
                                     ),
                                 )
                             psw.update(
-                                label=f"完成 — {event.get('rounds', 1)} 轮，得分 {event.get('final_score', 0):.1f}/10",
+                                label=f"{'已通过验收' if event.get('accepted') else '已生成 · 未通过验收'} — {event.get('rounds', 1)} 轮，得分 {event.get('final_score', 0):.1f}/10",
                                 state="complete",
                                 expanded=False,
                             )
