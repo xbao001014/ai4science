@@ -173,10 +173,46 @@ def tool_literature_evidence_search(
     cutoff = int(cutoff_year or datetime.now().year)
     f = normalize_focus(focus)
     focus_clause = focus_pmid_in_clause("p.pmid", f) if f else ""
+    from analysis.retrieval import (
+        build_retrieval_plan,
+        candidate_phrases,
+        score_retrieval_fields,
+    )
+
+    plan = build_retrieval_plan(q)
+    mandatory_units = [
+        unit for unit in plan["units"]
+        if unit["kind"] == "method" or (unit["kind"] == "disease" and not f)
+    ]
+    candidate_plan = {"units": mandatory_units or [
+        unit for unit in plan["units"] if unit["kind"] != "disease"
+    ] or plan["units"]}
+    phrases = candidate_phrases(candidate_plan)
+    if not phrases:
+        return {"error": "query has no meaningful retrieval terms"}
+    searchable = """LOWER(
+        COALESCE(p.title, '') || ' ' || COALESCE(p.abstract, '') || ' ' ||
+        COALESCE(p.keywords, '') || ' ' || COALESCE(p.mesh_terms, '') || ' ' ||
+        COALESCE(e.name, '') || ' ' || COALESCE(e.aliases, '') || ' ' ||
+        COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote, ''))"""
+    if mandatory_units:
+        candidate_groups: list[str] = []
+        candidate_params: list[str] = []
+        for unit in mandatory_units:
+            unit_phrases = [str(value) for value in unit.get("phrases", [])]
+            candidate_groups.append(
+                "(" + " OR ".join(f"{searchable} LIKE ?" for _ in unit_phrases) + ")"
+            )
+            candidate_params.extend(f"%{phrase}%" for phrase in unit_phrases)
+        candidate_clause = " AND ".join(candidate_groups)
+    else:
+        candidate_clause = " OR ".join(f"{searchable} LIKE ?" for _ in phrases)
+        candidate_params = [f"%{phrase}%" for phrase in phrases]
     rows = _q(
         f"""
         SELECT p.pmid AS source_pmid, p.title, p.abstract, p.year,
-               r.relation, e.name AS entity_name,
+               p.keywords, p.mesh_terms, p.source_queries,
+               r.relation, e.name AS entity_name, e.aliases AS entity_aliases,
                COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote) AS evidence_quote,
                COALESCE(NULLIF(rev.evidence_section, ''), r.evidence_section) AS evidence_section,
                COALESCE(rev.support_status, 'unchecked') AS support_status
@@ -190,13 +226,13 @@ def tool_literature_evidence_search(
         WHERE COALESCE(r.status, 'active') = 'active'
           AND p.year IS NOT NULL AND p.year <= ?
           AND TRIM(COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote, '')) != ''
+          AND ({candidate_clause})
           {focus_clause}
         ORDER BY p.year DESC, r.id
-        LIMIT 500
+        LIMIT 10000
         """,
-        (cutoff,),
+        (cutoff, *candidate_params),
     )
-    query_tokens = _retrieval_tokens(q)
     ranked: list[tuple[float, dict]] = []
     seen: set[tuple[str, str, str]] = set()
     for row in rows:
@@ -209,20 +245,28 @@ def tool_literature_evidence_search(
         if key in seen:
             continue
         seen.add(key)
-        quote_overlap = len(query_tokens & _retrieval_tokens(quote))
-        title_overlap = len(query_tokens & _retrieval_tokens(row.get("title") or ""))
-        abstract_overlap = len(query_tokens & _retrieval_tokens(row.get("abstract") or ""))
-        entity_overlap = len(query_tokens & _retrieval_tokens(row.get("entity_name") or ""))
-        matched_terms = query_tokens & (
-            _retrieval_tokens(quote)
-            | _retrieval_tokens(row.get("title") or "")
-            | _retrieval_tokens(row.get("abstract") or "")
-            | _retrieval_tokens(row.get("entity_name") or "")
+        detail = score_retrieval_fields(
+            plan,
+            {
+                **row,
+                "entity_names": " ".join((
+                    str(row.get("entity_name") or ""),
+                    str(row.get("entity_aliases") or ""),
+                )),
+            },
+            weights={
+                "evidence_quote": 4.0,
+                "title": 2.0,
+                "entity_names": 2.0,
+                "keywords": 1.5,
+                "mesh_terms": 1.0,
+                "source_queries": 0.5,
+                "abstract": 1.0,
+            },
         )
-        score = 4 * quote_overlap + 2 * title_overlap + abstract_overlap + entity_overlap
-        minimum_terms = 1 if len(query_tokens) <= 1 else 2
-        if score <= 0 or len(matched_terms) < minimum_terms:
+        if not detail["matched"]:
             continue
+        score = float(detail["score"])
         role = (
             "opportunity_evidence"
             if relation in {"REPORTS_LIMITATION", "PROPOSES_IMPROVEMENT"}
@@ -247,6 +291,8 @@ def tool_literature_evidence_search(
             "evidence_role": role,
             "support_status": row.get("support_status") or "unchecked",
             "retrieval_score": score,
+            "matched_query_units": detail["matched_units"],
+            "matched_fields": detail["matched_by_field"],
         }))
     ranked.sort(key=lambda item: (-item[0], -item[1]["year"], item[1]["source_pmid"]))
     records = [item for _, item in ranked[:top_k]]
@@ -262,6 +308,11 @@ def tool_literature_evidence_search(
             "top_k": top_k,
             "scanned_records": len(rows),
             "retrieved_records": len(records),
+            "candidate_phrases": phrases,
+            "query_units": [
+                {"kind": unit["kind"], "canonical": unit["canonical"]}
+                for unit in plan["units"]
+            ],
             "corpus_latest_year": snapshot.get("latest_year"),
             "corpus_papers": int(snapshot.get("papers") or 0),
             "absence_scope": "in_corpus_only",

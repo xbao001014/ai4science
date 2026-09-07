@@ -277,6 +277,8 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 # LLM 多智能体辩论报告（默认注入 + 持久化 ops memory）
 & $py main.py gap-debate --focus "digital pathology" --top 6 -o output/gap_debate_report.md
 # 关闭记忆：--no-ops-memory / --no-ops-persist
+# 从未完成会话的 next_role checkpoint 精确续跑
+& $py main.py gap-debate --resume-session "<session-id>" -o output/gap_debate_report.md
 ```
 
 **角色**（界面英文标签 / 代码内部名）：
@@ -289,12 +291,16 @@ Gap UI 的 **Visualization** 标签页也会读库渲染空白相关图。
 
 **Ops memory**（`analysis/ops_memory.py`）：
 
-- 按 `focus_key`（无 focus → `__all__`；已知疾病概念 → `disease_synonyms` canonical，如 `乳腺癌`/`breast cancer` → `breast carcinoma`）回看最近 **4** 次空白，prompt **软避让**近重复方向（非硬过滤）
-- 成功跑完后写入 `ops_runs` / `ops_gap_items` / `ops_proposals`
+- 按 `focus_key`（无 focus → `__all__`；已知疾病概念 → `disease_synonyms` canonical，如 `乳腺癌`/`breast cancer` → `breast carcinoma`）回看最近 **4 次含空白且通过证据校验的 debate run**，prompt **软避让**近重复方向（非硬过滤）；hotspot-only run 不占回看窗口
+- 每次 debate 都写入 `debate_sessions` / `debate_turns` / `debate_tool_events` / `debate_candidates`，按角色阶段保存 checkpoint、候选稳定 ID、结构化 handoff 与累积工具证据
+- handoff 显式保存 objections / decisions / unresolved questions / requested actions；`state_json` 保存滚动摘要，完整角色输出和工具事件仍作为原始记录独立留存
+- Gap UI 的“会话历史与断点续跑”可查看同焦点历史、加载已完成报告，或从未完成会话的 `current_round + next_role` 继续；已完成角色不会重跑
+- 从 debate 进入研究提案时，通过 `idea_sessions` / `idea_turns` 保存 Generator/Critic checkpoint、feasibility baseline 和工具缓存快照，并关联来源 debate session
+- 只有 `validation_status=evidence_checked` 的最终报告才进入 `ops_runs` / `ops_gap_items` 防重复长期记忆；未通过报告仍保留完整会话轨迹供审计或后续恢复
 - Gap UI sidebar：`Use ops memory`、`Persist this run`（默认开）
 - 维护：`scripts/clear_ops_memory.py`（清空）、`scripts/backfill_ops_proposals.py`（回填缺失字段）
 
-**模块**：`analysis/gap_tools.py`、`analysis/graph_tools.py`、`analysis/ops_memory.py`、`analysis/disease_synonyms.py`、`analysis/focus_filter.py`、`gap_agent.py`、`debate_labels.py`
+**模块**：`analysis/gap_tools.py`、`analysis/graph_tools.py`、`analysis/ops_memory.py`、`analysis/debate_memory.py`、`analysis/disease_synonyms.py`、`analysis/focus_filter.py`、`gap_agent.py`、`debate_labels.py`
 
 **Research focus / 中英文同义词**（`analysis/disease_synonyms.py`）：
 

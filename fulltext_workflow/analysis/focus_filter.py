@@ -338,36 +338,112 @@ def resolve_topic_pmids(keyword: str) -> tuple[list[str], str]:
     if not kw:
         return [], "empty"
 
-    from analysis.disease_synonyms import expand_focus_terms, resolve_disease_concept
+    ranked, strategy = _rank_topic_papers(kw)
+    return [row["pmid"] for row in ranked], strategy
 
-    concept = resolve_disease_concept(kw)
-    if concept:
-        exp = expand_focus_terms(kw)
-        phrases = exp.get("phrases") or []
-        if phrases:
-            pmids = _pmids_phrase_or(phrases)
-            if pmids:
-                return pmids, f"concept({exp['concept_id']})"
 
-    pmids = _pmids_full_phrase(kw)
-    if pmids:
-        return pmids, "full_phrase"
+def _rank_topic_papers(keyword: str) -> tuple[list[dict], str]:
+    """Rank corpus papers across metadata and extracted entities.
 
-    tokens = meaningful_keyword_tokens(kw)
-    if len(tokens) >= 2:
-        pmids = _pmids_token_scored(tokens)
-        if pmids:
-            return pmids, f"token_score({','.join(tokens)})"
-        bigrams = keyword_bigrams(tokens)
-        if bigrams:
-            pmids = _pmids_phrase_or(bigrams)
-            if pmids:
-                shown = "; ".join(bigrams[:3])
-                if len(bigrams) > 3:
-                    shown += "..."
-                return pmids, f"key_phrases({shown})"
+    A recognized disease is one query unit rather than a short-circuit. Thus
+    ``breast cancer segmentation`` must match both the disease and at least one
+    technique/task term instead of returning every breast-cancer paper.
+    """
+    from analysis.retrieval import (
+        build_retrieval_plan,
+        candidate_phrases,
+        full_query_matches,
+        score_retrieval_fields,
+    )
 
-    return [], "no_match"
+    plan = build_retrieval_plan(keyword)
+    if not plan["units"]:
+        return [], "no_match"
+    # Use non-disease dimensions to narrow mixed queries. A disease concept can
+    # have many aliases and otherwise turns the expensive entity aggregation
+    # back into a near-full-corpus scan.
+    method_units = [unit for unit in plan["units"] if unit["kind"] == "method"]
+    candidate_units = method_units or [
+        unit for unit in plan["units"] if unit["kind"] != "disease"
+    ]
+    candidate_plan = {"units": candidate_units or plan["units"]}
+    phrases = candidate_phrases(candidate_plan)
+    paper_text = """LOWER(
+        COALESCE(p.title, '') || ' ' || COALESCE(p.abstract, '') || ' ' ||
+        COALESCE(p.keywords, '') || ' ' || COALESCE(p.mesh_terms, '') || ' ' ||
+        COALESCE(p.source_queries, ''))"""
+    entity_text = "LOWER(COALESCE(e2.name, '') || ' ' || COALESCE(e2.aliases, ''))"
+    paper_parts = [f"{paper_text} LIKE ?" for _ in phrases]
+    entity_parts = [f"{entity_text} LIKE ?" for _ in phrases]
+    params = tuple(f"%{phrase}%" for phrase in phrases) * 2
+    with get_conn() as conn:
+        rows = [dict(row) for row in conn.execute(
+            f"""
+            WITH candidate_pmids AS (
+                SELECT p.pmid
+                FROM papers p
+                WHERE {" OR ".join(paper_parts)}
+                UNION
+                SELECT r2.source_pmid AS pmid
+                FROM relations r2
+                JOIN entities e2 ON e2.id = r2.object_id
+                WHERE COALESCE(r2.status, 'active') = 'active'
+                  AND ({" OR ".join(entity_parts)})
+            )
+            SELECT p.pmid, p.title, p.abstract, p.keywords, p.mesh_terms,
+                   p.source_queries, p.year,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(e.name || ' ' || COALESCE(e.aliases, ''), ' ')
+                       FROM relations r
+                       JOIN entities e ON e.id = r.object_id
+                       WHERE r.source_pmid = p.pmid
+                         AND COALESCE(r.status, 'active') = 'active'
+                   ), '') AS entity_names
+            FROM candidate_pmids c
+            JOIN papers p ON p.pmid = c.pmid
+            WHERE p.pmid IS NOT NULL
+            """,
+            params,
+        ).fetchall()]
+
+    ranked: list[dict] = []
+    has_full_phrase = False
+    for row in rows:
+        detail = score_retrieval_fields(plan, row)
+        if not detail["matched"]:
+            continue
+        row["retrieval_score"] = detail["score"]
+        row["matched_query_units"] = detail["matched_units"]
+        row["matched_fields"] = detail["matched_by_field"]
+        row["full_phrase_match"] = full_query_matches(
+            plan,
+            row.get("title"), row.get("abstract"), row.get("keywords"),
+            row.get("mesh_terms"), row.get("entity_names"),
+        )
+        has_full_phrase = has_full_phrase or row["full_phrase_match"]
+        ranked.append(row)
+    ranked.sort(key=lambda row: (
+        -float(row["retrieval_score"]),
+        -int(row.get("year") or 0),
+        str(row["pmid"]),
+    ))
+
+    units = plan["units"]
+    if (
+        has_full_phrase
+        and len(units) <= 4
+        and all(unit["kind"] == "token" for unit in units)
+    ):
+        strategy = "full_phrase"
+    elif len(units) == 1 and units[0]["kind"] == "disease":
+        strategy = f"concept({plan['disease_concept_id']})"
+    elif len(units) == 1 and units[0]["kind"] == "method":
+        strategy = f"method_concept({units[0]['canonical']})"
+    elif any(unit["kind"] in {"disease", "method"} for unit in units):
+        strategy = "hybrid_score(" + ",".join(unit["canonical"] for unit in units) + ")"
+    else:
+        strategy = "token_score(" + ",".join(unit["canonical"] for unit in units) + ")"
+    return ranked, strategy
 
 
 def resolve_v03_topic_pmids(keyword: str) -> tuple[list[str], str]:
@@ -434,36 +510,31 @@ def search_papers_for_topic(
     select_columns: str = _DEFAULT_PAPER_COLUMNS,
 ) -> tuple[list[dict], str]:
     """Return papers for a gap keyword; falls back when the full title matches nothing."""
-    pmids, strategy = resolve_topic_pmids(keyword)
-    if not pmids:
+    ranked, strategy = _rank_topic_papers(keyword)
+    if not ranked:
         return [], strategy
 
+    pmids = [str(row["pmid"]) for row in ranked]
+    score_by_pmid = {str(row["pmid"]): row for row in ranked}
     quoted = ", ".join(f"'{_escape_sql_like(p)}'" for p in pmids)
-    order_by = "p.year DESC"
-    score_select = ""
-
-    if strategy.startswith("token_score"):
-        tokens = meaningful_keyword_tokens(keyword)
-        title_score = _token_score_expr("p.title", tokens)
-        entity_score = _token_score_expr("e.name", tokens)
-        score_select = f""",
-            ({title_score} + COALESCE((
-                SELECT MAX({entity_score}) FROM relations r
-                JOIN entities e ON r.object_id = e.id
-                WHERE r.source_pmid = p.pmid
-            ), 0)) AS match_score"""
-        order_by = "match_score DESC, p.year DESC"
 
     sql = f"""
-        SELECT DISTINCT {select_columns}{score_select}
+        SELECT DISTINCT {select_columns}
         FROM papers p
         WHERE p.pmid IN ({quoted}){extra_where}
-        ORDER BY {order_by}
-        LIMIT {limit}
     """
     with get_conn() as conn:
         rows = conn.execute(sql).fetchall()
-    return [dict(r) for r in rows], strategy
+    out = [dict(r) for r in rows]
+    rank_by_pmid = {pmid: index for index, pmid in enumerate(pmids)}
+    out.sort(key=lambda row: rank_by_pmid.get(str(row.get("pmid")), len(pmids)))
+    out = out[:limit]
+    for row in out:
+        detail = score_by_pmid.get(str(row.get("pmid")), {})
+        row["retrieval_score"] = detail.get("retrieval_score", 0)
+        row["matched_query_units"] = detail.get("matched_query_units", [])
+        row["matched_fields"] = detail.get("matched_fields", {})
+    return out, strategy
 
 
 def debate_or_corpus_papers(

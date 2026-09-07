@@ -238,7 +238,7 @@ def test_future_disease_not_heating(monkeypatch):
         "Disease", window_days=14, prior_days=14, min_recent=1, limit=20
     )
     names = {r["name"] for r in rows}
-    assert "breast cancer" in names
+    assert "breast carcinoma" in names
     assert "lupus nephritis" not in names
 
 

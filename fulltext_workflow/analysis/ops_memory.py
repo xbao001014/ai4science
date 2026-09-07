@@ -114,12 +114,16 @@ def finalize_ops_run(
     gap_report_path: str = "",
     hotspot_week_id: str = "",
     proposal_report_path: str = "",
+    validation_status: str = "",
+    debate_session_id: str = "",
 ) -> None:
     update_ops_run_finalize(
         run_id,
         gap_report_path=gap_report_path,
         hotspot_week_id=hotspot_week_id,
         proposal_report_path=proposal_report_path,
+        validation_status=validation_status,
+        debate_session_id=debate_session_id,
     )
 
 
@@ -342,9 +346,15 @@ def persist_debate_report(
     source: str,
     gap_report_path: str = "",
     enabled: bool | None = None,
+    validation_status: str = "evidence_checked",
+    debate_session_id: str = "",
 ) -> int | None:
     on = config.OPS_MEMORY_ENABLED if enabled is None else enabled
-    if not on or not (report_text or "").strip():
+    if (
+        not on
+        or not (report_text or "").strip()
+        or validation_status != "evidence_checked"
+    ):
         return None
     prior = load_recent_gaps(focus)
     rid = create_ops_run(focus, source)
@@ -353,7 +363,12 @@ def persist_debate_report(
     if prior.items and titles:
         status_map = dict(tag_revisited_against_memory(titles, prior))
     persist_gaps_from_report(rid, report_text, status_by_title=status_map)
-    finalize_ops_run(rid, gap_report_path=gap_report_path)
+    finalize_ops_run(
+        rid,
+        gap_report_path=gap_report_path,
+        validation_status=validation_status,
+        debate_session_id=debate_session_id,
+    )
     return rid
 
 

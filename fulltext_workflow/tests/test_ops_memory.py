@@ -152,6 +152,40 @@ def test_persist_debate_marks_revisited():
     assert persist_debate_report(SAMPLE_REPORT, focus="npc", source="x", enabled=False) is None
 
 
+def test_unverified_debate_is_not_admitted_to_long_term_memory():
+    _reset_ops_db()
+    rid = persist_debate_report(
+        SAMPLE_REPORT,
+        focus="npc",
+        source="gap-debate",
+        enabled=True,
+        validation_status="needs_verification",
+    )
+    assert rid is None
+    assert load_recent_gaps("npc").items == []
+
+    imported = create_ops_run("npc", "idea-pipeline-import")
+    persist_gaps_from_report(imported, SAMPLE_REPORT)
+    finalize_ops_run(imported, validation_status="imported_unverified")
+    assert load_recent_gaps("npc").items == []
+
+
+def test_hotspot_only_runs_do_not_crow_out_gap_lookback():
+    _reset_ops_db()
+    gap_run = persist_debate_report(
+        SAMPLE_REPORT,
+        focus=None,
+        source="gap-debate",
+        enabled=True,
+    )
+    assert gap_run is not None
+    for week in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        link_hotspot_week(week)
+    bundle = load_recent_gaps(None, limit_runs=4)
+    assert bundle.run_ids == [gap_run]
+    assert len(bundle.items) == 2
+
+
 def test_link_hotspot_creates_or_updates_run():
     _reset_ops_db()
     rid = link_hotspot_week("2026-W29")

@@ -28,6 +28,7 @@ from analysis.graph_tools import GRAPH_TOOLS, GRAPH_TOOL_SCHEMAS, init_gap_regis
 from analysis.feasibility_tools import FEASIBILITY_TOOLS, FEASIBILITY_TOOL_SCHEMAS
 from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in_clause
 from analysis.idea_session_guards import IdeaSessionGuards
+from analysis.idea_memory import checkpoint_idea_phase, create_idea_memory
 from analysis.evidence_contract import EVIDENCE_POLICY, compact_json, proposal_verdict
 from analysis.difficulty_scoring import (
     DIFFICULTY_LEVELS,
@@ -687,10 +688,17 @@ def stream_idea_agent(
     max_rounds: int = 2,
     accept_score: float = ACCEPT_SCORE,
     target_difficulty: str = "moderate",
+    debate_session_id: str | None = None,
 ) -> Generator[dict, None, None]:
     target_difficulty = _normalize_target_difficulty(target_difficulty)
+    idea_memory = create_idea_memory(
+        gap_text=gap_text,
+        max_rounds=max_rounds,
+        debate_session_id=debate_session_id,
+    )
     yield {
         "type": "start",
+        "idea_session_id": idea_memory.session_id,
         "gap_text": gap_text,
         "max_rounds": max_rounds,
         "target_difficulty": target_difficulty,
@@ -871,6 +879,18 @@ def stream_idea_agent(
         )
         if agent_failed and not current_draft:
             difficulty = _assess_difficulty()
+            checkpoint_idea_phase(
+                idea_memory,
+                round_no=round_num,
+                role="generator",
+                next_role="",
+                output_text="",
+                current_draft="",
+                last_feedback=last_feedback,
+                guard_snapshot=session_guards.snapshot(),
+                validation_status="needs_verification",
+                status="failed",
+            )
             yield {"type": "difficulty_assessed", **difficulty}
             yield {
                 "type": "final",
@@ -889,6 +909,16 @@ def stream_idea_agent(
                 "aborted": True,
             }
             return
+        checkpoint_idea_phase(
+            idea_memory,
+            round_no=round_num,
+            role="generator",
+            next_role="critic",
+            output_text=current_draft,
+            current_draft=current_draft,
+            last_feedback=last_feedback,
+            guard_snapshot=session_guards.snapshot(),
+        )
         yield {"type": "draft", "round": round_num, "content": current_draft}
 
         if agent_failed:
@@ -998,6 +1028,18 @@ def stream_idea_agent(
             "spec_relation": session_guards.last_spec_relation,
         }
 
+        checkpoint_idea_phase(
+            idea_memory,
+            round_no=round_num,
+            role="critic",
+            next_role="" if accept or round_num == max_rounds else "generator",
+            output_text=critic_text,
+            current_draft=current_draft,
+            last_feedback=last_feedback,
+            guard_snapshot=session_guards.snapshot(),
+            validation_status=verdict["validation_status"],
+        )
+
         if accept or round_num == max_rounds:
             break
 
@@ -1009,10 +1051,23 @@ def stream_idea_agent(
             + "; ".join(verdict["validation_reasons"]) + "\n\n" + current_draft
         )
     current_draft = _prepend_difficulty_header(current_draft, difficulty)
+    checkpoint_idea_phase(
+        idea_memory,
+        round_no=max(completed_rounds, idea_memory.current_round),
+        role="final",
+        next_role="",
+        output_text=current_draft,
+        current_draft=current_draft,
+        last_feedback=last_feedback,
+        guard_snapshot=session_guards.snapshot(),
+        validation_status=verdict["validation_status"],
+        status="completed",
+    )
     yield {"type": "difficulty_assessed", **difficulty}
     yield {
         "type": "final",
         "content": current_draft,
+        "idea_session_id": idea_memory.session_id,
         "rounds": completed_rounds,
         "final_score": final_score,
         "accepted": verdict["accepted"],
@@ -1036,6 +1091,7 @@ def run_idea_agent(
     max_rounds: int = 2,
     verbose: bool = False,
     target_difficulty: str = "moderate",
+    debate_session_id: str | None = None,
 ) -> tuple[str, dict]:
     print(f"\n{'='*60}")
     print("Research Proposal — Generator x Critic")
@@ -1054,6 +1110,7 @@ def run_idea_agent(
         gap_data=gap_data,
         max_rounds=max_rounds,
         target_difficulty=target_difficulty,
+        debate_session_id=debate_session_id,
     ):
         etype = event["type"]
         if etype == "round_start":
@@ -1072,6 +1129,7 @@ def run_idea_agent(
                 meta["feasibility_score"] = event["feasibility_score"]
         elif etype == "final":
             proposal = event["content"]
+            meta["idea_session_id"] = event.get("idea_session_id")
             for key in ("accepted", "validation_status", "validation_reasons",
                         "feasibility_score", "available_cohort_size"):
                 meta[key] = event.get(key)

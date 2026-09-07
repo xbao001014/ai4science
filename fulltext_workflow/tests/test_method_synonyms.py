@@ -13,6 +13,7 @@ from analysis.method_synonyms import (  # noqa: E402
     near_duplicate_method_candidates,
     run_method_cluster_audit,
     resolve_method_canonical,
+    resolve_method_entity_canonical,
 )
 
 
@@ -44,6 +45,14 @@ def test_curated_synonym_maps(monkeypatch):
 def test_auto_does_not_absorb_long_phrase_into_deep_learning():
     name = "data fusion deep learning framework"
     assert resolve_method_canonical(name) == "data fusion deep learning framework"
+
+
+def test_persistent_mapping_preserves_versions_and_modifiers():
+    assert resolve_method_entity_canonical("SVM") == "support vector machine"
+    assert resolve_method_entity_canonical("nnu-net") == "nnunet"
+    assert resolve_method_entity_canonical("nnUNet v2") == "nnunet v2"
+    assert resolve_method_entity_canonical("modified ResNet-34") == "modified resnet-34"
+    assert resolve_method_entity_canonical("ChatGPT-4o") == "chatgpt-4o"
 
 
 def test_skeleton_strips_weak_tokens():

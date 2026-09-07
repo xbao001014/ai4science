@@ -628,6 +628,17 @@ def is_reject_task(name: str) -> bool:
 
 def normalize_entity_name(name: str, entity_type: str) -> str:
     key = _norm_key(name)
+    if entity_type == "Method":
+        # Local import avoids an import cycle: method_synonyms uses _norm_key.
+        from analysis.method_synonyms import resolve_method_entity_canonical
+
+        return resolve_method_entity_canonical(key)
+    if entity_type == "Disease":
+        from analysis.disease_synonyms import resolve_disease_canonical
+
+        # Exact curated aliases only. Broad focus matching would erase subtype,
+        # mutation and metastasis qualifiers from extracted disease entities.
+        return resolve_disease_canonical(key) or key
     if entity_type == "Limitation":
         return _LIMITATION_ALIASES.get(key, key)
     if entity_type == "Modality":

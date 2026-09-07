@@ -302,6 +302,8 @@ CREATE TABLE IF NOT EXISTS ops_runs (
     hotspot_week_id     TEXT,
     gap_report_path     TEXT,
     proposal_report_path TEXT,
+    validation_status   TEXT,
+    debate_session_id   TEXT,
     notes               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ops_runs_focus_finished
@@ -337,6 +339,101 @@ CREATE TABLE IF NOT EXISTS ops_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
 
+CREATE TABLE IF NOT EXISTS debate_sessions (
+    session_id          TEXT PRIMARY KEY,
+    focus_raw           TEXT,
+    focus_key           TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'running',
+    current_round       INTEGER DEFAULT 0,
+    next_role           TEXT,
+    max_rounds          INTEGER NOT NULL,
+    top_n               INTEGER NOT NULL,
+    validation_status   TEXT,
+    final_report        TEXT,
+    state_json          TEXT NOT NULL DEFAULT '{}',
+    model               TEXT,
+    prompt_version      TEXT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at        TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_debate_sessions_focus_updated
+    ON debate_sessions(focus_key, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS debate_turns (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+    round_no            INTEGER NOT NULL,
+    role                TEXT NOT NULL,
+    input_text          TEXT,
+    output_text         TEXT,
+    handoff_json        TEXT,
+    status              TEXT NOT NULL DEFAULT 'completed',
+    started_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at        TIMESTAMP,
+    UNIQUE(session_id, round_no, role)
+);
+CREATE INDEX IF NOT EXISTS idx_debate_turns_session_round
+    ON debate_turns(session_id, round_no, role);
+
+CREATE TABLE IF NOT EXISTS debate_tool_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+    round_no            INTEGER NOT NULL,
+    role                TEXT NOT NULL,
+    event_type          TEXT NOT NULL,
+    tool_name           TEXT,
+    call_id             TEXT,
+    args_json           TEXT,
+    result_json         TEXT,
+    error_text          TEXT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_debate_tool_events_session_round
+    ON debate_tool_events(session_id, round_no, role, id);
+
+CREATE TABLE IF NOT EXISTS debate_candidates (
+    session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+    candidate_id        TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'proposed',
+    first_round         INTEGER NOT NULL,
+    last_round          INTEGER NOT NULL,
+    metadata_json       TEXT,
+    PRIMARY KEY(session_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_debate_candidates_session_status
+    ON debate_candidates(session_id, status);
+
+CREATE TABLE IF NOT EXISTS idea_sessions (
+    session_id          TEXT PRIMARY KEY,
+    debate_session_id   TEXT REFERENCES debate_sessions(session_id),
+    gap_text            TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'running',
+    current_round       INTEGER DEFAULT 0,
+    next_role           TEXT DEFAULT 'generator',
+    max_rounds          INTEGER NOT NULL,
+    state_json          TEXT NOT NULL DEFAULT '{}',
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at        TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_idea_sessions_debate_updated
+    ON idea_sessions(debate_session_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS idea_turns (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES idea_sessions(session_id) ON DELETE CASCADE,
+    round_no            INTEGER NOT NULL,
+    role                TEXT NOT NULL,
+    output_text         TEXT,
+    state_json          TEXT NOT NULL DEFAULT '{}',
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, round_no, role)
+);
+CREATE INDEX IF NOT EXISTS idx_idea_turns_session_round
+    ON idea_turns(session_id, round_no, role);
+
 CREATE TABLE IF NOT EXISTS paper_entity_bindings (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     source_pmid         TEXT NOT NULL,
@@ -367,6 +464,595 @@ CREATE INDEX IF NOT EXISTS idx_pis_pmid ON paper_improvement_suggestions(source_
 CREATE INDEX IF NOT EXISTS idx_pis_action ON paper_improvement_suggestions(action_type);
 CREATE INDEX IF NOT EXISTS idx_pis_lim ON paper_improvement_suggestions(limitation_entity_id);
 CREATE INDEX IF NOT EXISTS idx_pis_status ON paper_improvement_suggestions(status);
+
+-- Phase A external embedding foundation. Raw input text and credentials are
+-- deliberately not persisted in these tables.
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    input_sha256       TEXT NOT NULL,
+    provider           TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    dimensions         INTEGER NOT NULL,
+    vector_blob        BLOB NOT NULL,
+    vector_norm        REAL NOT NULL,
+    input_chars        INTEGER NOT NULL,
+    prompt_tokens      INTEGER,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (input_sha256, provider, model, dimensions),
+    CHECK (dimensions > 0),
+    CHECK (length(vector_blob) = dimensions * 4)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_cache_model
+    ON embedding_cache(provider, model, dimensions);
+
+CREATE TABLE IF NOT EXISTS embedding_jobs (
+    job_id              TEXT PRIMARY KEY,
+    job_type            TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    dimensions          INTEGER NOT NULL,
+    scope_json          TEXT NOT NULL DEFAULT '{}',
+    planned_items       INTEGER DEFAULT 0,
+    cache_hits          INTEGER DEFAULT 0,
+    requested_items     INTEGER DEFAULT 0,
+    succeeded_items     INTEGER DEFAULT 0,
+    failed_items        INTEGER DEFAULT 0,
+    estimated_tokens    INTEGER DEFAULT 0,
+    actual_tokens       INTEGER DEFAULT 0,
+    estimated_cost_cny  REAL DEFAULT 0,
+    error_summary       TEXT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at        TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_jobs_status
+    ON embedding_jobs(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS embedding_job_items (
+    job_id              TEXT NOT NULL REFERENCES embedding_jobs(job_id) ON DELETE CASCADE,
+    item_type           TEXT NOT NULL,
+    item_id             TEXT NOT NULL,
+    input_sha256        TEXT NOT NULL,
+    context_quality     TEXT NOT NULL,
+    input_chars         INTEGER NOT NULL,
+    estimated_tokens    INTEGER NOT NULL,
+    status              TEXT NOT NULL,
+    cache_hit           INTEGER DEFAULT 0,
+    attempts            INTEGER DEFAULT 0,
+    error_code          TEXT,
+    error_summary       TEXT,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (job_id, item_type, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_job_items_status
+    ON embedding_job_items(job_id, status);
+CREATE INDEX IF NOT EXISTS idx_embedding_job_items_hash
+    ON embedding_job_items(input_sha256);
+
+CREATE TABLE IF NOT EXISTS embedding_batch_jobs (
+    job_id              TEXT PRIMARY KEY REFERENCES embedding_jobs(job_id) ON DELETE CASCADE,
+    remote_batch_id     TEXT UNIQUE,
+    input_file_id       TEXT,
+    output_file_id      TEXT,
+    error_file_id       TEXT,
+    remote_status       TEXT,
+    submitted_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_polled_at      TIMESTAMP,
+    ingested_at         TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS method_taxonomy_families (
+    family_id           TEXT NOT NULL,
+    taxonomy_version    TEXT NOT NULL,
+    display_name_zh     TEXT NOT NULL,
+    display_name_en     TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    seed_methods_json   TEXT NOT NULL DEFAULT '[]',
+    negative_examples_json TEXT NOT NULL DEFAULT '[]',
+    parent_family_id    TEXT,
+    active              INTEGER NOT NULL DEFAULT 1,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (family_id, taxonomy_version)
+);
+CREATE INDEX IF NOT EXISTS idx_method_taxonomy_active
+    ON method_taxonomy_families(taxonomy_version, active);
+
+CREATE TABLE IF NOT EXISTS method_family_assignments (
+    method_entity_id    INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    family_id           TEXT NOT NULL,
+    taxonomy_version    TEXT NOT NULL,
+    candidate_rank      INTEGER NOT NULL DEFAULT 1,
+    is_primary          INTEGER NOT NULL DEFAULT 0,
+    confidence          REAL,
+    similarity          REAL NOT NULL,
+    margin              REAL,
+    source              TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    input_sha256        TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    dimensions          INTEGER NOT NULL,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (method_entity_id, family_id, taxonomy_version)
+);
+CREATE INDEX IF NOT EXISTS idx_method_family_status
+    ON method_family_assignments(taxonomy_version, status, family_id);
+CREATE INDEX IF NOT EXISTS idx_method_family_method
+    ON method_family_assignments(method_entity_id, taxonomy_version, candidate_rank);
+
+-- Phase C0 immutable expert Gold inputs. The source CSV is never rewritten;
+-- normalized labels and the deterministic split are persisted as snapshots.
+CREATE TABLE IF NOT EXISTS method_family_gold_sets (
+    gold_set_id             TEXT PRIMARY KEY,
+    taxonomy_version       TEXT NOT NULL,
+    file_sha256            TEXT NOT NULL UNIQUE,
+    source_filename        TEXT NOT NULL,
+    byte_count             INTEGER NOT NULL,
+    row_count              INTEGER NOT NULL,
+    known_count            INTEGER NOT NULL,
+    unknown_count          INTEGER NOT NULL,
+    secondary_count        INTEGER NOT NULL,
+    normalization_policy   TEXT NOT NULL,
+    reviewer               TEXT NOT NULL,
+    split_manifest_sha256  TEXT NOT NULL,
+    calibration_count      INTEGER NOT NULL,
+    holdout_count          INTEGER NOT NULL,
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (row_count = known_count + unknown_count),
+    CHECK (row_count = calibration_count + holdout_count)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_gold_labels (
+    gold_set_id             TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    method_entity_id        INTEGER NOT NULL,
+    source_row              INTEGER NOT NULL,
+    method_name_snapshot    TEXT NOT NULL,
+    method_role_snapshot    TEXT NOT NULL,
+    paper_count_snapshot    INTEGER NOT NULL,
+    first_year_snapshot     INTEGER,
+    last_year_snapshot      INTEGER,
+    raw_primary             TEXT NOT NULL,
+    normalized_primary      TEXT NOT NULL,
+    secondary_json          TEXT NOT NULL DEFAULT '[]',
+    review_notes            TEXT NOT NULL DEFAULT '',
+    suggested_primary       TEXT NOT NULL,
+    top1_similarity         REAL NOT NULL,
+    ranking_score           REAL NOT NULL,
+    margin                  REAL NOT NULL,
+    suggested_top3_json     TEXT NOT NULL,
+    split                   TEXT NOT NULL,
+    split_group             TEXT NOT NULL,
+    PRIMARY KEY (gold_set_id, method_entity_id),
+    CHECK (split IN ('calibration', 'holdout'))
+);
+CREATE INDEX IF NOT EXISTS idx_method_family_gold_split
+    ON method_family_gold_labels(gold_set_id, split, normalized_primary);
+
+CREATE TABLE IF NOT EXISTS method_family_calibrations (
+    calibration_id                 TEXT PRIMARY KEY,
+    gold_set_id                    TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    taxonomy_version               TEXT NOT NULL,
+    split_manifest_sha256          TEXT NOT NULL,
+    ruleset_version                TEXT NOT NULL,
+    thresholds_json                TEXT NOT NULL,
+    embedding_family_allowlist_json TEXT NOT NULL,
+    blocked_families_json          TEXT NOT NULL,
+    metrics_json                   TEXT NOT NULL,
+    status                         TEXT NOT NULL,
+    created_at                     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_method_family_calibration_gold
+    ON method_family_calibrations(gold_set_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS method_family_rulesets (
+    ruleset_id               TEXT PRIMARY KEY,
+    gold_set_id              TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    taxonomy_version         TEXT NOT NULL,
+    ruleset_version          TEXT NOT NULL,
+    rules_sha256             TEXT NOT NULL,
+    rules_json               TEXT NOT NULL,
+    eligible_rule_ids_json   TEXT NOT NULL,
+    metrics_json             TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(gold_set_id, rules_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_policy_previews (
+    preview_id               TEXT PRIMARY KEY,
+    gold_set_id              TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    calibration_id           TEXT NOT NULL REFERENCES method_family_calibrations(calibration_id),
+    ruleset_id               TEXT NOT NULL REFERENCES method_family_rulesets(ruleset_id),
+    graph_snapshot_sha256    TEXT NOT NULL,
+    metrics_json             TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(gold_set_id, calibration_id, ruleset_id, graph_snapshot_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_review_queues (
+    queue_id                 TEXT PRIMARY KEY,
+    gold_set_id              TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    calibration_id           TEXT NOT NULL REFERENCES method_family_calibrations(calibration_id),
+    ruleset_id               TEXT NOT NULL REFERENCES method_family_rulesets(ruleset_id),
+    graph_snapshot_sha256    TEXT NOT NULL,
+    target_paper_coverage    REAL NOT NULL,
+    queue_sha256             TEXT NOT NULL,
+    selection_json           TEXT NOT NULL,
+    metrics_json             TEXT NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(gold_set_id, calibration_id, ruleset_id, graph_snapshot_sha256,
+           target_paper_coverage, queue_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_gold_extensions (
+    extension_id             TEXT PRIMARY KEY,
+    queue_id                 TEXT NOT NULL REFERENCES method_family_review_queues(queue_id),
+    parent_gold_set_id       TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    file_sha256              TEXT NOT NULL,
+    source_filename          TEXT NOT NULL,
+    label_snapshot_sha256    TEXT NOT NULL,
+    rank_start               INTEGER NOT NULL,
+    rank_end                 INTEGER NOT NULL,
+    row_count                INTEGER NOT NULL,
+    known_count              INTEGER NOT NULL,
+    unknown_count            INTEGER NOT NULL,
+    secondary_count          INTEGER NOT NULL,
+    reviewer                 TEXT NOT NULL,
+    normalization_policy     TEXT NOT NULL,
+    metrics_json             TEXT NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (rank_start >= 1 AND rank_end >= rank_start),
+    CHECK (row_count = rank_end - rank_start + 1),
+    CHECK (row_count = known_count + unknown_count),
+    UNIQUE(queue_id, rank_start, rank_end, label_snapshot_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_gold_extension_labels (
+    extension_id             TEXT NOT NULL REFERENCES method_family_gold_extensions(extension_id),
+    queue_id                 TEXT NOT NULL REFERENCES method_family_review_queues(queue_id),
+    method_entity_id         INTEGER NOT NULL,
+    queue_rank               INTEGER NOT NULL,
+    method_name_snapshot     TEXT NOT NULL,
+    raw_primary              TEXT NOT NULL,
+    normalized_primary       TEXT NOT NULL,
+    secondary_json           TEXT NOT NULL DEFAULT '[]',
+    review_notes             TEXT NOT NULL DEFAULT '',
+    paper_count_snapshot     INTEGER NOT NULL,
+    uncovered_gain_snapshot  INTEGER NOT NULL,
+    PRIMARY KEY (extension_id, method_entity_id),
+    UNIQUE(queue_id, method_entity_id),
+    UNIQUE(queue_id, queue_rank)
+);
+
+-- Independent blind evaluation sets. Model suggestions are frozen internally
+-- but never exported to the reviewer-facing file.
+CREATE TABLE IF NOT EXISTS method_family_blind_sets (
+    blind_set_id              TEXT PRIMARY KEY,
+    parent_gold_set_id        TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    taxonomy_version          TEXT NOT NULL,
+    graph_snapshot_sha256     TEXT NOT NULL,
+    training_snapshot_sha256  TEXT NOT NULL,
+    sampling_version          TEXT NOT NULL,
+    seed_sha256               TEXT NOT NULL,
+    sample_snapshot_sha256    TEXT NOT NULL,
+    export_sha256             TEXT NOT NULL,
+    source_filename           TEXT NOT NULL,
+    row_count                 INTEGER NOT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(parent_gold_set_id, graph_snapshot_sha256,
+           training_snapshot_sha256, sampling_version, row_count)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_blind_items (
+    blind_set_id              TEXT NOT NULL REFERENCES method_family_blind_sets(blind_set_id),
+    blind_rank                INTEGER NOT NULL,
+    blind_item_id             TEXT NOT NULL,
+    method_entity_id          INTEGER NOT NULL,
+    method_name_snapshot      TEXT NOT NULL,
+    method_role_snapshot      TEXT NOT NULL,
+    paper_count_snapshot      INTEGER NOT NULL,
+    first_year_snapshot       INTEGER,
+    last_year_snapshot        INTEGER,
+    context_quality_snapshot  TEXT NOT NULL,
+    context_excerpt_snapshot  TEXT NOT NULL,
+    stratum_snapshot          TEXT NOT NULL,
+    hidden_suggested_primary  TEXT NOT NULL,
+    hidden_top1_similarity    REAL NOT NULL,
+    hidden_ranking_score      REAL NOT NULL,
+    hidden_margin             REAL NOT NULL,
+    hidden_top3_json          TEXT NOT NULL,
+    PRIMARY KEY (blind_set_id, blind_rank),
+    UNIQUE(blind_set_id, blind_item_id),
+    UNIQUE(blind_set_id, method_entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_blind_submissions (
+    submission_id             TEXT PRIMARY KEY,
+    blind_set_id              TEXT NOT NULL UNIQUE REFERENCES method_family_blind_sets(blind_set_id),
+    file_sha256               TEXT NOT NULL,
+    source_filename           TEXT NOT NULL,
+    label_snapshot_sha256     TEXT NOT NULL,
+    reviewer                  TEXT NOT NULL,
+    row_count                 INTEGER NOT NULL,
+    known_count               INTEGER NOT NULL,
+    unknown_count             INTEGER NOT NULL,
+    secondary_count           INTEGER NOT NULL,
+    metrics_json              TEXT NOT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (row_count = known_count + unknown_count)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_blind_submission_labels (
+    submission_id             TEXT NOT NULL REFERENCES method_family_blind_submissions(submission_id),
+    blind_set_id              TEXT NOT NULL REFERENCES method_family_blind_sets(blind_set_id),
+    blind_rank                INTEGER NOT NULL,
+    blind_item_id             TEXT NOT NULL,
+    method_entity_id          INTEGER NOT NULL,
+    normalized_primary        TEXT NOT NULL,
+    secondary_json            TEXT NOT NULL DEFAULT '[]',
+    review_notes              TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (submission_id, blind_rank),
+    UNIQUE(blind_set_id, method_entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_models (
+    model_id                  TEXT PRIMARY KEY,
+    parent_gold_set_id        TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    ruleset_id                TEXT NOT NULL REFERENCES method_family_rulesets(ruleset_id),
+    taxonomy_version          TEXT NOT NULL,
+    training_snapshot_sha256  TEXT NOT NULL,
+    algorithm_version         TEXT NOT NULL,
+    provider                  TEXT NOT NULL,
+    embedding_model           TEXT NOT NULL,
+    dimensions                INTEGER NOT NULL,
+    alpha                     REAL NOT NULL,
+    score_threshold           REAL NOT NULL,
+    margin_threshold          REAL NOT NULL,
+    label_ids_json            TEXT NOT NULL,
+    model_json                TEXT NOT NULL,
+    metrics_json              TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(parent_gold_set_id, ruleset_id, training_snapshot_sha256,
+           algorithm_version, provider, embedding_model, dimensions)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_blind_evaluations (
+    evaluation_id             TEXT PRIMARY KEY,
+    model_id                  TEXT NOT NULL REFERENCES method_family_models(model_id),
+    submission_id             TEXT NOT NULL REFERENCES method_family_blind_submissions(submission_id),
+    metrics_json              TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(model_id, submission_id)
+);
+
+-- A completed blind set may be retired and promoted into future training only.
+-- Its methods remain excluded from later blind generations.
+CREATE TABLE IF NOT EXISTS method_family_blind_promotions (
+    promotion_id             TEXT PRIMARY KEY,
+    evaluation_id            TEXT NOT NULL UNIQUE REFERENCES method_family_blind_evaluations(evaluation_id),
+    submission_id            TEXT NOT NULL UNIQUE REFERENCES method_family_blind_submissions(submission_id),
+    parent_gold_set_id        TEXT NOT NULL REFERENCES method_family_gold_sets(gold_set_id),
+    label_snapshot_sha256     TEXT NOT NULL,
+    promoted_by              TEXT NOT NULL,
+    metrics_json             TEXT NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS method_family_releases (
+    release_id                TEXT PRIMARY KEY,
+    model_id                  TEXT NOT NULL REFERENCES method_family_models(model_id),
+    evaluation_id             TEXT NOT NULL REFERENCES method_family_blind_evaluations(evaluation_id),
+    taxonomy_version          TEXT NOT NULL,
+    graph_snapshot_sha256     TEXT NOT NULL,
+    assignment_snapshot_sha256 TEXT NOT NULL,
+    metrics_json              TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(model_id, evaluation_id, graph_snapshot_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS method_family_release_assignments (
+    release_id                TEXT NOT NULL REFERENCES method_family_releases(release_id),
+    method_entity_id          INTEGER NOT NULL,
+    family_id                 TEXT NOT NULL,
+    source                    TEXT NOT NULL,
+    score                     REAL NOT NULL,
+    margin                    REAL NOT NULL,
+    PRIMARY KEY (release_id, method_entity_id)
+);
+
+-- Activation is append-only. The current release is the latest row.
+CREATE TABLE IF NOT EXISTS method_family_release_activations (
+    activation_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    release_id                TEXT NOT NULL UNIQUE REFERENCES method_family_releases(release_id),
+    activated_by              TEXT NOT NULL,
+    activated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_sets_no_update
+BEFORE UPDATE ON method_family_gold_sets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_sets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_sets_no_delete
+BEFORE DELETE ON method_family_gold_sets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_sets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_labels_no_update
+BEFORE UPDATE ON method_family_gold_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_labels_no_delete
+BEFORE DELETE ON method_family_gold_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_calibrations_no_update
+BEFORE UPDATE ON method_family_calibrations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_calibrations is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_calibrations_no_delete
+BEFORE DELETE ON method_family_calibrations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_calibrations is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_rulesets_no_update
+BEFORE UPDATE ON method_family_rulesets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_rulesets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_rulesets_no_delete
+BEFORE DELETE ON method_family_rulesets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_rulesets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_policy_previews_no_update
+BEFORE UPDATE ON method_family_policy_previews
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_policy_previews is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_policy_previews_no_delete
+BEFORE DELETE ON method_family_policy_previews
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_policy_previews is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_review_queues_no_update
+BEFORE UPDATE ON method_family_review_queues
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_review_queues is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_review_queues_no_delete
+BEFORE DELETE ON method_family_review_queues
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_review_queues is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_extensions_no_update
+BEFORE UPDATE ON method_family_gold_extensions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_extensions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_extensions_no_delete
+BEFORE DELETE ON method_family_gold_extensions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_extensions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_extension_labels_no_update
+BEFORE UPDATE ON method_family_gold_extension_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_extension_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_gold_extension_labels_no_delete
+BEFORE DELETE ON method_family_gold_extension_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_gold_extension_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_sets_no_update
+BEFORE UPDATE ON method_family_blind_sets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_sets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_sets_no_delete
+BEFORE DELETE ON method_family_blind_sets
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_sets is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_items_no_update
+BEFORE UPDATE ON method_family_blind_items
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_items is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_items_no_delete
+BEFORE DELETE ON method_family_blind_items
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_items is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_submissions_no_update
+BEFORE UPDATE ON method_family_blind_submissions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_submissions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_submissions_no_delete
+BEFORE DELETE ON method_family_blind_submissions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_submissions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_submission_labels_no_update
+BEFORE UPDATE ON method_family_blind_submission_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_submission_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_submission_labels_no_delete
+BEFORE DELETE ON method_family_blind_submission_labels
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_submission_labels is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_models_no_update
+BEFORE UPDATE ON method_family_models
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_models is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_models_no_delete
+BEFORE DELETE ON method_family_models
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_models is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_evaluations_no_update
+BEFORE UPDATE ON method_family_blind_evaluations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_evaluations is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_evaluations_no_delete
+BEFORE DELETE ON method_family_blind_evaluations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_evaluations is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_promotions_no_update
+BEFORE UPDATE ON method_family_blind_promotions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_promotions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_blind_promotions_no_delete
+BEFORE DELETE ON method_family_blind_promotions
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_blind_promotions is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_releases_no_update
+BEFORE UPDATE ON method_family_releases
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_releases is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_releases_no_delete
+BEFORE DELETE ON method_family_releases
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_releases is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_release_assignments_no_update
+BEFORE UPDATE ON method_family_release_assignments
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_release_assignments is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_release_assignments_no_delete
+BEFORE DELETE ON method_family_release_assignments
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_release_assignments is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_release_activations_no_update
+BEFORE UPDATE ON method_family_release_activations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_release_activations is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_method_family_release_activations_no_delete
+BEFORE DELETE ON method_family_release_activations
+BEGIN
+    SELECT RAISE(ABORT, 'method_family_release_activations is immutable');
+END;
 """
 
 
@@ -501,6 +1187,8 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             hotspot_week_id     TEXT,
             gap_report_path     TEXT,
             proposal_report_path TEXT,
+            validation_status   TEXT,
+            debate_session_id   TEXT,
             notes               TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ops_runs_focus_finished
@@ -535,6 +1223,101 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
             difficulty_breakdown_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ops_prop_run ON ops_proposals(run_id);
+
+        CREATE TABLE IF NOT EXISTS debate_sessions (
+            session_id          TEXT PRIMARY KEY,
+            focus_raw           TEXT,
+            focus_key           TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'running',
+            current_round       INTEGER DEFAULT 0,
+            next_role           TEXT,
+            max_rounds          INTEGER NOT NULL,
+            top_n               INTEGER NOT NULL,
+            validation_status   TEXT,
+            final_report        TEXT,
+            state_json          TEXT NOT NULL DEFAULT '{}',
+            model               TEXT,
+            prompt_version      TEXT,
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at        TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_debate_sessions_focus_updated
+            ON debate_sessions(focus_key, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS debate_turns (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+            round_no            INTEGER NOT NULL,
+            role                TEXT NOT NULL,
+            input_text          TEXT,
+            output_text         TEXT,
+            handoff_json        TEXT,
+            status              TEXT NOT NULL DEFAULT 'completed',
+            started_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at        TIMESTAMP,
+            UNIQUE(session_id, round_no, role)
+        );
+        CREATE INDEX IF NOT EXISTS idx_debate_turns_session_round
+            ON debate_turns(session_id, round_no, role);
+
+        CREATE TABLE IF NOT EXISTS debate_tool_events (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+            round_no            INTEGER NOT NULL,
+            role                TEXT NOT NULL,
+            event_type          TEXT NOT NULL,
+            tool_name           TEXT,
+            call_id             TEXT,
+            args_json           TEXT,
+            result_json         TEXT,
+            error_text          TEXT,
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_debate_tool_events_session_round
+            ON debate_tool_events(session_id, round_no, role, id);
+
+        CREATE TABLE IF NOT EXISTS debate_candidates (
+            session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+            candidate_id        TEXT NOT NULL,
+            title               TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'proposed',
+            first_round         INTEGER NOT NULL,
+            last_round          INTEGER NOT NULL,
+            metadata_json       TEXT,
+            PRIMARY KEY(session_id, candidate_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_debate_candidates_session_status
+            ON debate_candidates(session_id, status);
+
+        CREATE TABLE IF NOT EXISTS idea_sessions (
+            session_id          TEXT PRIMARY KEY,
+            debate_session_id   TEXT REFERENCES debate_sessions(session_id),
+            gap_text            TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'running',
+            current_round       INTEGER DEFAULT 0,
+            next_role           TEXT DEFAULT 'generator',
+            max_rounds          INTEGER NOT NULL,
+            state_json          TEXT NOT NULL DEFAULT '{}',
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at        TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_idea_sessions_debate_updated
+            ON idea_sessions(debate_session_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS idea_turns (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT NOT NULL REFERENCES idea_sessions(session_id) ON DELETE CASCADE,
+            round_no            INTEGER NOT NULL,
+            role                TEXT NOT NULL,
+            output_text         TEXT,
+            state_json          TEXT NOT NULL DEFAULT '{}',
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(session_id, round_no, role)
+        );
+        CREATE INDEX IF NOT EXISTS idx_idea_turns_session_round
+            ON idea_turns(session_id, round_no, role);
 
         CREATE TABLE IF NOT EXISTS paper_entity_bindings (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -584,6 +1367,16 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
         ),
     ):
         if col not in prop_cols:
+            conn.execute(ddl)
+
+    ops_run_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(ops_runs)").fetchall()
+    }
+    for col, ddl in (
+        ("validation_status", "ALTER TABLE ops_runs ADD COLUMN validation_status TEXT"),
+        ("debate_session_id", "ALTER TABLE ops_runs ADD COLUMN debate_session_id TEXT"),
+    ):
+        if col not in ops_run_cols:
             conn.execute(ddl)
 
     # Ops memory: collapse synonym spellings onto disease canonical focus_key
@@ -945,8 +1738,11 @@ def upsert_entity(
     method_role: str | None = None,
 ) -> int:
     from extractor.dataset_access import stronger_access
+    from extractor.entity_normalize import normalize_entity_name
 
-    normalized = name.strip().lower()
+    raw_name = name.strip().lower()
+    normalized = normalize_entity_name(name, entity_type)
+    alias = raw_name if raw_name and raw_name != normalized else None
     ac = None
     if entity_type == "Dataset" and access_class:
         ac = access_class.strip().lower()
@@ -961,10 +1757,24 @@ def upsert_entity(
 
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id, access_class, method_role FROM entities WHERE name=? AND type=?",
+            "SELECT id, access_class, method_role, aliases FROM entities WHERE name=? AND type=?",
             (normalized, entity_type),
         ).fetchone()
         if existing:
+            if alias:
+                try:
+                    aliases = set(json.loads(existing["aliases"] or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    aliases = {
+                        value.strip() for value in str(existing["aliases"] or "").split(",")
+                        if value.strip()
+                    }
+                if alias not in aliases:
+                    aliases.add(alias)
+                    conn.execute(
+                        "UPDATE entities SET aliases=? WHERE id=?",
+                        (json.dumps(sorted(aliases), ensure_ascii=False), existing["id"]),
+                    )
             if entity_type == "Dataset" and ac:
                 merged = stronger_access(existing["access_class"], ac)
                 if merged != (existing["access_class"] or "unknown"):
@@ -985,11 +1795,12 @@ def upsert_entity(
             return existing["id"]
         conn.execute(
             """INSERT INTO entities
-               (name, type, cui, access_class, method_role) VALUES (?,?,?,?,?)""",
+               (name, type, cui, aliases, access_class, method_role) VALUES (?,?,?,?,?,?)""",
             (
                 normalized,
                 entity_type,
                 cui or None,
+                json.dumps([alias], ensure_ascii=False) if alias else None,
                 ac if entity_type == "Dataset" else None,
                 resolved_role if entity_type == "Method" else None,
             ),
@@ -1889,6 +2700,8 @@ def update_ops_run_finalize(
     gap_report_path: str = "",
     hotspot_week_id: str = "",
     proposal_report_path: str = "",
+    validation_status: str = "",
+    debate_session_id: str = "",
 ) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -1896,9 +2709,18 @@ def update_ops_run_finalize(
                finished_at=CURRENT_TIMESTAMP,
                gap_report_path=COALESCE(NULLIF(?, ''), gap_report_path),
                hotspot_week_id=COALESCE(NULLIF(?, ''), hotspot_week_id),
-               proposal_report_path=COALESCE(NULLIF(?, ''), proposal_report_path)
+               proposal_report_path=COALESCE(NULLIF(?, ''), proposal_report_path),
+               validation_status=COALESCE(NULLIF(?, ''), validation_status),
+               debate_session_id=COALESCE(NULLIF(?, ''), debate_session_id)
                WHERE run_id=?""",
-            (gap_report_path, hotspot_week_id, proposal_report_path, run_id),
+            (
+                gap_report_path,
+                hotspot_week_id,
+                proposal_report_path,
+                validation_status,
+                debate_session_id,
+                run_id,
+            ),
         )
 
 
@@ -1967,9 +2789,14 @@ def fetch_recent_ops_runs(focus_key: str, limit: int) -> list[dict[str, Any]]:
         rows = conn.execute(
             """SELECT run_id, week_id, focus_raw, focus_key, source,
                       started_at, finished_at, hotspot_week_id,
-                      gap_report_path, proposal_report_path
+                      gap_report_path, proposal_report_path,
+                      validation_status, debate_session_id
                FROM ops_runs
                WHERE focus_key=? AND finished_at IS NOT NULL
+                 AND (validation_status IS NULL OR validation_status='evidence_checked')
+                 AND EXISTS (
+                     SELECT 1 FROM ops_gap_items g WHERE g.run_id=ops_runs.run_id
+                 )
                ORDER BY finished_at DESC, run_id DESC
                LIMIT ?""",
             (focus_key, limit),
@@ -2034,3 +2861,301 @@ def update_ops_run_proposal_path(run_id: int, proposal_report_path: str) -> None
                WHERE run_id=?""",
             (proposal_report_path, run_id),
         )
+
+
+def insert_debate_session(
+    *,
+    session_id: str,
+    focus_raw: str | None,
+    focus_key: str,
+    max_rounds: int,
+    top_n: int,
+    state_json: str,
+    model: str = "",
+    prompt_version: str = "",
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO debate_sessions
+               (session_id, focus_raw, focus_key, status, current_round,
+                next_role, max_rounds, top_n, state_json, model, prompt_version)
+               VALUES (?, ?, ?, 'running', 0, 'optimist', ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                focus_raw,
+                focus_key,
+                max_rounds,
+                top_n,
+                state_json,
+                model or None,
+                prompt_version or None,
+            ),
+        )
+
+
+def update_debate_session_checkpoint(
+    session_id: str,
+    *,
+    state_json: str,
+    current_round: int,
+    next_role: str,
+    status: str = "running",
+    validation_status: str = "",
+    final_report: str = "",
+) -> None:
+    completed = status in {"completed", "failed", "aborted"}
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE debate_sessions SET
+               state_json=?, current_round=?, next_role=?, status=?,
+               validation_status=COALESCE(NULLIF(?, ''), validation_status),
+               final_report=COALESCE(NULLIF(?, ''), final_report),
+               updated_at=CURRENT_TIMESTAMP,
+               completed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE completed_at END
+               WHERE session_id=?""",
+            (
+                state_json,
+                current_round,
+                next_role or None,
+                status,
+                validation_status,
+                final_report,
+                1 if completed else 0,
+                session_id,
+            ),
+        )
+
+
+def upsert_debate_turn(
+    session_id: str,
+    *,
+    round_no: int,
+    role: str,
+    input_text: str,
+    output_text: str,
+    handoff_json: str,
+    status: str = "completed",
+) -> int:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO debate_turns
+               (session_id, round_no, role, input_text, output_text,
+                handoff_json, status, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(session_id, round_no, role) DO UPDATE SET
+                 input_text=excluded.input_text,
+                 output_text=excluded.output_text,
+                 handoff_json=excluded.handoff_json,
+                 status=excluded.status,
+                 completed_at=CURRENT_TIMESTAMP""",
+            (
+                session_id,
+                round_no,
+                role,
+                input_text,
+                output_text,
+                handoff_json,
+                status,
+            ),
+        )
+        row = conn.execute(
+            """SELECT id FROM debate_turns
+               WHERE session_id=? AND round_no=? AND role=?""",
+            (session_id, round_no, role),
+        ).fetchone()
+        return int(row["id"])
+
+
+def insert_debate_tool_event(
+    session_id: str,
+    *,
+    round_no: int,
+    role: str,
+    event_type: str,
+    tool_name: str = "",
+    call_id: str = "",
+    args_json: str = "",
+    result_json: str = "",
+    error_text: str = "",
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO debate_tool_events
+               (session_id, round_no, role, event_type, tool_name, call_id,
+                args_json, result_json, error_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                round_no,
+                role,
+                event_type,
+                tool_name or None,
+                call_id or None,
+                args_json or None,
+                result_json or None,
+                error_text or None,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def upsert_debate_candidate(
+    session_id: str,
+    *,
+    candidate_id: str,
+    title: str,
+    status: str,
+    first_round: int,
+    last_round: int,
+    metadata_json: str = "",
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO debate_candidates
+               (session_id, candidate_id, title, status, first_round,
+                last_round, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, candidate_id) DO UPDATE SET
+                 title=excluded.title,
+                 status=excluded.status,
+                 last_round=excluded.last_round,
+                 metadata_json=excluded.metadata_json""",
+            (
+                session_id,
+                candidate_id,
+                title,
+                status,
+                first_round,
+                last_round,
+                metadata_json or None,
+            ),
+        )
+
+
+def fetch_debate_session(session_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM debate_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_debate_sessions(
+    *,
+    focus_key: str | None = None,
+    limit: int = 20,
+    resumable_only: bool = False,
+) -> list[dict[str, Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    if focus_key is not None:
+        where.append("focus_key=?")
+        params.append(focus_key)
+    if resumable_only:
+        where.append("status IN ('running', 'failed', 'aborted')")
+    clause = " WHERE " + " AND ".join(where) if where else ""
+    params.append(max(1, int(limit)))
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT session_id, focus_raw, focus_key, status, current_round,
+                      next_role, max_rounds, top_n, validation_status,
+                      prompt_version, created_at, updated_at, completed_at
+               FROM debate_sessions"""
+            + clause
+            + " ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def reopen_debate_session(session_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE debate_sessions SET status='running',
+               completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+               WHERE session_id=?""",
+            (session_id,),
+        )
+
+
+def fetch_debate_turns(session_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM debate_turns WHERE session_id=?
+               ORDER BY round_no, id""",
+            (session_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_debate_tool_events(session_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM debate_tool_events WHERE session_id=?
+               ORDER BY id""",
+            (session_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def insert_idea_session(
+    *,
+    session_id: str,
+    debate_session_id: str | None,
+    gap_text: str,
+    max_rounds: int,
+    state_json: str,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO idea_sessions
+               (session_id, debate_session_id, gap_text, max_rounds, state_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (session_id, debate_session_id, gap_text, max_rounds, state_json),
+        )
+
+
+def checkpoint_idea_session(
+    session_id: str,
+    *,
+    round_no: int,
+    role: str,
+    next_role: str,
+    output_text: str,
+    state_json: str,
+    status: str = "running",
+) -> None:
+    completed = status in {"completed", "failed", "aborted"}
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO idea_turns
+               (session_id, round_no, role, output_text, state_json)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, round_no, role) DO UPDATE SET
+                 output_text=excluded.output_text,
+                 state_json=excluded.state_json,
+                 created_at=CURRENT_TIMESTAMP""",
+            (session_id, round_no, role, output_text, state_json),
+        )
+        conn.execute(
+            """UPDATE idea_sessions SET current_round=?, next_role=?,
+               state_json=?, status=?, updated_at=CURRENT_TIMESTAMP,
+               completed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE completed_at END
+               WHERE session_id=?""",
+            (
+                round_no,
+                next_role or None,
+                state_json,
+                status,
+                1 if completed else 0,
+                session_id,
+            ),
+        )
+
+
+def fetch_idea_session(session_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM idea_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    return dict(row) if row else None

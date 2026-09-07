@@ -13,6 +13,7 @@ _METHOD_SYNONYMS: dict[str, str] = {
     "llm": "large language model",
     "large language models": "large language model",
     "support vector machines": "support vector machine",
+    "svm": "support vector machine",
     "svms": "support vector machine",
     # nnunet family
     "nnu-net": "nnunet",
@@ -63,6 +64,39 @@ _METHOD_SYNONYMS: dict[str, str] = {
     "machine learning models": "machine learning model",
 }
 
+# Strict aliases that are safe to collapse in persistent KG entities. Family,
+# version and modified/baseline mappings above remain retrieval/aggregation only.
+_METHOD_ENTITY_SYNONYMS: dict[str, str] = {
+    "llm": "large language model",
+    "large language models": "large language model",
+    "svm": "support vector machine",
+    "svms": "support vector machine",
+    "support vector machines": "support vector machine",
+    "nnu-net": "nnunet",
+    "extreme gradient boosting": "xgboost",
+    "extreme gradient boosting (xgboost)": "xgboost",
+    "extreme gradient boosting (xgboost) classifier": "xgboost",
+    "random forest classifier": "random forest",
+    "random forest classification": "random forest",
+    "random forest model": "random forest",
+    "random forest (rf)": "random forest",
+    "logistic regression model": "logistic regression",
+    "grad-cam interpretability": "grad-cam",
+    "grad-cam interpretability analysis": "grad-cam",
+    "shapley additive explanations": "shap",
+    "shapley additive explanations (shap)": "shap",
+    "shapley additive explanations analysis": "shap",
+    "cellchat analysis": "cellchat",
+    "cellchat cell-cell communication analysis": "cellchat",
+    "cellchat intercellular communication network": "cellchat",
+    "resnet50": "resnet-50",
+    "resnet18": "resnet-18",
+    "unet": "u-net",
+    "3d cnn": "3d-cnn",
+    "deep learning models": "deep learning model",
+    "machine learning models": "machine learning model",
+}
+
 _SKELETON_DROP = frozenset({
     "framework", "frameworks", "model", "models", "based", "using",
     "approach", "method", "methods", "system", "pipeline", "tool",
@@ -75,6 +109,32 @@ _PAREN_RE = re.compile(r"^(?P<head>.+?)\s*\((?P<inner>[^)]+)\)\s*$")
 
 def load_method_synonyms() -> dict[str, str]:
     return dict(_METHOD_SYNONYMS)
+
+
+def method_aliases_for(name: str) -> list[str]:
+    """Return every curated surface form for a Method canonical."""
+    canonical = resolve_method_canonical(name)
+    aliases = {canonical}
+    for alias, target in _METHOD_SYNONYMS.items():
+        if resolve_method_canonical(target) == canonical:
+            aliases.add(alias)
+    return sorted(aliases, key=lambda value: (-len(value), value))
+
+
+def find_method_concepts(text: str) -> list[dict[str, object]]:
+    """Find curated method aliases in a free-form retrieval query."""
+    folded = " " + re.sub(r"[^a-z0-9+]+", " ", _norm_key(text)) + " "
+    by_canonical: dict[str, set[str]] = {}
+    known = set(_METHOD_SYNONYMS) | set(_METHOD_SYNONYMS.values())
+    for surface in known:
+        needle = " " + re.sub(r"[^a-z0-9+]+", " ", surface).strip() + " "
+        if needle.strip() and needle in folded:
+            canonical = resolve_method_canonical(surface)
+            by_canonical.setdefault(canonical, set()).update(method_aliases_for(canonical))
+    return [
+        {"canonical": canonical, "aliases": sorted(aliases)}
+        for canonical, aliases in sorted(by_canonical.items())
+    ]
 
 
 def _parenthetical_is_same_concept(head: str, inner: str) -> bool:
@@ -117,6 +177,15 @@ def resolve_method_canonical(name: str) -> str:
     if auto in _METHOD_SYNONYMS:
         return _METHOD_SYNONYMS[auto]
     return auto
+
+
+def resolve_method_entity_canonical(name: str) -> str:
+    """Canonicalize only aliases that preserve method/version identity."""
+    key = _norm_key(name)
+    if key in _METHOD_ENTITY_SYNONYMS:
+        return _METHOD_ENTITY_SYNONYMS[key]
+    auto = apply_auto_method_canonical(name)
+    return _METHOD_ENTITY_SYNONYMS.get(auto, auto)
 
 
 def method_skeleton(name: str) -> str:

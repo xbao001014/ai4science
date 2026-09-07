@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -251,6 +252,39 @@ def _compute_emerging_method_entities(
             "aliases": ", ".join(aliases[:5]),
         })
     return _enrich_entity_rows(rows)[:limit]
+
+
+def compute_new_methods(
+    *,
+    window_days: int | None = None,
+    prior_days: int | None = None,
+    counts: dict[str, int] | None = None,
+    role_by_name: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Nascent methods in the publication window (min_recent=1, no heat Top-N)."""
+    window = window_days if window_days is not None else config.HOTSPOT_WINDOW_DAYS
+    prior = prior_days if prior_days is not None else config.HOTSPOT_PRIOR_WINDOW_DAYS
+    rows = compute_emerging_entities(
+        "Method",
+        window_days=window,
+        prior_days=prior,
+        min_recent=1,
+        limit=config.HOTSPOT_NEW_METHODS_MAX,
+    )
+    annotate_method_rows(rows, counts=counts)
+    if role_by_name is not None:
+        annotate_method_role(rows, role_by_name=role_by_name)
+    else:
+        annotate_method_role(rows)
+    nascent = [row for row in rows if row.get("method_maturity") == "nascent"]
+    nascent.sort(
+        key=lambda row: (
+            int(row.get("corpus_paper_cnt") or 0),
+            -float(row.get("emerging_score") or 0),
+            str(row.get("name") or ""),
+        )
+    )
+    return nascent
 
 
 def compute_emerging_entities(
@@ -651,6 +685,12 @@ def compute_weekly_hotspots(
     role_map = load_method_roles()
     annotate_method_rows(methods, counts=counts)
     annotate_method_role(methods, role_by_name=role_map)
+    new_methods = compute_new_methods(
+        window_days=window,
+        prior_days=prior,
+        counts=counts,
+        role_by_name=role_map,
+    )
     active_methods = list(methods)
     emerging_methods = [
         row for row in methods if row.get("method_maturity") != "established"
@@ -662,6 +702,30 @@ def compute_weekly_hotspots(
         combos_by_method,
         name_key="method",
         role_by_name=role_map,
+    )
+    try:
+        from analysis.method_family_supervised import load_active_method_family_name_map
+        from analysis.method_taxonomy import FAMILIES
+
+        family_release_id, family_by_name = load_active_method_family_name_map()
+        family_labels = {family.family_id: family.zh for family in FAMILIES}
+    except Exception:
+        family_release_id, family_by_name, family_labels = None, {}, {}
+    for rows, key in (
+        (methods, "name"),
+        (combos, "method"),
+        (combos_by_method, "method"),
+    ):
+        annotate_method_family_rows(
+            rows,
+            name_key=key,
+            family_by_name=family_by_name,
+            family_labels=family_labels,
+        )
+    method_families = (
+        group_method_family_rows(emerging_methods, family_labels)
+        if family_release_id
+        else []
     )
     _maturity_sort = lambda row: (
         0 if row.get("method_maturity") != "established" else 1,
@@ -691,12 +755,61 @@ def compute_weekly_hotspots(
         "papers_excluded_future_pub_date": excluded_future,
         "emerging_methods": emerging_methods,
         "active_methods": active_methods,
+        "new_methods": new_methods,
+        "method_families": method_families,
+        "method_family_release_id": family_release_id,
         "heating_diseases": diseases,
         "emerging_tasks": tasks,
         "hot_combos": combos,
         "hot_combos_by_method": combos_by_method,
         "new_limitations": limitations,
     }
+
+
+def annotate_method_family_rows(
+    rows: list[dict[str, Any]],
+    *,
+    name_key: str,
+    family_by_name: dict[str, str],
+    family_labels: dict[str, str],
+) -> None:
+    for row in rows:
+        family_id = family_by_name.get(str(row.get(name_key) or ""))
+        row["method_family"] = family_id or "unknown"
+        row["method_family_zh"] = family_labels.get(family_id, "未归类")
+
+
+def group_method_family_rows(
+    rows: list[dict[str, Any]], family_labels: dict[str, str]
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        buckets[str(row.get("method_family") or "unknown")].append(row)
+    grouped: list[dict[str, Any]] = []
+    for family_id, family_rows in buckets.items():
+        ordered = sorted(
+            family_rows,
+            key=lambda row: float(row.get("emerging_score") or 0),
+            reverse=True,
+        )
+        grouped.append(
+            {
+                "family_id": family_id,
+                "family_name_zh": family_labels.get(family_id, "未归类"),
+                "method_count": len(family_rows),
+                "methods": "；".join(str(row["name"]) for row in ordered[:8]),
+                "recent_cnt": sum(int(row.get("recent_cnt") or 0) for row in family_rows),
+                "prior_cnt": sum(int(row.get("prior_cnt") or 0) for row in family_rows),
+                "emerging_score": round(
+                    max(float(row.get("emerging_score") or 0) for row in family_rows), 2
+                ),
+            }
+        )
+    grouped.sort(
+        key=lambda row: (float(row["emerging_score"]), int(row["recent_cnt"])),
+        reverse=True,
+    )
+    return grouped
 
 
 def _serialize_pmids(pmids: list[str] | None) -> str:
@@ -725,6 +838,7 @@ def payload_to_snapshot_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             })
 
     _add("method", payload["emerging_methods"], key_field="name", type_field="type")
+    _add("method_family", payload.get("method_families", []), key_field="family_id")
     _add("disease", payload["heating_diseases"], key_field="name", type_field="type")
     _add("task", payload["emerging_tasks"], key_field="name", type_field="type")
     for rank, combo in enumerate(payload["hot_combos"], start=1):
@@ -778,6 +892,9 @@ def _current_board_map(payload: dict[str, Any], board: str) -> dict[str, dict[st
     if board == "method":
         items = payload["emerging_methods"]
         return {r["name"]: {**r, "item_key": r["name"]} for r in items}
+    if board == "method_family":
+        items = payload.get("method_families", [])
+        return {r["family_id"]: {**r, "item_key": r["family_id"]} for r in items}
     if board == "disease":
         items = payload["heating_diseases"]
         return {r["name"]: {**r, "item_key": r["name"]} for r in items}
@@ -1207,6 +1324,30 @@ def generate_hotspot_report(
     ]
     lines.extend(_format_wow_section(comparison))
     lines.extend([
+        "## New Methods This Window (本周新方法)",
+        "",
+        "_Nascent only (corpus ≤2); fixed min_recent=1; not cut by heat Top-N._",
+        "",
+    ])
+    new_methods = data.get("new_methods") or []
+    if new_methods:
+        lines.extend([
+            _format_table(
+                new_methods,
+                [
+                    "name",
+                    "method_role",
+                    "corpus_paper_cnt",
+                    "recent_cnt",
+                    "prior_cnt",
+                    "velocity",
+                    "emerging_score",
+                ],
+            ),
+        ])
+    else:
+        lines.extend(["None", ""])
+    lines.extend([
         "## Emerging Methods (新苗头)",
         "",
         _format_table(
@@ -1224,6 +1365,17 @@ def generate_hotspot_report(
             ],
         ),
     ])
+    if data.get("method_families"):
+        lines.extend([
+            "## Emerging Method Families",
+            "",
+            f"_Active taxonomy release: {data.get('method_family_release_id')}_",
+            "",
+            _format_table(
+                data["method_families"],
+                ["family_id", "family_name_zh", "method_count", "methods", "recent_cnt", "prior_cnt", "emerging_score"],
+            ),
+        ])
     if established:
         lines.extend([
             "### Established Methods (active this window)",

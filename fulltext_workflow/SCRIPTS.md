@@ -125,6 +125,86 @@ On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults
 & $py main.py method-cluster-audit        # Method synonym 聚类审计（只读）
 ```
 
+### Embedding Phase A（默认离线）
+
+```powershell
+& $py main.py embedding-preflight
+& $py main.py embedding-plan --only-active --dry-run
+& $py main.py embedding-plan --only-active --dry-run --limit 100
+```
+
+`embedding-preflight` 默认只检查百炼配置与本地 schema，不访问网络。只有明确设置
+`EMBEDDING_ENABLED=1` 后再添加 `--live-probe`，才会发送两条固定测试文本：
+
+```powershell
+& $py main.py embedding-preflight --live-probe
+```
+
+Phase A 不支持全量真实回填，也不接入周热点；历史批量回填留到 Phase B。
+
+### Method family Phase B（shadow only）
+
+```powershell
+$env:EMBEDDING_ENABLED='1'
+& $py main.py method-family-init --embed-prototypes
+& $py main.py method-family-shadow --sync --limit 100
+& $py main.py method-family-batch submit
+& $py main.py method-family-batch status --job-id <job-id>
+& $py main.py method-family-batch ingest --job-id <job-id>
+& $py main.py method-family-gold-export --size 400
+Remove-Item Env:EMBEDDING_ENABLED
+```
+
+`method-family-batch ingest` 在结果完整写入本地 cache 后，默认删除该任务创建的百炼远端文件；
+调试时可加 `--keep-remote-files`。Phase B assignment 始终为 `review`，不会进入用户可见周热点。
+
+### Method family Phase C0（Gold 与离线校准）
+
+```powershell
+& $py main.py method-family-gold-validate `
+  --input output/method_family_gold_method-family-v1.csv `
+  --expected-sha256 508ebebb1008990ca75b833d8e0c26dbbc4422201bbedbdfa31469fa0507a87c
+& $py main.py method-family-gold-import `
+  --input output/method_family_gold_method-family-v1.csv `
+  --expected-sha256 508ebebb1008990ca75b833d8e0c26dbbc4422201bbedbdfa31469fa0507a87c `
+  --reviewer expert-v1
+& $py main.py method-family-calibrate `
+  --gold-set-id gold-method-family-v1-508ebebb1008990c `
+  --output output/method_family_calibration_method-family-v1.json
+& $py main.py method-family-rules-evaluate `
+  --gold-set-id gold-method-family-v1-508ebebb1008990c `
+  --output output/method_family_rules_method-family-v1.json
+& $py main.py method-family-policy-preview `
+  --gold-set-id gold-method-family-v1-508ebebb1008990c `
+  --calibration-id cal-b9b3ec1c1122918f16827424 `
+  --ruleset-id rules-4444805f9d592b1a7610271b `
+  --output output/method_family_policy_preview_method-family-v1.json
+& $py main.py method-family-review-queue `
+  --gold-set-id gold-method-family-v1-508ebebb1008990c `
+  --calibration-id cal-b9b3ec1c1122918f16827424 `
+  --ruleset-id rules-4444805f9d592b1a7610271b `
+  --target-paper-coverage 0.80 `
+  --output output/method_family_review_queue_coverage-v1.csv
+& $py main.py method-family-gold-extension-import `
+  --input output/method_family_review_queue_coverage-v1.csv `
+  --queue-id queue-70bf2cf4b793f4ff8e720d42 `
+  --reviewer expert-coverage-v1 --rank-start 1 --rank-end 200 `
+  --expected-sha256 be65e676493243133f9f9f3c271c925095a1b77595cf76c7389b6c2fe05573c9
+```
+
+Gold 导入以文件 SHA-256 幂等，原 CSV 不会被改写。当前文件的空 primary + `[reject]` 会规范化为
+`unknown`；其他空 primary 会被拒绝。校准只生成不可变审计记录和 JSON 报告，不创建 release、不写
+`accepted`，也不需要调用 Embedding API。规则评估采用 calibration 选规则、holdout 一次验收；未获准的
+高优先级规则会阻断低优先级回退。当前 v2 规则 holdout precision 为 97.96%，但分层策略的论文覆盖率
+只有 51.38%，低于 80% 门槛，因此 preview 状态为 `coverage_rejected`，每周热点继续使用原有平铺榜。
+`method-family-review-queue` 以未覆盖 PMID 的边际增益做确定性贪心排序；当前达到 80% 的理论投影需
+1,434 条新增有效 primary 标签。该队列用于人工覆盖扩充，不得作为新的独立模型 holdout。
+前 200 条实标结果为 143 个 family、57 个 `[reject] → unknown`、12 个 secondary，实际新增覆盖
+278 篇，paper coverage 从 51.38% 升至 56.24%。导入器会核对所有不可编辑队列字段，并按文件和标签
+快照生成不可变 extension；不会写 `accepted`。
+
+模型差距队列会在不可变队列元数据中冻结 `base_model_id`。后续分批导入时，覆盖增益以该模型的训练标签快照和已接受预测为基线重算，不回退到早期规则/阈值 preview 的覆盖口径。
+
 ### Gap / 方案 / 数据景观
 
 ```powershell
@@ -165,6 +245,10 @@ On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults
 # 抽取质量基线（库内 Method 等 top 统计）
 & $py scripts/compare_extraction_quality.py
 
+# Method / Disease 严格同义词回填（默认只预演）
+& $py scripts/merge_entity_aliases.py
+& $py scripts/merge_entity_aliases.py --apply
+
 # ── Ops memory（ops_runs / ops_gap_items / ops_proposals）──
 # 默认仅预览；不影响 papers / KG / hotspot
 & $py scripts/clear_ops_memory.py
@@ -186,6 +270,7 @@ On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults
 | `reset_extraction.py` | 重置全部已抽取结果（重抽） |
 | `fix_pmc_mismatch.py` | 修复 PMC XML 与 PMID/DOI 错配 |
 | `compare_extraction_quality.py` | 抽取质量 baseline 统计 |
+| `merge_entity_aliases.py` | 预演/应用 Method、Disease 严格同义词合并与关系重连 |
 | `clear_ops_memory.py` | 清空周常 ops memory（可按 focus） |
 | `clear_database.py` | 清空整个 `kg_fulltext.db`（需 `--yes`；不动 `raw/`） |
 | `backfill_ops_proposals.py` | 回填 `ops_proposals` 缺失字段 |
@@ -243,3 +328,48 @@ On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults
 | [PIPELINE.md](PIPELINE.md) | 分阶段流水线详解 |
 | [gap_ui_guide.md](gap_ui_guide.md) | Streamlit UI 操作 |
 | [README.md](README.md) | 沙盒概述与模块表 |
+
+---
+
+## 7. Method-family 独立盲测与发布
+
+```powershell
+# 1) 生成不含任何模型提示的独立盲测集
+python main.py method-family-blind-export `
+  --gold-set-id <gold-set-id> --size 200 --output output/method_family_blind_eval-v1.csv
+
+# 2) 用 Gold + coverage extensions + 已退役盲测训练本地监督层（只读 embedding 缓存）
+python main.py method-family-model-train `
+  --gold-set-id <gold-set-id> --ruleset-id <ruleset-id> --output output/model.json
+python main.py method-family-model-preview --model-id <model-id>
+
+# 3) 专家完成盲测后冻结提交并评估
+python main.py method-family-blind-import `
+  --input <annotated.csv> --blind-set-id <blind-set-id> --reviewer <reviewer>
+python main.py method-family-blind-evaluate `
+  --model-id <model-id> --submission-id <submission-id> --output output/blind_eval.json
+
+# 4) 评测完成后可显式退役该盲测，并仅用于未来模型训练
+python main.py method-family-blind-promote `
+  --evaluation-id <completed-evaluation-id> --promoted-by <reviewer>
+
+# 5) 只有新一代盲测和 80% 论文覆盖双门禁均通过时才能构建、激活 release
+python main.py method-family-release-build `
+  --model-id <model-id> --evaluation-id <evaluation-id> --output output/release.json
+python main.py method-family-release-activate `
+  --release-id <release-id> --activated-by <operator>
+```
+
+在明确接受风险时，可执行受控人工豁免发布。该路径仍要求训练期精度、论文加权精度、unknown 零误接和支持类别精度门槛通过，并将审批人、原因、实际覆盖率及被豁免门槛写入不可变 release：
+
+```powershell
+python main.py method-family-release-build `
+  --model-id <model-id> --evaluation-id <evaluation-id> `
+  --manual-override --approved-by <operator> `
+  --approval-reason <reason> --minimum-paper-coverage 0.70 `
+  --output output/release_override.json
+```
+
+严格规则和监督词组会在完整的折外训练标签上再次复核；未达到支持度、95% 精度或 unknown 零误接收要求的固定来源自动回退到 embedding。家族阈值先保证每个有支持类别至少 85% 精度，再逐类收紧到整体及论文加权精度均至少 95%。模型携带训练标签快照，禁止旧模型在 Gold 后续扩展后静默改变结果。
+
+盲测标签在当前评测期间不会进入训练集。评测完成后，可通过 `method-family-blind-promote` 显式退役并晋升为未来训练数据；原评测不可变，相关方法永久排除于后续盲测，新模型必须使用新一代独立盲测。Release 与激活记录均为追加式不可变快照；“每周热点 → 方法类别”只读取最新已激活 release，没有 release 时明确显示未上线，不回退到 shadow 预测。

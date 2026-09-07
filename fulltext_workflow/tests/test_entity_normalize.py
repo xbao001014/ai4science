@@ -274,7 +274,20 @@ def test_keep_organ_level_when_only_option():
     triples = [_disease_triple("Breast Cancer")]
     out = postprocess_triples(triples, "abstract")
     assert len(out) == 1
-    assert out[0].object.name == "breast cancer"
+    assert out[0].object.name == "breast carcinoma"
+
+
+def test_disease_normalization_preserves_qualified_subtypes():
+    assert normalize_entity_name("Breast Cancer", "Disease") == "breast carcinoma"
+    assert (
+        normalize_entity_name("HER2-positive breast cancer", "Disease")
+        == "her2-positive breast cancer"
+    )
+
+
+def test_method_normalization_uses_curated_canonical():
+    assert normalize_entity_name("SVM", "Method") == "support vector machine"
+    assert normalize_entity_name("Random Forest Classifier", "Method") == "random forest"
 
 
 def test_has_more_specific_disease_substring():

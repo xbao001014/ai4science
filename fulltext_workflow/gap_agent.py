@@ -32,6 +32,17 @@ from analysis.agent_utils import (
     run_tool_agent,
     select_tool_bundle,
 )
+from analysis.debate_memory import (
+    checkpoint_phase,
+    complete_debate_session,
+    create_debate_session,
+    format_handoff_block,
+    load_debate_outputs,
+    persist_tool_event,
+    resume_cursor,
+    resume_debate_session,
+    stabilize_candidate_ids,
+)
 from analysis.graph_tools import GAP_TOOLS, GAP_TOOL_SCHEMAS, init_gap_registry
 from analysis.feasibility_tools import build_gap_feasibility_tools
 from analysis.focus_filter import normalize_focus
@@ -432,11 +443,28 @@ def stream_gap_debate_agent(
     max_debate_rounds: int = 2,
     accept_score: float = ACCEPT_DEBATE_SCORE,
     use_ops_memory: bool | None = None,
+    resume_session_id: str | None = None,
 ) -> Generator[dict, None, None]:
     """Debate multi-agent gap identification loop."""
-    focus = normalize_focus(focus)
+    resumed = bool(resume_session_id)
+    if resume_session_id:
+        session_state = resume_debate_session(resume_session_id)
+        focus = normalize_focus(session_state.focus_raw)
+        max_debate_rounds = session_state.max_rounds
+        top_n = session_state.top_n
+    else:
+        focus = normalize_focus(focus)
+        session_state = create_debate_session(
+            focus=focus,
+            max_rounds=max_debate_rounds,
+            top_n=top_n,
+        )
     yield {
         "type": "start",
+        "session_id": session_state.session_id,
+        "resumed": resumed,
+        "resume_round": session_state.current_round if resumed else 0,
+        "resume_role": session_state.next_role if resumed else "optimist",
         "focus": focus,
         "top_n": top_n,
         "max_debate_rounds": max_debate_rounds,
@@ -459,10 +487,16 @@ def stream_gap_debate_agent(
     completed_rounds = 0
     debate_feedback: dict = {}
     evidence_ledger: dict[str, dict[str, dict]] = {}
-    def run_phase(**kwargs):
+    def run_phase(*, round_num: int, **kwargs):
         role = kwargs["role"]
         evidence_ledger[role] = {}
         for event in run_tool_agent(**kwargs):
+            persist_tool_event(
+                session_state,
+                round_no=round_num,
+                role=role,
+                event=event,
+            )
             if event.get("type") == "tool_result" and isinstance(event.get("result"), dict) and "error" not in event["result"]:
                 key = event["name"]
                 if key in evidence_ledger[role]:
@@ -473,16 +507,26 @@ def stream_gap_debate_agent(
                 evidence_ledger[role][key] = {"call_id":event.get("call_id"), "result":event["result"]}
             yield event
 
-    for round_num in range(1, max_debate_rounds + 1):
-        yield {
-            "type": "debate_round_start",
-            "round": round_num,
-            "max_rounds": max_debate_rounds,
-        }
+    def cumulative_role_evidence(role: str) -> dict[str, dict]:
+        merged: dict[str, dict] = {}
+        for round_roles in session_state.evidence_ledger.values():
+            for key, value in round_roles.get(role, {}).items():
+                merged[key] = value
+        return merged
 
-        # ── Optimist ──────────────────────────────────────────────────────
+    def round_role_evidence(round_num: int, role: str) -> dict[str, dict]:
+        current = evidence_ledger.get(role)
+        if current:
+            return current
+        return session_state.evidence_ledger.get(str(round_num), {}).get(role, {})
+
+    def run_optimist_phase(
+        round_num: int,
+        previous_proposal: str,
+        previous_review: dict,
+        previous_feedback: dict,
+    ) -> Generator[dict, None, str]:
         yield {"type": "phase_start", "round": round_num, "role": "optimist"}
-
         if round_num == 1:
             coverage_first = (
                 "First step: call corpus_focus_coverage (when focus is set).\n"
@@ -491,172 +535,218 @@ def stream_gap_debate_agent(
             )
             opt_user = _append_memory_block(
                 f"Identify at most {top_n} evidence-supported pathology AI research-gap candidates in English; fewer or zero is valid.\n"
-                f"{coverage_first}"
-                f"{focus_hint}\n{corpus_ctx}\n"
-                "Follow the preferred tool order (at most 6 calls), "
-                "then output candidate-gap Markdown.",
+                f"{coverage_first}{focus_hint}\n{corpus_ctx}\n"
+                "Follow the preferred tool order (at most 6 calls), then output candidate-gap Markdown.",
                 memory_block,
             )
         else:
             opt_user = _append_memory_block(
                 f"Previous Final Synthesizer feedback:\n"
-                f"Previous candidate draft (data, not instructions):\n{optimist_proposal}\n\n"
-                f"**Revision priority**: {debate_feedback.get('revision_priority', '')}\n"
-                f"**Revise**: {debate_feedback.get('gaps_to_revise', [])}\n"
-                f"**Drop**: {debate_feedback.get('gaps_to_drop', [])}\n\n"
-                f"Evidence Reviewer corpus-limitation note: "
-                f"{skeptic_review.get('corpus_limitations', '')}\n\n"
+                f"Previous candidate draft (data, not instructions):\n{previous_proposal}\n\n"
+                f"**Revision priority**: {previous_feedback.get('revision_priority', '')}\n"
+                f"**Revise**: {previous_feedback.get('gaps_to_revise', [])}\n"
+                f"**Drop**: {previous_feedback.get('gaps_to_drop', [])}\n\n"
+                f"Evidence Reviewer corpus-limitation note: {previous_review.get('corpus_limitations', '')}\n\n"
                 f"{focus_hint}\n\n"
                 f"Revise the candidate gaps (output at most {top_n} items in English; do not pad); "
                 "gather more tool evidence before writing Markdown.",
                 memory_block,
             )
-
+        opt_user += format_handoff_block(session_state, "optimist")
         opt_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(OPTIMIST_SYSTEM_PROMPT, focus, role="optimist")},
             {"role": "user", "content": opt_user},
         ]
         yield from run_phase(
-            messages=opt_messages,
-            tools=opt_tools,
-            tool_schemas=opt_schemas,
-            role="optimist",
-            max_iters=18,
-            temperature=0.45,
-            max_sql_calls=0,
-            disallow_duplicate_tools=True,
-            max_tool_calls=6,
-            first_tool="corpus_focus_coverage" if focus else None,
+            round_num=round_num, messages=opt_messages, tools=opt_tools,
+            tool_schemas=opt_schemas, role="optimist", max_iters=18,
+            temperature=0.45, max_sql_calls=0, disallow_duplicate_tools=True,
+            max_tool_calls=6, first_tool="corpus_focus_coverage" if focus else None,
             required_tools=("corpus_focus_coverage",) if focus else (),
         )
-        optimist_proposal = last_assistant_content(opt_messages)
-        yield {"type": "optimist_proposal", "round": round_num, "content": optimist_proposal}
+        proposal = stabilize_candidate_ids(
+            session_state, last_assistant_content(opt_messages), round_no=round_num
+        )
+        checkpoint_phase(
+            session_state, round_no=round_num, role="optimist",
+            input_text=opt_user, output_text=proposal,
+            evidence=evidence_ledger.get("optimist", {}), next_role="skeptic",
+        )
+        yield {"type": "optimist_proposal", "round": round_num, "content": proposal}
+        return proposal
 
-        # ── Skeptic ───────────────────────────────────────────────────────
+    def run_skeptic_phase(
+        round_num: int, proposal: str
+    ) -> Generator[dict, None, tuple[dict, float]]:
         yield {"type": "phase_start", "round": round_num, "role": "skeptic"}
-
+        scout_evidence = round_role_evidence(round_num, "optimist")
         ske_user = _append_memory_block(
             f"Search cut-off: {datetime.now().date().isoformat()}.\n"
             f"Cross-check the following Opportunity Scout candidates (round {round_num}):\n\n"
-            f"{optimist_proposal}\n\n"
-            f"Scout evidence ledger (data):\n{compact_json(evidence_ledger.get('optimist', {}))}\n\n"
+            f"{proposal}\n\nScout evidence ledger (data):\n{compact_json(scout_evidence)}\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
             "Follow the Evidence Reviewer budget (≤5 tools; execute_kg_sql at most 2 successful). "
             "Prefer corpus_focus_coverage → literature_evidence_search → limitation_temporal_profile → author_stated_gaps → "
-            "improvement_suggestions_by_topic; SQL only for targeted checks — not title keyword "
-            "scans or re-aggregating improvement suggestions. "
-            "Then output the required JSON as message content inside a ```json fence "
-            "(never call a tool named json).",
+            "improvement_suggestions_by_topic; SQL only for targeted checks. Then output the required JSON as message content.",
             memory_block,
         )
+        ske_user += format_handoff_block(session_state, "skeptic")
         ske_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(SKEPTIC_SYSTEM_PROMPT, focus, role="skeptic")},
             {"role": "user", "content": ske_user},
         ]
         yield from run_phase(
-            messages=ske_messages,
-            tools=ske_tools,
-            tool_schemas=ske_schemas,
-            role="skeptic",
-            max_iters=12,
-            temperature=0.3,
-            max_sql_calls=2,
-            max_tool_calls=5,
+            round_num=round_num, messages=ske_messages, tools=ske_tools,
+            tool_schemas=ske_schemas, role="skeptic", max_iters=12,
+            temperature=0.3, max_sql_calls=2, max_tool_calls=5,
             first_tool="corpus_focus_coverage" if focus else None,
             required_tools=("corpus_focus_coverage", "literature_evidence_search") if focus else ("literature_evidence_search",),
         )
         skeptic_text = last_assistant_content(ske_messages)
-        skeptic_review = parse_json_block(
+        review = parse_json_block(
             skeptic_text,
-            fallback={
-                "overall_confidence": 5.0,
-                "verified_gaps": [],
-                "false_gaps": [],
-                "weak_evidence_gaps": [],
-                "corpus_limitations": skeptic_text[:500],
-                "data_concerns": [],
-                "revision_priority": skeptic_text[:300],
-            },
+            fallback={"overall_confidence": 5.0, "verified_gaps": [],
+                      "false_gaps": [], "weak_evidence_gaps": [],
+                      "corpus_limitations": skeptic_text[:500], "data_concerns": [],
+                      "revision_priority": skeptic_text[:300]},
         )
-        candidate_ids = set(re.findall(r'\bG\d{2,}\b', optimist_proposal)) or None
-        skeptic_review = validate_review(skeptic_review, evidence_ledger,
-            candidate_ids=candidate_ids, cutoff_year=datetime.now().year)
-        yield {"type":"research_quality", "round":round_num, "audit":skeptic_review["quality_audit"]}
-        confidence = number(skeptic_review.get("overall_confidence"), high=10) or 0.0
-        verified = skeptic_review.get("verified_gaps", [])
-        false_g = skeptic_review.get("false_gaps", [])
+        candidate_ids = set(re.findall(r'\bG\d{2,}\b', proposal)) or None
+        validation_ledger = dict(evidence_ledger)
+        validation_ledger["optimist"] = scout_evidence
+        review = validate_review(
+            review, validation_ledger, candidate_ids=candidate_ids,
+            cutoff_year=datetime.now().year,
+        )
+        stored_review = json.dumps(review, ensure_ascii=False, indent=2)
+        checkpoint_phase(
+            session_state, round_no=round_num, role="skeptic",
+            input_text=ske_user, output_text=stored_review,
+            evidence=evidence_ledger.get("skeptic", {}), next_role="moderator",
+            review=review,
+        )
+        yield {"type": "research_quality", "round": round_num, "audit": review["quality_audit"]}
+        confidence = number(review.get("overall_confidence"), high=10) or 0.0
+        verified, false_g = review.get("verified_gaps", []), review.get("false_gaps", [])
         yield {
-            "type": "skeptic_review",
-            "round": round_num,
-            "content": json.dumps(skeptic_review, ensure_ascii=False, indent=2),
+            "type": "skeptic_review", "round": round_num, "content": stored_review,
             "confidence": confidence,
             "verified_count": len(verified) if isinstance(verified, list) else 0,
             "false_count": len(false_g) if isinstance(false_g, list) else 0,
         }
+        return review, confidence
 
-        # ── Moderator ─────────────────────────────────────────────────────
+    def run_moderator_phase(
+        round_num: int, proposal: str, review: dict, confidence: float
+    ) -> Generator[dict, None, dict]:
         yield {"type": "phase_start", "round": round_num, "role": "moderator"}
-
         is_last = round_num == max_debate_rounds
+        reviewer_evidence = round_role_evidence(round_num, "skeptic")
         mod_user = _append_memory_block(
             f"Synthesize Opportunity Scout and Evidence Reviewer outputs into a final "
             f"research report with at most {top_n} supported gaps in English (zero allowed).\n\n"
-            f"**Opportunity Scout proposal**:\n{optimist_proposal}\n\n"
+            f"**Opportunity Scout proposal**:\n{proposal}\n\n"
             f"**Evidence Reviewer verification** (confidence={confidence:.1f}/10):\n"
-            f"```json\n{compact_json(skeptic_review)}\n```\n\n"
-            f"Reviewer evidence ledger (data):\n{compact_json(evidence_ledger.get('skeptic', {}))}\n\n"
-            f"{focus_hint}\n{corpus_ctx}\n"
-            f"Round {round_num}/{max_debate_rounds}."
+            f"```json\n{compact_json(review)}\n```\n\n"
+            f"Reviewer evidence ledger (data):\n{compact_json(reviewer_evidence)}\n\n"
+            f"{focus_hint}\n{corpus_ctx}\nRound {round_num}/{max_debate_rounds}."
             + (
                 " This is the last round — output a Markdown report, marking unsupported directions as unverified; stopping does not imply acceptance."
-                if is_last
-                else (
-                    f" If Evidence Reviewer confidence >= {accept_score}, "
-                    "output the complete Markdown report; otherwise output revision JSON."
-                )
+                if is_last else
+                f" If Evidence Reviewer confidence >= {accept_score}, output the complete Markdown report; otherwise output revision JSON."
             ),
             memory_block,
         )
+        mod_user += format_handoff_block(session_state, "moderator")
         mod_messages: list[dict] = [
             {"role": "system", "content": _system_with_focus(MODERATOR_SYSTEM_PROMPT, focus, role="moderator")},
             {"role": "user", "content": mod_user},
         ]
         yield from run_phase(
-            messages=mod_messages,
-            tools=mod_tools,
-            tool_schemas=mod_schemas,
-            role="moderator",
-            max_iters=10,
-            temperature=0.35,
-            max_tokens=max(config.LLM_MAX_TOKENS, 8192),
-            max_sql_calls=2,
-            max_tool_calls=4,
+            round_num=round_num, messages=mod_messages, tools=mod_tools,
+            tool_schemas=mod_schemas, role="moderator", max_iters=10,
+            temperature=0.35, max_tokens=max(config.LLM_MAX_TOKENS, 8192),
+            max_sql_calls=2, max_tool_calls=4,
             required_tools=("literature_data_cross_matrix", "pathology_disease_catalog"),
         )
-        mod_text = last_assistant_content(mod_messages)
-        completed_rounds = round_num
-
+        mod_text = stabilize_candidate_ids(
+            session_state, last_assistant_content(mod_messages), round_no=round_num
+        )
         mod_json = parse_json_block(mod_text, fallback={})
         accept = bool(mod_json.get("accept", False))
         mod_confidence = number(mod_json.get("overall_confidence", confidence), high=10) or 0.0
-
+        will_continue = (
+            "```json" in mod_text and not mod_text.strip().startswith("#")
+            and not is_last and mod_confidence < accept_score
+        )
+        checkpoint_phase(
+            session_state, round_no=round_num, role="moderator",
+            input_text=mod_user, output_text=mod_text,
+            evidence=evidence_ledger.get("moderator", {}),
+            next_role="optimist" if will_continue else "complete",
+            review=mod_json,
+        )
         if "```json" in mod_text and not mod_text.strip().startswith("#"):
-            debate_feedback = mod_json
-            yield {
-                "type": "debate_feedback",
-                "round": round_num,
-                "revision_priority": mod_json.get("revision_priority", ""),
-                "content": mod_text,
-            }
-            if not is_last and mod_confidence < accept_score:
+            yield {"type": "debate_feedback", "round": round_num,
+                   "revision_priority": mod_json.get("revision_priority", ""),
+                   "content": mod_text}
+        return {"text": mod_text, "json": mod_json, "accept": accept,
+                "confidence": mod_confidence, "is_last": is_last,
+                "will_continue": will_continue}
+
+    saved_outputs = load_debate_outputs(session_state.session_id) if resumed else {}
+    def latest_output(role: str) -> str:
+        rows = [(round_no, text) for (round_no, saved_role), text in saved_outputs.items()
+                if saved_role == role]
+        return max(rows, default=(0, ""), key=lambda item: item[0])[1]
+
+    optimist_proposal = latest_output("optimist")
+    skeptic_review = parse_json_block(latest_output("skeptic"), fallback={})
+    debate_feedback = parse_json_block(latest_output("moderator"), fallback={})
+    final_confidence = number(skeptic_review.get("overall_confidence"), high=10) or 0.0
+    start_round, start_role = resume_cursor(session_state) if resumed else (1, "optimist")
+    completed_rounds = session_state.current_round if resumed else 0
+
+    if start_role == "complete":
+        final_report = unwrap_outer_markdown_fence(latest_output("moderator"))
+        mod_saved = parse_json_block(latest_output("moderator"), fallback={})
+        final_confidence = number(mod_saved.get("overall_confidence"), high=10) or final_confidence
+    else:
+        role_order = {"optimist": 0, "skeptic": 1, "moderator": 2}
+        for round_num in range(start_round, max_debate_rounds + 1):
+            yield {"type": "debate_round_start", "round": round_num,
+                   "max_rounds": max_debate_rounds,
+                   "resumed": resumed and round_num == start_round}
+            floor = role_order[start_role] if resumed and round_num == start_round else 0
+            if floor <= 0:
+                optimist_proposal = yield from run_optimist_phase(
+                    round_num, optimist_proposal, skeptic_review, debate_feedback
+                )
+            else:
+                optimist_proposal = saved_outputs.get(
+                    (round_num, "optimist"), optimist_proposal
+                )
+            if floor <= 1:
+                skeptic_review, confidence = yield from run_skeptic_phase(
+                    round_num, optimist_proposal
+                )
+            else:
+                skeptic_review = parse_json_block(
+                    saved_outputs.get((round_num, "skeptic"), ""), fallback={}
+                )
+                confidence = number(skeptic_review.get("overall_confidence"), high=10) or 0.0
+            moderator = yield from run_moderator_phase(
+                round_num, optimist_proposal, skeptic_review, confidence
+            )
+            completed_rounds = round_num
+            debate_feedback = moderator["json"]
+            if moderator["will_continue"]:
+                start_role = "optimist"
                 continue
-
-        final_report = unwrap_outer_markdown_fence(mod_text)
-        final_confidence = mod_confidence if mod_confidence else confidence
-
-        if (confidence >= accept_score or is_last or accept or
-                final_report.strip().startswith("#")):
-            break
+            final_report = unwrap_outer_markdown_fence(moderator["text"])
+            final_confidence = moderator["confidence"] or confidence
+            if (confidence >= accept_score or moderator["is_last"]
+                    or moderator["accept"] or final_report.strip().startswith("#")):
+                break
 
     required = {
         "moderator": ("literature_data_cross_matrix", "pathology_disease_catalog"),
@@ -667,14 +757,21 @@ def stream_gap_debate_agent(
             optimist=("corpus_focus_coverage",),
             skeptic=("corpus_focus_coverage", "literature_evidence_search"),
         )
-    missing = [f"{role}.{name}" for role,names in required.items() for name in names if name not in evidence_ledger.get(role, {})]
+    missing = [
+        f"{role}.{name}"
+        for role, names in required.items()
+        for name in names
+        if name not in cumulative_role_evidence(role)
+    ]
     validation_reasons = ["missing_required_tool:" + x for x in missing]
     if final_confidence < accept_score: validation_reasons.append("low_review_confidence")
     if not skeptic_review.get("verified_gaps"): validation_reasons.append("no_verified_candidates")
     if skeptic_review.get("quality_audit", {}).get("status") != "provenance_checked":
         validation_reasons.append("research_provenance_incomplete")
     for role in ("optimist", "skeptic"):
-        coverage = evidence_ledger.get(role, {}).get("corpus_focus_coverage", {}).get("result", {})
+        coverage = cumulative_role_evidence(role).get(
+            "corpus_focus_coverage", {}
+        ).get("result", {})
         n = coverage.get("focus_subset", {}).get("papers")
         if focus and isinstance(n, (int,float)) and n < 30:
             validation_reasons.append("insufficient_focus_coverage")
@@ -688,8 +785,15 @@ def stream_gap_debate_agent(
     status = "needs_verification" if validation_reasons else "evidence_checked"
     if validation_reasons:
         report = "> Verification incomplete: " + "; ".join(sorted(set(validation_reasons))) + "\n\n" + report
+    complete_debate_session(
+        session_state,
+        final_report=report,
+        validation_status=status,
+    )
     yield {
         "type": "final",
+        "session_id": session_state.session_id,
+        "focus": focus,
         "content": report,
         "validation_status":status,
         "validation_reasons":sorted(set(validation_reasons)),
@@ -707,6 +811,8 @@ def run_gap_debate_agent(
     max_debate_rounds: int = 2,
     verbose: bool = False,
     use_ops_memory: bool | None = None,
+    result_meta: dict[str, Any] | None = None,
+    resume_session_id: str | None = None,
 ) -> str:
     print(f"\n{'='*60}")
     print("Gap Debate Multi-Agent — pathology AI / digital pathology")
@@ -721,9 +827,19 @@ def run_gap_debate_agent(
         top_n=top_n,
         max_debate_rounds=max_debate_rounds,
         use_ops_memory=use_ops_memory,
+        resume_session_id=resume_session_id,
     ):
         etype = event["type"]
-        if etype == "debate_round_start":
+        if etype == "start":
+            if result_meta is not None:
+                result_meta.update(
+                    {
+                        "session_id": event.get("session_id", ""),
+                        "focus": event.get("focus"),
+                        "resumed": bool(event.get("resumed")),
+                    }
+                )
+        elif etype == "debate_round_start":
             print(f"\n--- Debate Round {event['round']} / {event['max_rounds']} ---")
         elif etype == "phase_start":
             print(f"  [{event['role']}] phase started")
@@ -738,6 +854,18 @@ def run_gap_debate_agent(
                   f"verified={event['verified_count']} false={event['false_count']}")
         elif etype == "final":
             report = event["content"]
+            if result_meta is not None:
+                result_meta.update(
+                    {
+                        "session_id": event.get("session_id", ""),
+                        "validation_status": event.get(
+                            "validation_status", "needs_verification"
+                        ),
+                        "validation_reasons": event.get("validation_reasons", []),
+                        "rounds": event.get("rounds", 0),
+                        "confidence": event.get("confidence", 0.0),
+                    }
+                )
             print(f"\nFinal report after {event['rounds']} round(s), "
                   f"confidence {event['confidence']:.1f}/10\n")
         elif etype == "error":

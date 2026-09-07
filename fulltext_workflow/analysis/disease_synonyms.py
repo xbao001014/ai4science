@@ -35,6 +35,7 @@ class DiseaseConcept:
     umls_cui: str = ""
     polyp_tokens: tuple[str, ...] = ()
     morphology_tokens: tuple[str, ...] = ()
+    entity_aliases: tuple[str, ...] = ()
 
 
 def _concept(
@@ -52,6 +53,7 @@ def _concept(
     umls_cui: str = "",
     polyp_tokens: list[str] | None = None,
     morphology_tokens: list[str] | None = None,
+    entity_aliases: list[str] | None = None,
 ) -> DiseaseConcept:
     return DiseaseConcept(
         id=id,
@@ -67,6 +69,7 @@ def _concept(
         umls_cui=umls_cui,
         polyp_tokens=tuple(polyp_tokens or []),
         morphology_tokens=tuple(morphology_tokens or []),
+        entity_aliases=tuple(entity_aliases or []),
     )
 
 
@@ -83,6 +86,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["胃癌", "胃腺癌", "胃"],
         feasibility_keyword_zh="胃腺癌",
         mock_disease_id="GC-ADC",
+        entity_aliases=["stomach adenocarcinoma", "胃腺癌"],
     ),
     _concept(
         id="lung_adenocarcinoma",
@@ -97,6 +101,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         feasibility_keyword_zh="肺癌",
         mock_disease_id="NSCLC-ADC",
         fangxin_disease_code="F_FA",
+        entity_aliases=["pulmonary adenocarcinoma", "肺腺癌"],
     ),
     _concept(
         id="lung_precancerous",
@@ -110,6 +115,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["癌前病变", "肺癌前病变"],
         feasibility_keyword_zh="癌前病变",
         fangxin_disease_code="F_AQBB",
+        entity_aliases=["pulmonary precancerous lesion", "肺癌前病变"],
     ),
     _concept(
         id="colorectal_adenocarcinoma",
@@ -126,6 +132,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         feasibility_keyword_zh="肠癌",
         mock_disease_id="CRC-ADC",
         fangxin_disease_code="C_CA",
+        entity_aliases=["结直肠腺癌"],
     ),
     _concept(
         id="colorectal_polyp",
@@ -140,6 +147,10 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["肠息肉", "结肠息肉", "直肠息肉", "结直肠息肉"],
         feasibility_keyword_zh="肠息肉",
         fangxin_disease_code="C_XR",
+        entity_aliases=[
+            "colorectal polyps", "colonic polyp", "colonic polyps",
+            "colon polyp", "colon polyps", "结直肠息肉", "结肠息肉",
+        ],
     ),
     _concept(
         id="colorectal_adenoma",
@@ -154,6 +165,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["肠腺瘤", "结肠腺瘤", "直肠腺瘤", "结直肠腺瘤"],
         feasibility_keyword_zh="肠腺瘤",
         fangxin_disease_code="C_CXL",
+        entity_aliases=["colonic adenoma", "colon adenoma", "结直肠腺瘤", "结肠腺瘤"],
     ),
     _concept(
         id="colitis",
@@ -192,6 +204,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["肝细胞癌", "肝癌", "肝细胞"],
         feasibility_keyword_zh="肝细胞癌",
         mock_disease_id="HCC",
+        entity_aliases=["hcc", "肝细胞癌"],
     ),
     _concept(
         id="breast_carcinoma",
@@ -204,6 +217,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["乳腺癌", "乳腺"],
         feasibility_keyword_zh="乳腺",
         mock_disease_id="BRCA-IDC",
+        entity_aliases=["breast cancer", "mammary carcinoma", "乳腺癌"],
     ),
     _concept(
         id="nasopharyngeal_carcinoma",
@@ -217,6 +231,10 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["鼻咽癌", "鼻咽"],
         feasibility_keyword_zh="鼻咽癌",
         fangxin_disease_code="BY_BNAI",
+        entity_aliases=[
+            "nasopharyngeal cancer", "carcinoma of the nasopharynx",
+            "nasopharynx cancer", "npc", "鼻咽癌",
+        ],
     ),
     _concept(
         id="gastric_polyp",
@@ -228,6 +246,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["胃息肉"],
         feasibility_keyword_zh="胃息肉",
         fangxin_disease_code="W_XR",
+        entity_aliases=["gastric polyps", "stomach polyp", "stomach polyps", "胃息肉"],
     ),
     _concept(
         id="gastric_ulcer",
@@ -242,6 +261,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["胃溃疡", "消化性溃疡"],
         feasibility_keyword_zh="胃溃疡",
         fangxin_disease_code="W_KY",
+        entity_aliases=["stomach ulcer", "gastric ulcers", "胃溃疡"],
     ),
     _concept(
         id="gastric_lymphoma",
@@ -252,6 +272,7 @@ DISEASE_CONCEPTS: tuple[DiseaseConcept, ...] = (
         zh=["胃淋巴瘤"],
         feasibility_keyword_zh="胃淋巴瘤",
         fangxin_disease_code="W_LBL",
+        entity_aliases=["stomach lymphoma", "胃淋巴瘤"],
     ),
     _concept(
         id="gastric_gist_hyperplasia",
@@ -365,6 +386,27 @@ def resolve_disease_concept(focus: str | None) -> DiseaseConcept | None:
                         best_rank = rnk
                         best = concept
     return best
+
+
+def resolve_disease_canonical(name: str | None) -> str | None:
+    """Return a canonical disease only for an exact curated alias.
+
+    ``resolve_disease_concept`` intentionally supports substring matching for
+    broad topic retrieval.  That behaviour is unsafe for entity persistence:
+    e.g. ``HER2-positive breast cancer`` must not be collapsed to the generic
+    breast-carcinoma concept.  This stricter resolver is therefore the only
+    disease resolver that should be used while writing entities.
+    """
+    if not name or not str(name).strip():
+        return None
+    raw = _normalize_match_text(str(name))
+    folded = _latin_fold(raw)
+    for concept in DISEASE_CONCEPTS:
+        safe_aliases = (concept.canonical, *concept.entity_aliases)
+        for match_str in safe_aliases:
+            if raw == _normalize_match_text(match_str) or folded == _latin_fold(match_str):
+                return concept.canonical
+    return None
 
 
 def expand_focus_terms(focus: str | None) -> dict:

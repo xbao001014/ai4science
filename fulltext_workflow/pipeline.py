@@ -141,7 +141,13 @@ def run_idea_pipeline(
     use_ops_memory: bool | None = None,
     persist_ops_memory: bool | None = None,
 ) -> tuple[str, list[GapFeasibilityResult]]:
-    from analysis.ops_memory import persist_debate_report, persist_proposal
+    from analysis.ops_memory import (
+        create_ops_run,
+        finalize_ops_run,
+        persist_debate_report,
+        persist_gaps_from_report,
+        persist_proposal,
+    )
 
     init_db()
     prereq = ensure_prerequisites()
@@ -163,14 +169,24 @@ def run_idea_pipeline(
         with open(gap_report_path, encoding="utf-8") as f:
             gap_report = f.read()
         print(f"[Pipeline] Loaded gap report: {gap_report_path}")
+        if should_persist and gap_report.strip():
+            ops_run_id = create_ops_run(focus, "idea-pipeline-import")
+            persist_gaps_from_report(ops_run_id, gap_report)
+            finalize_ops_run(
+                ops_run_id,
+                gap_report_path=gap_report_path,
+                validation_status="imported_unverified",
+            )
     else:
         print("[Pipeline] Stage 1: Gap debate...")
+        debate_meta: dict = {}
         gap_report = run_gap_debate_agent(
             focus=focus,
             top_n=top_n,
             max_debate_rounds=debate_rounds,
             verbose=verbose,
             use_ops_memory=use_ops_memory,
+            result_meta=debate_meta,
         )
         debate_path = os.path.join(config.OUTPUT_DIR, "gap_debate_report.md")
         save_report(gap_report, debate_path, focus=focus)
@@ -182,6 +198,10 @@ def run_idea_pipeline(
                 source="idea-pipeline",
                 gap_report_path=debate_path,
                 enabled=True,
+                validation_status=debate_meta.get(
+                    "validation_status", "needs_verification"
+                ),
+                debate_session_id=debate_meta.get("session_id", ""),
             )
 
     sections = parse_gap_sections(gap_report)
@@ -223,6 +243,7 @@ def run_idea_pipeline(
                 gap_data=feas_ctx,
                 max_rounds=idea_rounds,
                 verbose=verbose,
+                debate_session_id=debate_meta.get("session_id") if not skip_debate else None,
             )
             if not fr.proposal:
                 print(f"  [warn] No proposal generated for '{fr.gap_title[:40]}' (LLM error or empty draft)")

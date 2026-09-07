@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from urllib.parse import urlparse
 from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
@@ -119,6 +120,7 @@ HOTSPOT_WINDOW_DAYS: int = _default_hotspot_window()
 HOTSPOT_PRIOR_WINDOW_DAYS: int = int(os.getenv("HOTSPOT_PRIOR_WINDOW_DAYS", "14"))
 HOTSPOT_MIN_RECENT_PAPERS: int = int(os.getenv("HOTSPOT_MIN_RECENT_PAPERS", "2"))
 HOTSPOT_TOP_N: int = int(os.getenv("HOTSPOT_TOP_N", "20"))
+HOTSPOT_NEW_METHODS_MAX: int = int(os.getenv("HOTSPOT_NEW_METHODS_MAX", "500"))
 HOTSPOT_ESTABLISHED_MIN_PAPERS: int = int(os.getenv("HOTSPOT_ESTABLISHED_MIN_PAPERS", "10"))
 # Agent / tool transferable candidates: longer than weekly board default when corpus is sparse.
 HOTSPOT_TRANSFER_WINDOW_DAYS: int = int(
@@ -159,6 +161,8 @@ PUBMED_EMAIL: str = os.getenv("PUBMED_EMAIL", "your@email.com")
 OPENAI_API_BASE: str = _env_first(
     "OPENAI_API_BASE", default="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
+_EXPLICIT_OPENAI_API_KEY: str = _env_first("OPENAI_API_KEY")
+DASHSCOPE_API_KEY: str = _env_first("DASHSCOPE_API_KEY")
 OPENAI_API_KEY: str = _env_first(
     "OPENAI_API_KEY", "DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"
 )
@@ -180,6 +184,103 @@ LLM_REQUEST_TIMEOUT: float = float(os.getenv("LLM_REQUEST_TIMEOUT", "180"))
 LLM_MIN_INTERVAL: float = float(os.getenv("LLM_MIN_INTERVAL", "2.0"))
 LLM_MAX_CONCURRENT: int = int(os.getenv("LLM_MAX_CONCURRENT", "1"))
 LLM_RATE_LIMIT_COOLDOWN: float = float(os.getenv("LLM_RATE_LIMIT_COOLDOWN", "45"))
+
+# ── Embedding (Phase A: client/cache foundation, disabled by default) ────────
+EMBEDDING_ENABLED: bool = _env_first("EMBEDDING_ENABLED", default="0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+EMBEDDING_PROVIDER: str = _env_first("EMBEDDING_PROVIDER", default="bailian")
+EMBEDDING_API_BASE: str = _env_first(
+    "EMBEDDING_API_BASE",
+    default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+EMBEDDING_API_KEY: str = _env_first("EMBEDDING_API_KEY")
+EMBEDDING_MODEL: str = _env_first("EMBEDDING_MODEL", default="text-embedding-v4")
+EMBEDDING_DIMENSIONS: int = int(_env_first("EMBEDDING_DIMENSIONS", default="768"))
+EMBEDDING_BATCH_SIZE: int = int(_env_first("EMBEDDING_BATCH_SIZE", default="10"))
+EMBEDDING_MAX_CONCURRENT: int = int(
+    _env_first("EMBEDDING_MAX_CONCURRENT", default="2")
+)
+EMBEDDING_REQUEST_TIMEOUT: float = float(
+    _env_first("EMBEDDING_REQUEST_TIMEOUT", default="60")
+)
+EMBEDDING_RETRY_ATTEMPTS: int = int(
+    _env_first("EMBEDDING_RETRY_ATTEMPTS", default="5")
+)
+EMBEDDING_RETRY_DELAY: float = float(
+    _env_first("EMBEDDING_RETRY_DELAY", default="1.0")
+)
+EMBEDDING_MIN_INTERVAL: float = float(
+    _env_first("EMBEDDING_MIN_INTERVAL", default="0.2")
+)
+EMBEDDING_RATE_LIMIT_COOLDOWN: float = float(
+    _env_first("EMBEDDING_RATE_LIMIT_COOLDOWN", default="30")
+)
+EMBEDDING_CONTEXT_MAX_CHARS: int = int(
+    _env_first("EMBEDDING_CONTEXT_MAX_CHARS", default="2000")
+)
+EMBEDDING_ESTIMATED_CNY_PER_MTOK: float = float(
+    _env_first("EMBEDDING_ESTIMATED_CNY_PER_MTOK", default="0.5")
+)
+EMBEDDING_BATCH_CNY_PER_MTOK: float = float(
+    _env_first("EMBEDDING_BATCH_CNY_PER_MTOK", default="0.25")
+)
+METHOD_TAXONOMY_VERSION: str = _env_first(
+    "METHOD_TAXONOMY_VERSION", default="method-family-v1"
+)
+METHOD_FAMILY_TOP_K: int = int(_env_first("METHOD_FAMILY_TOP_K", default="3"))
+METHOD_FAMILY_ACCEPT_SIMILARITY: float = float(
+    _env_first("METHOD_FAMILY_ACCEPT_SIMILARITY", default="0.78")
+)
+METHOD_FAMILY_ACCEPT_MARGIN: float = float(
+    _env_first("METHOD_FAMILY_ACCEPT_MARGIN", default="0.05")
+)
+
+
+def _is_dashscope_base(value: str) -> bool:
+    try:
+        host = (urlparse(value).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "dashscope.aliyuncs.com" or host.endswith(
+        ".dashscope.aliyuncs.com"
+    )
+
+
+def embedding_key_and_source() -> tuple[str, str]:
+    """Resolve the embedding key without leaking a non-DashScope LLM key."""
+    if EMBEDDING_API_KEY:
+        return EMBEDDING_API_KEY, "EMBEDDING_API_KEY"
+    if DASHSCOPE_API_KEY:
+        return DASHSCOPE_API_KEY, "DASHSCOPE_API_KEY"
+    if (
+        _EXPLICIT_OPENAI_API_KEY
+        and _is_dashscope_base(EMBEDDING_API_BASE)
+        and _is_dashscope_base(OPENAI_API_BASE)
+    ):
+        return _EXPLICIT_OPENAI_API_KEY, "OPENAI_API_KEY"
+    return "", "missing"
+
+
+def validate_embedding_config() -> list[str]:
+    """Return safe configuration errors; never include credentials."""
+    errors: list[str] = []
+    parsed = urlparse(EMBEDDING_API_BASE)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        errors.append("EMBEDDING_API_BASE must be a valid HTTPS URL")
+    if not 1 <= EMBEDDING_BATCH_SIZE <= 10:
+        errors.append("EMBEDDING_BATCH_SIZE must be between 1 and 10")
+    if EMBEDDING_DIMENSIONS != 768:
+        errors.append("Phase A requires EMBEDDING_DIMENSIONS=768")
+    if EMBEDDING_MAX_CONCURRENT < 1:
+        errors.append("EMBEDDING_MAX_CONCURRENT must be >= 1")
+    if EMBEDDING_RETRY_ATTEMPTS < 1:
+        errors.append("EMBEDDING_RETRY_ATTEMPTS must be >= 1")
+    if EMBEDDING_CONTEXT_MAX_CHARS < 200:
+        errors.append("EMBEDDING_CONTEXT_MAX_CHARS must be >= 200")
+    if not 1 <= METHOD_FAMILY_TOP_K <= 13:
+        errors.append("METHOD_FAMILY_TOP_K must be between 1 and 13")
+    return errors
 
 DEFAULT_EXTRACT_LIMIT: int = 30
 # Extraction speed: core sections ~6 calls/paper vs all ~22 (skip other/intro)

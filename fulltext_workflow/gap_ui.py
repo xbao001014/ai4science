@@ -82,11 +82,13 @@ except ModuleNotFoundError:
 import config  # noqa: E402
 from db.schema import (  # noqa: E402
     db_stats,
+    fetch_debate_session,
     get_all_landscape,
     init_db,
     landscape_count,
     list_active_improvement_suggestions,
     list_active_improvement_suggestions_for_limitations,
+    list_debate_sessions,
 )
 
 init_db()
@@ -2142,8 +2144,9 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.session_state["hotspot_brief"] = brief_text
         st.success(f"简报已保存：{brief_path}")
 
-    tab_m, tab_d, tab_c, tab_o, tab_l = st.tabs([
+    tab_m, tab_f, tab_d, tab_c, tab_o, tab_l = st.tabs([
         "方法",
+        "方法类别",
         "疾病",
         "热门组合",
         "跨病种可借鉴",
@@ -2158,6 +2161,16 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         _render_methods_by_role(payload.get("emerging_methods", []))
         with st.expander("本周活跃（含成熟常用方法）", expanded=False):
             _render_methods_by_role(payload.get("active_methods", []))
+    with tab_f:
+        release_id = payload.get("method_family_release_id")
+        if not release_id:
+            st.info("方法类别 release 尚未通过独立盲测并激活；当前不展示未经验证的类别。")
+        else:
+            st.caption(
+                f"按已激活 release `{release_id}` 聚合本周新苗头方法；"
+                "methods 列按类别内热度排列。"
+            )
+            safe_table(pd.DataFrame(payload.get("method_families", [])))
     with tab_d:
         safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
     with tab_c:
@@ -2277,6 +2290,8 @@ def main() -> None:
         ("debate_rounds", 0), ("debate_confidence", 0.0),
         ("idea_events", []), ("proposal", ""), ("proposal_gap_text", ""),
         ("proposal_rounds", []), ("final_rounds", 1), ("final_score", 0.0),
+        ("debate_session_id", ""), ("ops_run_id", None),
+        ("ops_run_focus_key", ""), ("idea_session_id", ""),
         ("landscape_msg", ""),
         ("hotspot_brief", ""),
         ("evidence_viewer", None),
@@ -2375,7 +2390,7 @@ def main() -> None:
         use_ops_memory_input = st.checkbox(
             "使用近期已报空白（防重复）",
             value=True,
-            help="注入该焦点最近 4 条已报告空白，软性回避相近方向",
+            help="注入该焦点最近 4 次通过证据校验的辩论空白，软性回避相近方向",
         )
         persist_ops_memory_input = st.checkbox(
             "记忆本次运行",
@@ -2391,6 +2406,58 @@ def main() -> None:
             else:
                 for it in mem.items[:40]:
                     st.markdown(f"- `{it.week_id}` {it.title}")
+        from analysis.ops_memory import normalize_focus_key  # noqa: E402
+
+        recent_sessions = list_debate_sessions(
+            focus_key=normalize_focus_key(focus_input or None),
+            limit=12,
+        )
+        resume_button = False
+        load_history_button = False
+        selected_history_id = ""
+        with st.expander("会话历史与断点续跑", expanded=False):
+            if not recent_sessions:
+                st.caption("当前焦点暂无已保存会话。")
+            else:
+                session_by_id = {
+                    str(row["session_id"]): row for row in recent_sessions
+                }
+                selected_history_id = st.selectbox(
+                    "选择会话",
+                    options=list(session_by_id),
+                    format_func=lambda sid: (
+                        f"{session_by_id[sid].get('updated_at') or ''} · "
+                        f"{session_by_id[sid].get('status')} · "
+                        f"R{session_by_id[sid].get('current_round')}/"
+                        f"{session_by_id[sid].get('max_rounds')} · "
+                        f"next={session_by_id[sid].get('next_role') or '-'}"
+                    ),
+                    key="selected_debate_history_id",
+                )
+                selected_row = session_by_id[selected_history_id]
+                selected_detail = fetch_debate_session(selected_history_id) or {}
+                try:
+                    state_payload = json.loads(selected_detail.get("state_json") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    state_payload = {}
+                if state_payload.get("rolling_summary"):
+                    st.caption(state_payload["rolling_summary"])
+                resumable = (
+                    selected_row.get("status") in {"running", "failed", "aborted"}
+                    and selected_row.get("next_role")
+                )
+                if resumable:
+                    resume_button = st.button(
+                        "从 checkpoint 继续",
+                        use_container_width=True,
+                        key="resume_debate_session",
+                    )
+                elif selected_detail.get("final_report"):
+                    load_history_button = st.button(
+                        "加载历史报告",
+                        use_container_width=True,
+                        key="load_debate_history",
+                    )
         st.divider()
         _debate_focus, _debate_err = debate_focus_or_error(
             focus_input,
@@ -2438,18 +2505,37 @@ def main() -> None:
     render_debate_role_guide(compact=True)
     st.divider()
 
-    if run_button:
-        debate_focus, debate_err = debate_focus_or_error(
-            focus_input,
-            allow_full_corpus=allow_full_corpus,
-        )
+    if load_history_button and selected_history_id:
+        historical = fetch_debate_session(selected_history_id) or {}
+        st.session_state.update({
+            "report": historical.get("final_report") or "",
+            "run_focus": historical.get("focus_raw") or "全部",
+            "debate_session_id": selected_history_id,
+        })
+        remember_main_tab(POST_DEBATE_TAB_SLUG)
+
+    if run_button or resume_button:
+        resume_id = selected_history_id if resume_button else ""
+        if resume_id:
+            selected = fetch_debate_session(resume_id) or {}
+            debate_focus = selected.get("focus_raw") or None
+            debate_err = None
+            effective_top_n = int(selected.get("top_n") or top_n_input)
+        else:
+            debate_focus, debate_err = debate_focus_or_error(
+                focus_input,
+                allow_full_corpus=allow_full_corpus,
+            )
+            effective_top_n = top_n_input
         if debate_err:
             st.error(debate_err)
         else:
             st.session_state.update({
                 "events": [], "report": "",
                 "run_focus": debate_focus or "全部",
-                "run_top_n": top_n_input, "debate_confidence": 0.0,
+                "run_top_n": effective_top_n, "debate_confidence": 0.0,
+                "debate_session_id": resume_id, "ops_run_id": None,
+                "ops_run_focus_key": "",
             })
             live_events: list[dict] = []
             tool_step = 0
@@ -2464,14 +2550,20 @@ def main() -> None:
                     top_n=top_n_input,
                     max_debate_rounds=debate_rounds_input,
                     use_ops_memory=use_ops_memory_input,
+                    resume_session_id=resume_id or None,
                 ):
                     live_events.append(event)
                     st.session_state["events"] = list(live_events)
                     etype = event.get("type", "")
 
-                    if etype == "debate_round_start":
+                    if etype == "start":
+                        st.session_state["debate_session_id"] = event.get(
+                            "session_id", ""
+                        )
+                    elif etype == "debate_round_start":
                         st.markdown(
-                            f"**辩论轮次 {event['round']} / {event['max_rounds']}**"
+                            f"**{'续跑 · ' if event.get('resumed') else ''}"
+                            f"辩论轮次 {event['round']} / {event['max_rounds']}**"
                         )
                     elif etype == "phase_start":
                         current_role = event.get("role", "")
@@ -2555,9 +2647,23 @@ def main() -> None:
                                 focus=debate_focus,
                                 source="gap_ui",
                                 enabled=True,
+                                validation_status=event.get(
+                                    "validation_status", "needs_verification"
+                                ),
+                                debate_session_id=event.get("session_id", ""),
                             )
                             if rid:
                                 st.session_state["ops_run_id"] = rid
+                                from analysis.ops_memory import normalize_focus_key  # noqa: E402
+
+                                st.session_state["ops_run_focus_key"] = (
+                                    normalize_focus_key(debate_focus)
+                                )
+                            else:
+                                st.warning(
+                                    "本轮会话轨迹已保存，但报告未通过 evidence_checked，"
+                                    "因此未写入防重复长期记忆。"
+                                )
                         sw.update(
                             label=(
                                 f"辩论完成 — {tool_step} 次工具调用，"
@@ -2847,6 +2953,7 @@ def main() -> None:
                     "proposal_difficulty_summary": None,
                     "proposal_q_coverage_low": False,
                     "proposal_difficulty_breakdown": {},
+                    "idea_session_id": "",
                 })
                 idea_events: list[dict] = []
                 with st.status("生成器 × 评审循环 …", expanded=True) as psw:
@@ -2855,10 +2962,17 @@ def main() -> None:
                         gap_data=proposal_gap_data,
                         max_rounds=proposal_rounds_input,
                         target_difficulty=target_difficulty_input,
+                        debate_session_id=st.session_state.get(
+                            "debate_session_id"
+                        ) or None,
                     ):
                         idea_events.append(event)
                         st.session_state["idea_events"] = list(idea_events)
                         et = event.get("type")
+                        if et == "start":
+                            st.session_state["idea_session_id"] = event.get(
+                                "idea_session_id", ""
+                            )
                         if et in {"difficulty_assessed", "final"}:
                             st.session_state.update({
                                 "proposal_result_target_difficulty": event.get(
@@ -2914,14 +3028,27 @@ def main() -> None:
                                 from analysis.ops_memory import (  # noqa: E402
                                     create_ops_run,
                                     finalize_ops_run,
+                                    normalize_focus_key,
                                     persist_proposal,
                                 )
 
                                 rid = st.session_state.get("ops_run_id")
+                                current_focus_key = normalize_focus_key(
+                                    focus_input or None
+                                )
+                                if (
+                                    rid
+                                    and st.session_state.get("ops_run_focus_key")
+                                    != current_focus_key
+                                ):
+                                    rid = None
                                 if not rid:
                                     rid = create_ops_run(focus_input or None, "gap_ui")
                                     finalize_ops_run(rid)
                                     st.session_state["ops_run_id"] = rid
+                                    st.session_state["ops_run_focus_key"] = (
+                                        current_focus_key
+                                    )
                                 gap_title = (
                                     st.session_state.get("proposal_gap_text")
                                     or str(gap_input).strip()

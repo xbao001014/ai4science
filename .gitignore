@@ -42,6 +42,7 @@ env/
 
 # ── Local agent / SDD scratch (do not upload) ─────────────────────────────────
 tmp/
+progress/
 .worktrees/
 .superpowers/
 docs/*
@@ -73,6 +74,11 @@ desktop.ini
 data/*
 !data/.gitkeep
 output/
+outputs/
+
+# Local PPT finalizer scratch
+.codex-finalizer/
+.codex-finalizer-assurance/
 
 # Journal impact factor tables (place locally; see README)
 jcr.csv

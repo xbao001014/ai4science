@@ -158,6 +158,17 @@ class ToolResultCache:
         elif result:
             self._store[cache_key(name, args)] = result
 
+    def snapshot(self, *, max_value_chars: int = 4000) -> dict[str, Any]:
+        entries: dict[str, Any] = {}
+        for key, value in self._store.items():
+            raw = json.dumps(value, ensure_ascii=False, default=str)
+            entries[key] = (
+                value
+                if len(raw) <= max_value_chars
+                else {"truncated": True, "preview": raw[:max_value_chars]}
+            )
+        return {"hits": self.hits, "misses": self.misses, "entries": entries}
+
 
 def wrap_tools_with_cache(
     tools: dict[str, Callable[..., Any]],
@@ -259,3 +270,11 @@ class IdeaSessionGuards:
         out = dict(cached)
         out["feasibility_assess"] = feasibility_assess
         return out
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "baseline": dict(self.baseline) if self.baseline is not None else None,
+            "relaxed_seen": self.relaxed_seen,
+            "last_spec_relation": self.last_spec_relation,
+            "cache": self.cache.snapshot(),
+        }

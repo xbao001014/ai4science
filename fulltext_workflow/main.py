@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import config
 
@@ -217,26 +220,533 @@ def cmd_gap_debate(args: argparse.Namespace) -> None:
     from db.schema import init_db
 
     init_db()
+    debate_meta: dict = {}
     report = run_gap_debate_agent(
         focus=args.focus or None,
         top_n=args.top,
         max_debate_rounds=args.rounds,
         verbose=args.verbose,
         use_ops_memory=not args.no_ops_memory,
+        result_meta=debate_meta,
+        resume_session_id=args.resume_session or None,
     )
     if args.output and report:
-        save_report(report, args.output, focus=args.focus)
+        save_report(
+            report,
+            args.output,
+            focus=debate_meta.get("focus") or args.focus,
+        )
         print(f"[Gap-Debate] Saved to {args.output}")
     if report and not args.no_ops_persist:
         rid = persist_debate_report(
             report,
-            focus=args.focus or None,
+            focus=debate_meta.get("focus") or args.focus or None,
             source="gap-debate",
             gap_report_path=args.output or "",
             enabled=True,
+            validation_status=debate_meta.get(
+                "validation_status", "needs_verification"
+            ),
+            debate_session_id=debate_meta.get("session_id", ""),
         )
         if rid:
             print(f"[Gap-Debate] Ops memory run_id={rid}")
+
+
+def cmd_embedding_preflight(args: argparse.Namespace) -> None:
+    """Validate Phase A configuration; network is opt-in via --live-probe."""
+    from analysis.embedding_client import EmbeddingClient, EmbeddingItem
+    from analysis.embedding_service import embed_with_cache
+    from db.schema import init_db
+
+    init_db()
+    errors = config.validate_embedding_config()
+    key, key_source = config.embedding_key_and_source()
+    host = urlparse(config.EMBEDDING_API_BASE).hostname or "invalid"
+    summary = {
+        "provider": config.EMBEDDING_PROVIDER,
+        "base_host": host,
+        "model": config.EMBEDDING_MODEL,
+        "dimensions": config.EMBEDDING_DIMENSIONS,
+        "batch_size": config.EMBEDDING_BATCH_SIZE,
+        "enabled": config.EMBEDDING_ENABLED,
+        "key_source": key_source,
+        "key_configured": bool(key),
+        "network_called": False,
+        "config_errors": errors,
+    }
+    if errors:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        raise SystemExit("Embedding configuration is invalid")
+    if not args.live_probe:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+    if not config.EMBEDDING_ENABLED:
+        raise SystemExit("Set EMBEDDING_ENABLED=1 before using --live-probe")
+    if not key:
+        raise SystemExit("A Bailian embedding API key is required for --live-probe")
+
+    probe_texts = (
+        "method: convolutional neural network",
+        "method: multiple instance learning",
+    )
+    items = [
+        EmbeddingItem(
+            item_id=f"probe-{index}",
+            input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            text=text,
+        )
+        for index, text in enumerate(probe_texts, start=1)
+    ]
+    client = EmbeddingClient(
+        api_key=key,
+        api_base=config.EMBEDDING_API_BASE,
+        model=config.EMBEDDING_MODEL,
+        dimensions=config.EMBEDDING_DIMENSIONS,
+        batch_size=config.EMBEDDING_BATCH_SIZE,
+    )
+    result = embed_with_cache(
+        client,
+        items,
+        provider=config.EMBEDDING_PROVIDER,
+        model=config.EMBEDDING_MODEL,
+        dimensions=config.EMBEDDING_DIMENSIONS,
+        job_type="live_probe",
+        context_quality="probe",
+    )
+    summary.update(
+        {
+            "network_called": result.requested_items > 0,
+            "job_id": result.job_id,
+            "vectors": len(result.vectors),
+            "cache_hits": result.cache_hits,
+            "requested_items": result.requested_items,
+            "actual_tokens": result.actual_tokens,
+        }
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def cmd_embedding_plan(args: argparse.Namespace) -> None:
+    """Build a no-network Method embedding scope and cost estimate."""
+    from analysis.embedding_inputs import build_embedding_plan
+    from db.schema import init_db
+
+    if not args.dry_run:
+        raise SystemExit("Phase A embedding-plan requires --dry-run")
+    init_db()
+    errors = config.validate_embedding_config()
+    if errors:
+        raise SystemExit("; ".join(errors))
+    plan = build_embedding_plan(limit=args.limit)
+    print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _require_live_embedding() -> str:
+    errors = config.validate_embedding_config()
+    if errors:
+        raise SystemExit("; ".join(errors))
+    if not config.EMBEDDING_ENABLED:
+        raise SystemExit("Set EMBEDDING_ENABLED=1 before external Embedding calls")
+    key, _ = config.embedding_key_and_source()
+    if not key:
+        raise SystemExit("A Bailian embedding API key is required")
+    return key
+
+
+def cmd_method_family_init(args: argparse.Namespace) -> None:
+    from analysis.embedding_client import EmbeddingClient
+    from analysis.method_taxonomy import ensure_prototype_centroids, sync_family_catalog
+    from db.schema import init_db
+
+    init_db()
+    count = sync_family_catalog()
+    result: dict = {"families": count, "taxonomy_version": config.METHOD_TAXONOMY_VERSION}
+    if args.embed_prototypes:
+        key = _require_live_embedding()
+        client = EmbeddingClient(api_key=key)
+        centroids, embedding_stats = ensure_prototype_centroids(client)
+        result.update(embedding_stats)
+        result["centroids"] = len(centroids)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_shadow(args: argparse.Namespace) -> None:
+    from analysis.embedding_client import EmbeddingClient, EmbeddingItem
+    from analysis.embedding_inputs import load_method_embedding_inputs
+    from analysis.embedding_service import embed_with_cache
+    from analysis.method_taxonomy import (
+        ensure_prototype_centroids,
+        load_prototype_centroids_from_cache,
+        shadow_classify_cached_methods,
+        sync_family_catalog,
+    )
+    from db.schema import init_db
+
+    init_db()
+    sync_family_catalog()
+    inputs = load_method_embedding_inputs(limit=args.limit)
+    prototype_stats: dict = {}
+    if args.sync:
+        key = _require_live_embedding()
+        client = EmbeddingClient(api_key=key)
+        centroids, prototype_stats = ensure_prototype_centroids(client)
+        method_items = [
+            EmbeddingItem(
+                item_id=str(item.method_entity_id),
+                input_sha256=item.input_sha256,
+                text=item.text,
+            )
+            for item in inputs
+        ]
+        method_result = embed_with_cache(
+            client,
+            method_items,
+            provider=config.EMBEDDING_PROVIDER,
+            model=config.EMBEDDING_MODEL,
+            dimensions=config.EMBEDDING_DIMENSIONS,
+            job_type="method_shadow_sync",
+            item_type="method",
+            context_quality="mixed",
+        )
+        prototype_stats["method_job_id"] = method_result.job_id
+        prototype_stats["method_cache_hits"] = method_result.cache_hits
+        prototype_stats["method_requested_items"] = method_result.requested_items
+    else:
+        centroids = load_prototype_centroids_from_cache()
+        if not centroids:
+            raise SystemExit("Prototype cache is incomplete; run method-family-init --embed-prototypes")
+    summary = shadow_classify_cached_methods(inputs, centroids)
+    summary["embedding"] = prototype_stats
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_batch(args: argparse.Namespace) -> None:
+    from analysis.embedding_batch import BailianEmbeddingBatch
+    from analysis.embedding_inputs import load_method_embedding_inputs
+    from analysis.embedding_store import cached_hashes
+    from analysis.method_taxonomy import (
+        load_prototype_centroids_from_cache,
+        shadow_classify_cached_methods,
+        sync_family_catalog,
+    )
+    from db.schema import init_db
+
+    init_db()
+    key = _require_live_embedding()
+    client = BailianEmbeddingBatch(api_key=key)
+    if args.action == "submit":
+        sync_family_catalog()
+        inputs = load_method_embedding_inputs(limit=args.limit)
+        hits = cached_hashes(
+            [item.input_sha256 for item in inputs],
+            provider=config.EMBEDDING_PROVIDER,
+            model=config.EMBEDDING_MODEL,
+            dimensions=config.EMBEDDING_DIMENSIONS,
+        )
+        missing = [item for item in inputs if item.input_sha256 not in hits]
+        result = client.submit(missing)
+    elif args.action == "status":
+        if not args.job_id:
+            raise SystemExit("--job-id is required for status")
+        result = client.status(args.job_id)
+    else:
+        if not args.job_id:
+            raise SystemExit("--job-id is required for ingest")
+        result = client.ingest(args.job_id, cleanup_remote_files=not args.keep_remote_files)
+        centroids = load_prototype_centroids_from_cache()
+        if not centroids:
+            raise SystemExit("Batch was ingested, but prototype cache is incomplete")
+        inputs = load_method_embedding_inputs(limit=args.limit)
+        result["classification"] = shadow_classify_cached_methods(inputs, centroids)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_gold_export(args: argparse.Namespace) -> None:
+    from analysis.method_taxonomy import export_gold_template
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_gold_{config.METHOD_TAXONOMY_VERSION}.csv"
+    )
+    result = export_gold_template(output, size=args.size)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_gold_validate(args: argparse.Namespace) -> None:
+    from analysis.method_family_gold import (
+        GoldValidationError,
+        assign_deterministic_split,
+        gold_summary,
+        load_and_validate_gold_csv,
+    )
+
+    try:
+        validation = assign_deterministic_split(
+            load_and_validate_gold_csv(
+                args.input,
+                expected_sha256=args.expected_sha256,
+                expected_rows=args.expected_rows,
+            )
+        )
+    except (GoldValidationError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(gold_summary(validation), ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_gold_import(args: argparse.Namespace) -> None:
+    from analysis.method_family_gold import GoldValidationError, import_gold_set
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = import_gold_set(
+            args.input,
+            reviewer=args.reviewer,
+            expected_sha256=args.expected_sha256,
+            expected_rows=args.expected_rows,
+        )
+    except (GoldValidationError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_calibrate(args: argparse.Namespace) -> None:
+    from analysis.method_family_gold import calibrate_gold_set
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_calibration_{args.gold_set_id}.json"
+    )
+    try:
+        result = calibrate_gold_set(args.gold_set_id, output_path=output)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    result["output"] = str(Path(output).resolve())
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_rules_evaluate(args: argparse.Namespace) -> None:
+    from analysis.method_family_rules import evaluate_and_freeze_ruleset
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_rules_{args.gold_set_id}.json"
+    )
+    try:
+        result = evaluate_and_freeze_ruleset(args.gold_set_id, output_path=output)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    result["output"] = str(Path(output).resolve())
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_policy_preview(args: argparse.Namespace) -> None:
+    from analysis.method_family_rules import build_policy_preview
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_policy_preview_{args.gold_set_id}.json"
+    )
+    try:
+        result = build_policy_preview(
+            args.gold_set_id,
+            args.calibration_id,
+            args.ruleset_id,
+            output_path=output,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    result["output"] = str(Path(output).resolve())
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_review_queue(args: argparse.Namespace) -> None:
+    from analysis.method_family_review_queue import build_coverage_review_queue
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_review_queue_{args.gold_set_id}.csv"
+    )
+    report_output = args.report_output or str(Path(output).with_suffix(".json"))
+    try:
+        result = build_coverage_review_queue(
+            args.gold_set_id,
+            args.calibration_id,
+            args.ruleset_id,
+            output_path=output,
+            report_output_path=report_output,
+            target_paper_coverage=args.target_paper_coverage,
+            max_rows=args.max_rows,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    result["output"] = str(Path(output).resolve())
+    result["report_output"] = str(Path(report_output).resolve())
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_gold_extension_import(args: argparse.Namespace) -> None:
+    from analysis.method_family_review_queue import (
+        CoverageGoldValidationError,
+        import_coverage_gold_extension,
+    )
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR)
+        / f"method_family_gold_extension_{args.queue_id}_{args.rank_start}-{args.rank_end}.json"
+    )
+    try:
+        result = import_coverage_gold_extension(
+            args.input,
+            queue_id=args.queue_id,
+            reviewer=args.reviewer,
+            rank_start=args.rank_start,
+            rank_end=args.rank_end,
+            expected_sha256=args.expected_sha256,
+            output_path=output,
+        )
+    except (CoverageGoldValidationError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    result["output"] = str(Path(output).resolve())
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_blind_export(args: argparse.Namespace) -> None:
+    from analysis.method_family_blind import export_blind_set
+    from db.schema import init_db
+
+    init_db()
+    output = args.output or str(
+        Path(config.OUTPUT_DIR) / f"method_family_blind_{config.METHOD_TAXONOMY_VERSION}.csv"
+    )
+    try:
+        result = export_blind_set(
+            args.gold_set_id,
+            output_path=output,
+            size=args.size,
+            generation=args.generation,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_blind_import(args: argparse.Namespace) -> None:
+    from analysis.method_family_blind import BlindValidationError, import_blind_submission
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = import_blind_submission(
+            args.input,
+            blind_set_id=args.blind_set_id,
+            reviewer=args.reviewer,
+            expected_sha256=args.expected_sha256,
+            output_path=args.output,
+        )
+    except (BlindValidationError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_blind_promote(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import promote_blind_evaluation
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = promote_blind_evaluation(
+            args.evaluation_id,
+            promoted_by=args.promoted_by,
+            output_path=args.output,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_model_train(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import train_supervised_model
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = train_supervised_model(
+            args.gold_set_id,
+            args.ruleset_id,
+            output_path=args.output,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_model_preview(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import preview_production_coverage
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = preview_production_coverage(args.model_id)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_blind_evaluate(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import evaluate_blind_submission
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = evaluate_blind_submission(
+            args.model_id,
+            args.submission_id,
+            output_path=args.output,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_release_build(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import build_release
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = build_release(
+            args.model_id,
+            args.evaluation_id,
+            manual_override=args.manual_override,
+            approved_by=args.approved_by,
+            approval_reason=args.approval_reason,
+            minimum_paper_coverage=args.minimum_paper_coverage,
+            output_path=args.output,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_method_family_release_activate(args: argparse.Namespace) -> None:
+    from analysis.method_family_supervised import activate_release
+    from db.schema import init_db
+
+    init_db()
+    try:
+        result = activate_release(args.release_id, activated_by=args.activated_by)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def cmd_backfill_date_precision(args: argparse.Namespace) -> None:
@@ -501,6 +1011,216 @@ def main() -> None:
 
     sub.add_parser("init", help="Initialize database")
 
+    p_embedding_preflight = sub.add_parser(
+        "embedding-preflight",
+        help="Validate Bailian embedding configuration (offline by default)",
+    )
+    p_embedding_preflight.add_argument(
+        "--live-probe",
+        action="store_true",
+        help="Explicitly send two fixed public test strings to Bailian",
+    )
+
+    p_embedding_plan = sub.add_parser(
+        "embedding-plan",
+        help="Estimate active Method embedding scope, cache hits, and cost",
+    )
+    p_embedding_plan.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Required in Phase A; never calls the external API",
+    )
+    p_embedding_plan.add_argument(
+        "--only-active",
+        action="store_true",
+        help="Use active APPLIES_METHOD entities (the only Phase A scope)",
+    )
+    p_embedding_plan.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit Methods by stable entity-id order (testing only)",
+    )
+
+    p_family_init = sub.add_parser(
+        "method-family-init",
+        help="Initialize the versioned 13-family taxonomy and optional prototypes",
+    )
+    p_family_init.add_argument(
+        "--embed-prototypes",
+        action="store_true",
+        help="Embed curated family descriptions/seeds using Bailian",
+    )
+
+    p_family_shadow = sub.add_parser(
+        "method-family-shadow",
+        help="Write top-k family candidates as review-only shadow assignments",
+    )
+    p_family_shadow.add_argument("--limit", type=int, default=None)
+    p_family_shadow.add_argument(
+        "--sync",
+        action="store_true",
+        help="Synchronously embed missing inputs (use only for a small sample)",
+    )
+
+    p_family_batch = sub.add_parser(
+        "method-family-batch",
+        help="Submit, inspect, or ingest a Bailian Batch shadow backfill",
+    )
+    p_family_batch.add_argument("action", choices=("submit", "status", "ingest"))
+    p_family_batch.add_argument("--job-id", default=None)
+    p_family_batch.add_argument("--limit", type=int, default=None)
+    p_family_batch.add_argument(
+        "--keep-remote-files",
+        action="store_true",
+        help="Keep the created Bailian input/output files after successful ingest",
+    )
+
+    p_family_gold = sub.add_parser(
+        "method-family-gold-export",
+        help="Export a deterministic stratified CSV for human family labels",
+    )
+    p_family_gold.add_argument("--size", type=int, default=400)
+    p_family_gold.add_argument("--output", "-o", default=None)
+
+    p_family_gold_validate = sub.add_parser(
+        "method-family-gold-validate",
+        help="Validate and preview the immutable Gold normalization/split",
+    )
+    p_family_gold_validate.add_argument("--input", required=True)
+    p_family_gold_validate.add_argument("--expected-sha256", default=None)
+    p_family_gold_validate.add_argument("--expected-rows", type=int, default=400)
+
+    p_family_gold_import = sub.add_parser(
+        "method-family-gold-import",
+        help="Idempotently import a validated Gold CSV and deterministic split",
+    )
+    p_family_gold_import.add_argument("--input", required=True)
+    p_family_gold_import.add_argument("--reviewer", required=True)
+    p_family_gold_import.add_argument("--expected-sha256", default=None)
+    p_family_gold_import.add_argument("--expected-rows", type=int, default=400)
+
+    p_family_calibrate = sub.add_parser(
+        "method-family-calibrate",
+        help="Create an immutable offline embedding threshold report",
+    )
+    p_family_calibrate.add_argument("--gold-set-id", required=True)
+    p_family_calibrate.add_argument("--output", "-o", default=None)
+
+    p_family_rules = sub.add_parser(
+        "method-family-rules-evaluate",
+        help="Evaluate strict name rules on Gold calibration/holdout and freeze the report",
+    )
+    p_family_rules.add_argument("--gold-set-id", required=True)
+    p_family_rules.add_argument("--output", "-o", default=None)
+
+    p_family_preview = sub.add_parser(
+        "method-family-policy-preview",
+        help="Preview Gold > strict rule > calibrated embedding coverage without accepting rows",
+    )
+    p_family_preview.add_argument("--gold-set-id", required=True)
+    p_family_preview.add_argument("--calibration-id", required=True)
+    p_family_preview.add_argument("--ruleset-id", required=True)
+    p_family_preview.add_argument("--output", "-o", default=None)
+
+    p_family_queue = sub.add_parser(
+        "method-family-review-queue",
+        help="Export a greedy manual-label queue that maximizes uncovered paper coverage",
+    )
+    p_family_queue.add_argument("--gold-set-id", required=True)
+    p_family_queue.add_argument("--calibration-id", required=True)
+    p_family_queue.add_argument("--ruleset-id", required=True)
+    p_family_queue.add_argument("--target-paper-coverage", type=float, default=0.80)
+    p_family_queue.add_argument("--max-rows", type=int, default=2000)
+    p_family_queue.add_argument("--output", "-o", default=None)
+    p_family_queue.add_argument("--report-output", default=None)
+
+    p_family_extension = sub.add_parser(
+        "method-family-gold-extension-import",
+        help="Validate and immutably import an annotated review-queue rank range",
+    )
+    p_family_extension.add_argument("--input", required=True)
+    p_family_extension.add_argument("--queue-id", required=True)
+    p_family_extension.add_argument("--reviewer", required=True)
+    p_family_extension.add_argument("--rank-start", type=int, default=1)
+    p_family_extension.add_argument("--rank-end", type=int, required=True)
+    p_family_extension.add_argument("--expected-sha256", default=None)
+    p_family_extension.add_argument("--output", "-o", default=None)
+
+    p_family_blind_export = sub.add_parser(
+        "method-family-blind-export",
+        help="Freeze an independent stratified blind set without visible model suggestions",
+    )
+    p_family_blind_export.add_argument("--gold-set-id", required=True)
+    p_family_blind_export.add_argument("--size", type=int, default=200)
+    p_family_blind_export.add_argument("--generation", type=int, default=1)
+    p_family_blind_export.add_argument("--output", "-o", default=None)
+
+    p_family_blind_import = sub.add_parser(
+        "method-family-blind-import",
+        help="Validate and freeze a complete independent blind-label submission",
+    )
+    p_family_blind_import.add_argument("--input", required=True)
+    p_family_blind_import.add_argument("--blind-set-id", required=True)
+    p_family_blind_import.add_argument("--reviewer", required=True)
+    p_family_blind_import.add_argument("--expected-sha256", default=None)
+    p_family_blind_import.add_argument("--output", "-o", default=None)
+
+    p_family_blind_promote = sub.add_parser(
+        "method-family-blind-promote",
+        help="Retire a completed blind evaluation into future training data",
+    )
+    p_family_blind_promote.add_argument("--evaluation-id", required=True)
+    p_family_blind_promote.add_argument("--promoted-by", required=True)
+    p_family_blind_promote.add_argument("--output", "-o", default=None)
+
+    p_family_model_train = sub.add_parser(
+        "method-family-model-train",
+        help="Train a deterministic local supervised classifier from Gold and extensions",
+    )
+    p_family_model_train.add_argument("--gold-set-id", required=True)
+    p_family_model_train.add_argument("--ruleset-id", required=True)
+    p_family_model_train.add_argument("--output", "-o", default=None)
+
+    p_family_model_preview = sub.add_parser(
+        "method-family-model-preview",
+        help="Read-only production coverage preview for a trained model",
+    )
+    p_family_model_preview.add_argument("--model-id", required=True)
+
+    p_family_blind_evaluate = sub.add_parser(
+        "method-family-blind-evaluate",
+        help="Evaluate a frozen model on an imported independent blind submission",
+    )
+    p_family_blind_evaluate.add_argument("--model-id", required=True)
+    p_family_blind_evaluate.add_argument("--submission-id", required=True)
+    p_family_blind_evaluate.add_argument("--output", "-o", default=None)
+
+    p_family_release_build = sub.add_parser(
+        "method-family-release-build",
+        help="Build an immutable release after the blind gate has passed",
+    )
+    p_family_release_build.add_argument("--model-id", required=True)
+    p_family_release_build.add_argument("--evaluation-id", required=True)
+    p_family_release_build.add_argument(
+        "--manual-override",
+        action="store_true",
+        help="Allow an explicitly approved release when the blind gate is waived",
+    )
+    p_family_release_build.add_argument("--approved-by", default=None)
+    p_family_release_build.add_argument("--approval-reason", default=None)
+    p_family_release_build.add_argument(
+        "--minimum-paper-coverage", type=float, default=0.80
+    )
+    p_family_release_build.add_argument("--output", "-o", default=None)
+
+    p_family_release_activate = sub.add_parser(
+        "method-family-release-activate",
+        help="Activate a validated immutable Method-family release",
+    )
+    p_family_release_activate.add_argument("--release-id", required=True)
+    p_family_release_activate.add_argument("--activated-by", required=True)
+
     p_fetch = sub.add_parser("fetch", help="Fetch PubMed metadata")
     p_fetch.add_argument("--no-resume", action="store_true")
     p_fetch.add_argument(
@@ -741,6 +1461,11 @@ def main() -> None:
     p_debate.add_argument("--output", "-o", default=None)
     p_debate.add_argument("--verbose", "-v", action="store_true")
     p_debate.add_argument(
+        "--resume-session",
+        default=None,
+        help="Resume an incomplete debate from its persisted session checkpoint",
+    )
+    p_debate.add_argument(
         "--no-ops-memory",
         action="store_true",
         help="Do not inject ops memory into debate prompts",
@@ -880,6 +1605,27 @@ def main() -> None:
 
     commands = {
         "init": cmd_init,
+        "embedding-preflight": cmd_embedding_preflight,
+        "embedding-plan": cmd_embedding_plan,
+        "method-family-init": cmd_method_family_init,
+        "method-family-shadow": cmd_method_family_shadow,
+        "method-family-batch": cmd_method_family_batch,
+        "method-family-gold-export": cmd_method_family_gold_export,
+        "method-family-gold-validate": cmd_method_family_gold_validate,
+        "method-family-gold-import": cmd_method_family_gold_import,
+        "method-family-calibrate": cmd_method_family_calibrate,
+        "method-family-rules-evaluate": cmd_method_family_rules_evaluate,
+        "method-family-policy-preview": cmd_method_family_policy_preview,
+        "method-family-review-queue": cmd_method_family_review_queue,
+        "method-family-gold-extension-import": cmd_method_family_gold_extension_import,
+        "method-family-blind-export": cmd_method_family_blind_export,
+        "method-family-blind-import": cmd_method_family_blind_import,
+        "method-family-blind-promote": cmd_method_family_blind_promote,
+        "method-family-model-train": cmd_method_family_model_train,
+        "method-family-model-preview": cmd_method_family_model_preview,
+        "method-family-blind-evaluate": cmd_method_family_blind_evaluate,
+        "method-family-release-build": cmd_method_family_release_build,
+        "method-family-release-activate": cmd_method_family_release_activate,
         "fetch": cmd_fetch,
         "enrich-s2": cmd_enrich_s2,
         "import-if": cmd_import_if,

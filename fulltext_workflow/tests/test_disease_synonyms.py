@@ -13,6 +13,7 @@ from analysis.disease_synonyms import (  # noqa: E402
     concept_match_sql_clause,
     expand_focus_terms,
     list_fangxin_disease_codes,
+    resolve_disease_canonical,
     resolve_disease_concept,
 )
 
@@ -44,6 +45,15 @@ def test_resolve_npc_and_cancer_carcinoma():
 
 def test_unknown_focus_returns_none():
     assert resolve_disease_concept("totally unknown xyzzy disease") is None
+
+
+def test_persistence_canonicalization_is_exact_only():
+    assert resolve_disease_canonical("breast cancer") == "breast carcinoma"
+    assert resolve_disease_canonical("pulmonary adenocarcinoma") == "lung adenocarcinoma"
+    assert resolve_disease_canonical("HER2-positive breast cancer") is None
+    assert resolve_disease_canonical("breast cancer brain metastasis") is None
+    assert resolve_disease_canonical("NSCLC") is None
+    assert resolve_disease_canonical("Crohn's disease") is None
 
 
 def test_polyp_sql_uses_english_not_bare_polyp():
