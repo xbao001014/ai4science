@@ -2153,6 +2153,31 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "局限",
     ])
     with tab_m:
+        st.subheader("本周新方法")
+        st.caption(
+            "成熟度 = **nascent**（全库 APPLIES_METHOD ≤ 2 篇，且非成熟黑名单）。"
+            "固定最少近窗篇数 = **1**（与侧栏无关）；不做热度 Top-N 截断。"
+        )
+        new_methods = payload.get("new_methods") or []
+        if new_methods:
+            cols = [
+                "name",
+                "method_role",
+                "corpus_paper_cnt",
+                "recent_cnt",
+                "prior_cnt",
+                "velocity",
+                "emerging_score",
+                "method_maturity",
+            ]
+            df_new = pd.DataFrame(new_methods)
+            ordered = [c for c in cols if c in df_new.columns]
+            extra = [c for c in df_new.columns if c not in ordered]
+            safe_table(df_new[ordered + extra])
+        else:
+            st.info("本窗暂无 nascent 新方法（也可能是近窗论文尚未抽取）。")
+
+        st.subheader("新苗头")
         st.caption(
             f"新苗头；已过滤「成熟常用」方法。已按方法同义词软归并。"
             f"当前最少近窗篇数 = **{min_recent}**。按方法角色分区展示。"

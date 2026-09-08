@@ -38,6 +38,9 @@ _ELIGIBLE_PRECISION = ("day", "month")
 _BRIDGE_BONUS_SAME = 2.0
 _BRIDGE_BONUS_CROSS = 1.0
 
+# Uncapped pool for new_methods: emerging_score pre-slice must not drop nascent rows.
+_NEW_METHODS_POOL_UNCAPPED = 1_000_000
+
 
 def _q(sql: str, params: tuple = ()) -> list[dict]:
     with get_conn() as conn:
@@ -269,7 +272,7 @@ def compute_new_methods(
         window_days=window,
         prior_days=prior,
         min_recent=1,
-        limit=config.HOTSPOT_NEW_METHODS_MAX,
+        limit=_NEW_METHODS_POOL_UNCAPPED,
     )
     annotate_method_rows(rows, counts=counts)
     if role_by_name is not None:
@@ -284,7 +287,7 @@ def compute_new_methods(
             str(row.get("name") or ""),
         )
     )
-    return nascent
+    return nascent[: config.HOTSPOT_NEW_METHODS_MAX]
 
 
 def compute_emerging_entities(

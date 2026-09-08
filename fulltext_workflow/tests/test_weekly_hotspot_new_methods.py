@@ -135,3 +135,44 @@ def test_report_includes_new_methods_section(monkeypatch):
     )
     assert "## New Methods This Window (本周新方法)" in report
     assert "report-niche-method" in report
+
+
+def test_new_methods_max_applied_after_nascent_sort_not_emerging_pool(monkeypatch):
+    """Cap must not pre-slice by emerging_score (drops lowest-count nascent)."""
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "HOTSPOT_NEW_METHODS_MAX", 1)
+
+    # High emerging_score heat in pool; excluded from new_methods (established).
+    p_llm1 = _paper("llm-1", 2)
+    _edge("llm-1", p_llm1, "large language model")
+    p_llm2 = _paper("llm-2", 3)
+    _edge("llm-2", p_llm2, "large language model")
+
+    # Nascent corpus=2 — higher emerging_score than single-paper nascent.
+    p_c2a = _paper("c2-a", 2)
+    _edge("c2-a", p_c2a, "two-paper-nascent")
+    p_c2b = _paper("c2-b", 3)
+    _edge("c2-b", p_c2b, "two-paper-nascent")
+
+    # Nascent corpus=1 — should win after nascent sort + cap.
+    p_c1 = _paper("c1", 2)
+    _edge("c1", p_c1, "one-paper-nascent")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14, min_recent=1)
+    assert len(payload["new_methods"]) == 1
+    row = payload["new_methods"][0]
+    assert row["name"] == "one-paper-nascent"
+    assert int(row["corpus_paper_cnt"]) == 1
+
+
+def test_report_empty_new_methods_shows_none(monkeypatch):
+    _tmp_db(monkeypatch)
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14, min_recent=1)
+    payload["new_methods"] = []
+    report = generate_hotspot_report(
+        payload,
+        wow={"has_baseline": False, "previous_week_id": "2026-W01", "boards": {}},
+    )
+    section = report.split("## New Methods This Window (本周新方法)")[1]
+    emerging = section.split("## Emerging Methods (新苗头)")[0]
+    assert "None" in emerging
