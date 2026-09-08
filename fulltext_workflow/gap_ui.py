@@ -2157,6 +2157,7 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.caption(
             "成熟度 = **nascent**（全库 APPLIES_METHOD ≤ 2 篇，且非成熟黑名单）。"
             "固定最少近窗篇数 = **1**（与侧栏无关）；不做热度 Top-N 截断。"
+            "**top_pmids** = 近窗来源文献 PMID（最多 3 个，按引用排序）。"
         )
         new_methods = payload.get("new_methods") or []
         if new_methods:
@@ -2168,9 +2169,17 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
                 "prior_cnt",
                 "velocity",
                 "emerging_score",
+                "top_pmids",
                 "method_maturity",
             ]
             df_new = pd.DataFrame(new_methods)
+            if "top_pmids" in df_new.columns:
+                df_new = df_new.copy()
+                df_new["top_pmids"] = df_new["top_pmids"].map(
+                    lambda v: ", ".join(str(x) for x in v)
+                    if isinstance(v, (list, tuple))
+                    else v
+                )
             ordered = [c for c in cols if c in df_new.columns]
             extra = [c for c in df_new.columns if c not in ordered]
             safe_table(df_new[ordered + extra])

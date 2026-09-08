@@ -89,6 +89,24 @@ def test_nascent_in_new_methods_established_and_emerging_out(monkeypatch):
     assert int(row["recent_cnt"]) == 1
 
 
+def test_new_methods_include_source_pmids(monkeypatch):
+    _tmp_db(monkeypatch)
+    _edge("pmid-src-42", _paper("pmid-src-42", 2), "pmid-tagged-niche-method")
+
+    payload = compute_weekly_hotspots(window_days=14, prior_days=14, min_recent=1)
+    row = next(r for r in payload["new_methods"] if r["name"] == "pmid-tagged-niche-method")
+    assert "pmid-src-42" in (row.get("top_pmids") or [])
+
+    report = generate_hotspot_report(
+        payload,
+        wow={"has_baseline": False, "previous_week_id": "2026-W01", "boards": {}},
+    )
+    section = report.split("## New Methods This Window (本周新方法)")[1]
+    emerging = section.split("## Emerging Methods (新苗头)")[0]
+    assert "top_pmids" in emerging
+    assert "pmid-src-42" in emerging
+
+
 def test_new_methods_ignores_sidebar_min_recent_and_top_n(monkeypatch):
     _tmp_db(monkeypatch)
     # Fill heat board with two count=2 established-ish high scorers

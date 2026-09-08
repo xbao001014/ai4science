@@ -243,6 +243,11 @@ def _compute_emerging_method_entities(
         if not metrics:
             continue
         aliases = sorted(bucket["aliases"])
+        pmid_by_cite = sorted(
+            recent_pmids,
+            key=lambda pmid: float(bucket["metrics"].get(pmid, (0.0, 0.0, 0.0))[0]),
+            reverse=True,
+        )
         rows.append({
             "name": name,
             "type": "Method",
@@ -253,6 +258,7 @@ def _compute_emerging_method_entities(
             "avg_if": round(sum(m[2] for m in metrics) / len(metrics), 2),
             "alias_count": len(aliases),
             "aliases": ", ".join(aliases[:5]),
+            "top_pmids": pmid_by_cite[:3],
         })
     return _enrich_entity_rows(rows)[:limit]
 
@@ -1345,6 +1351,7 @@ def generate_hotspot_report(
                     "prior_cnt",
                     "velocity",
                     "emerging_score",
+                    "top_pmids",
                 ],
             ),
         ])
