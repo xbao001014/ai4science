@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import config
+from analysis.disease_synonyms import resolve_disease_concept
 from analysis.gap_tools import tool_method_disease_combo_gap, _combo_support_papers
 from analysis.impact_scoring import aggregate_paper_impact, total_priority_score
 from feasibility.client import PathologyDataClient
@@ -221,26 +222,69 @@ def tool_data_gap_analysis(
     return result
 
 
+def _normalize_catalog_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _match_catalog_disease_id(
+    disease_name: str,
+    catalog_diseases: list[dict[str, Any]],
+) -> str | None:
+    """Map a KG disease name to a non-empty Fangxin catalog entry.
+
+    Prefer the curated disease concept code because the live catalog may expose
+    only Chinese names. Fall back to non-empty catalog names; an empty name must
+    never participate in substring matching (``"" in text`` is always true).
+    """
+    target = _normalize_catalog_name(disease_name)
+    if not target:
+        return None
+
+    catalog_ids = {
+        str(item.get("disease_id") or "").strip()
+        for item in catalog_diseases
+        if str(item.get("disease_id") or "").strip()
+    }
+    concept = resolve_disease_concept(disease_name)
+    if (
+        concept is not None
+        and concept.fangxin_disease_code
+        and concept.fangxin_disease_code in catalog_ids
+    ):
+        return concept.fangxin_disease_code
+
+    aliases: list[tuple[str, str]] = []
+    for item in catalog_diseases:
+        disease_id = str(item.get("disease_id") or "").strip()
+        if not disease_id:
+            continue
+        for raw_name in (item.get("name_en"), item.get("name_zh")):
+            name = _normalize_catalog_name(raw_name)
+            if name:
+                aliases.append((name, disease_id))
+
+    for name, disease_id in aliases:
+        if name == target:
+            return disease_id
+    for name, disease_id in sorted(aliases, key=lambda item: len(item[0]), reverse=True):
+        if name in target or target in name:
+            return disease_id
+    return None
+
+
 def tool_literature_data_cross_matrix(focus: str | None = None) -> dict:
     combo = tool_method_disease_combo_gap(focus=focus)
     catalog = _client.get_diseases(min_cases=50)
+    catalog_diseases = list(catalog.get("diseases") or [])
     disease_cases = {
         d["disease_id"]: d["total_cases"]
-        for d in catalog["diseases"]
+        for d in catalog_diseases
     }
-    name_to_id: dict[str, str] = {}
-    for d in catalog["diseases"]:
-        name_to_id[d["name_en"].lower()] = d["disease_id"]
-        name_to_id[d["name_zh"]] = d["disease_id"]
 
     rows: list[dict] = []
     for gap in combo.get("gaps", [])[:30]:
-        disease_name = gap.get("disease", "")
-        disease_id = None
-        for name, did in name_to_id.items():
-            if name.lower() in disease_name.lower() or disease_name.lower() in name.lower():
-                disease_id = did
-                break
+        disease_name = str(gap.get("disease") or "").strip()
+        disease_id = _match_catalog_disease_id(disease_name, catalog_diseases)
         cohort_size = disease_cases.get(disease_id or "", 0)
         lit_gap = gap.get("gap", "")
         data_support = "high" if cohort_size >= 500 else "medium" if cohort_size >= 200 else "low"

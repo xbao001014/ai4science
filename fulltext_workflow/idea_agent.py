@@ -30,6 +30,11 @@ from analysis.focus_filter import search_papers_for_topic, topic_keyword_pmid_in
 from analysis.idea_session_guards import IdeaSessionGuards
 from analysis.idea_memory import checkpoint_idea_phase, create_idea_memory
 from analysis.evidence_contract import EVIDENCE_POLICY, compact_json, proposal_verdict
+from analysis.candidate_evidence_packet import (
+    SCHEMA_VERSION as EVIDENCE_PACKET_SCHEMA_VERSION,
+    coerce_candidate_evidence_packet,
+    packet_support_pmids,
+)
 from analysis.difficulty_scoring import (
     DIFFICULTY_LEVELS,
     assess_implementation_difficulty,
@@ -691,6 +696,11 @@ def stream_idea_agent(
     debate_session_id: str | None = None,
 ) -> Generator[dict, None, None]:
     target_difficulty = _normalize_target_difficulty(target_difficulty)
+    evidence_packet = coerce_candidate_evidence_packet(gap_text, gap_data)
+    packet_candidate = evidence_packet["candidate"]
+    packet_handoff = evidence_packet["handoff"]
+    anchored_gap = packet_candidate.get("section_md") or gap_text
+    packet_json = compact_json(evidence_packet, max_chars=30000)
     idea_memory = create_idea_memory(
         gap_text=gap_text,
         max_rounds=max_rounds,
@@ -700,12 +710,19 @@ def stream_idea_agent(
         "type": "start",
         "idea_session_id": idea_memory.session_id,
         "gap_text": gap_text,
+        "candidate_id": packet_candidate.get("candidate_id"),
+        "evidence_packet_schema_version": EVIDENCE_PACKET_SCHEMA_VERSION,
+        "candidate_evidence_packet": evidence_packet,
         "max_rounds": max_rounds,
         "target_difficulty": target_difficulty,
     }
 
     gap_context = ""
-    disease_id, disease_reason = _gap_disease_hint(gap_text)
+    explicit_disease_id = packet_handoff.get("disease_id")
+    if isinstance(explicit_disease_id, str) and explicit_disease_id.strip():
+        disease_id, disease_reason = explicit_disease_id.strip(), "evidence packet handoff"
+    else:
+        disease_id, disease_reason = _gap_disease_hint(anchored_gap)
     if disease_id:
         gap_context = (
             f"\n\nFangxin disease mapping hint: disease_id={disease_id} ({disease_reason})"
@@ -715,11 +732,14 @@ def stream_idea_agent(
             "\n\nFangxin disease_id is not auto-mapped yet. "
             f"({disease_reason}) Resolve a disease_id matching this gap before feasibility assessment."
         )
-    if gap_data:
-        gap_context += (
-            "\n\nKG analysis supporting data:\n"
-            f"```json\n{json.dumps(gap_data, ensure_ascii=False, indent=2)[:2000]}\n```"
-        )
+    gap_context += (
+        "\n\nCandidate-scoped debate evidence packet (versioned data contract):\n"
+        f"```json\n{packet_json}\n```\n"
+        "Use only evidence attached to this candidate. Cite literature claims as "
+        "[PMID: <source_pmid>; Evidence: <evidence_id>]. A context_located=false "
+        "record is an uncertainty signal, not full-text support. Keep supports, "
+        "refutes, and context distinct; never infer support from an unrelated record."
+    )
 
     gen_tools_raw, gen_schemas = build_idea_role_tool_bundle("generator")
     crit_tools_raw, crit_schemas = build_idea_role_tool_bundle("critic")
@@ -737,8 +757,8 @@ def stream_idea_agent(
     completed_rounds = 0
     feasibility_score: float | None = None
     available_cohort_size: int | None = None
-    if gap_data:
-        assess = gap_data.get("feasibility_assessment") or {}
+    if packet_handoff:
+        assess = packet_handoff.get("feasibility_assessment") or {}
         raw = assess.get("feasibility_score")
         if raw is not None and str(raw).strip() != "":
             try:
@@ -776,19 +796,19 @@ def stream_idea_agent(
 
     def _assess_difficulty() -> dict[str, Any]:
         papers: list[dict[str, Any]] = []
-        if gap_data:
-            linked_papers = gap_data.get("papers")
+        if packet_handoff:
+            linked_papers = packet_handoff.get("linked_papers")
             if isinstance(linked_papers, list):
                 papers = [row for row in linked_papers if isinstance(row, dict)]
             if not papers:
-                support_pmids = gap_data.get("support_pmids")
+                support_pmids = packet_support_pmids(evidence_packet)
                 if isinstance(support_pmids, list) and support_pmids:
                     papers = load_supporting_papers_by_pmids(support_pmids)
         if not papers:
             papers = load_supporting_papers_for_keyword(gap_text)
         public_datasets: list[str] = []
-        if gap_data:
-            pda = gap_data.get("public_dataset_assessment") or {}
+        if packet_handoff:
+            pda = packet_handoff.get("public_dataset_assessment") or {}
             if isinstance(pda, dict):
                 public_datasets = [
                     str(r["dataset"])
@@ -813,7 +833,7 @@ def stream_idea_agent(
                 "Draft a complete English pathology AI / digital pathology research proposal (v1) "
                 "for the following gap:\n\n"
                 f"{anchor_block}\n\n"
-                f"**Research gap**:\n{gap_text}\n{gap_context}\n\n"
+                f"**Selected research-gap section**:\n{anchored_gap}\n{gap_context}\n\n"
                 f"{_difficulty_steering_text(target_difficulty)}\n\n"
                 "Follow the Generator tool budget (≤7): recent papers → methods → datasets → "
                 "metrics → improvement suggestions → public_dataset_assess "
@@ -828,7 +848,9 @@ def stream_idea_agent(
             )
             gen_user = (
                 f"{anchor_block}\n\n"
-                f"**Anchored research gap (do not change topic)**:\n{gap_text}\n\n"
+                f"**Anchored research gap (do not change topic)**:\n{anchored_gap}\n\n"
+                f"**Candidate evidence packet (same immutable input)**:\n"
+                f"```json\n{packet_json}\n```\n\n"
                 f"**Previous draft (data, preserve validated design)**:\n{current_draft}\n\n"
                 f"**Frozen feasibility spec**:\n{compact_json(session_guards.baseline or {})}\n\n"
                 f"Critic feedback (v{round_num - 1}):\n"
@@ -906,6 +928,8 @@ def stream_idea_agent(
                 "difficulty_summary": difficulty["summary_line"],
                 "q_coverage_low": difficulty["q_coverage_low"],
                 "difficulty_breakdown": difficulty["breakdown"],
+                "candidate_id": packet_candidate.get("candidate_id"),
+                "evidence_packet_schema_version": EVIDENCE_PACKET_SCHEMA_VERSION,
                 "aborted": True,
             }
             return
@@ -935,9 +959,12 @@ def stream_idea_agent(
         critic_user = (
             f"{anchor_block}\n\n"
             f"Review the following research proposal (v{round_num}) in English:\n\n"
-            f"**Original gap (must not drift)**:\n{gap_text}\n\n"
+            f"**Original selected gap (must not drift)**:\n{anchored_gap}\n\n"
+            f"**Candidate-scoped evidence packet**:\n```json\n{packet_json}\n```\n\n"
             f"**Proposal**:\n{current_draft}\n\n"
             f"{feas_hint}"
+            "Audit every PMID/evidence citation against the packet; flag omitted "
+            "counter-evidence, cross-candidate evidence, or unlocated context. "
             "Follow the Critic tool budget (≤5): feasibility_assess → public_dataset_assess → "
             "metrics_for_topic (and execute_kg_sql / text_disease_matches only if needed), "
             "then output the JSON review (English field values)."
@@ -1003,8 +1030,10 @@ def stream_idea_agent(
         verdict = proposal_verdict(last_feedback, round_evidence, threshold=accept_score,
             marginal=config.FEASIBILITY_SCORE_MARGINAL, relaxed=critic_relaxed or session_guards.relaxed_seen)
         final_score = verdict["final_score"]
-        feasibility_score = verdict["feasibility_score"]
-        available_cohort_size = verdict["available_cohort_size"]
+        if verdict["feasibility_score"] is not None:
+            feasibility_score = verdict["feasibility_score"]
+        if verdict["available_cohort_size"] is not None:
+            available_cohort_size = verdict["available_cohort_size"]
         accept = verdict["accepted"]
         # Model reviews are interpretation. Only successful current-round tools set facts.
         last_feedback["overall_score"] = final_score
@@ -1082,6 +1111,8 @@ def stream_idea_agent(
         "difficulty_summary": difficulty["summary_line"],
         "q_coverage_low": difficulty["q_coverage_low"],
         "difficulty_breakdown": difficulty["breakdown"],
+        "candidate_id": packet_candidate.get("candidate_id"),
+        "evidence_packet_schema_version": EVIDENCE_PACKET_SCHEMA_VERSION,
     }
 
 

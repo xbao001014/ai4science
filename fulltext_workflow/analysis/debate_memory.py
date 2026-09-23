@@ -69,6 +69,7 @@ class DebateSessionState:
     evidence_ledger: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     handoffs: list[dict[str, Any]] = field(default_factory=list)
     rolling_summary: str = ""
+    candidate_evidence_packets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

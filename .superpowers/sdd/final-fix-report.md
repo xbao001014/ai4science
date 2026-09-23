@@ -1,24 +1,39 @@
-# Final-review fixes — WSI assume annotations disclosure
+# Final Fix Report — weekly new_methods (C1)
 
-**Status:** DONE
+**Date:** 2026-09-07  
+**Status:** PASS
 
-## Summary
+## C1 (Critical) — pre-slice dropped nascent methods
 
-Fixed final-review disclosure gaps without touching `assessment.py` scoring. Observed annotations (raw>0) were mislabeled as full「接口实测 / API-verified」; UI, prompts, and PIPELINE now state that under the temporary flag all `required_annotations` score at `has_wsi`, raw_observed may be sparse, and disclosure is mandatory.
+**Root cause:** `compute_new_methods` passed `HOTSPOT_NEW_METHODS_MAX` into `compute_emerging_entities`, which sorts by `emerging_score` DESC and slices before the nascent maturity filter. At wide windows or low caps, high-heat non-nascent methods consumed the pool and lowest-corpus nascent rows never reached the board.
 
-## Files changed
+**Fix:** Use `_NEW_METHODS_POOL_UNCAPPED = 1_000_000` for the emerging-entity fetch; apply `nascent[: HOTSPOT_NEW_METHODS_MAX]` only after nascent filter + corpus-paper sort.
 
-- `fulltext_workflow/gap_ui.py` — expander labels + caption
-- `fulltext_workflow/idea_agent.py` — Generator §9 + Critic rules
-- `fulltext_workflow/PIPELINE.md` — 临时策略 paragraph
+## Minor
+
+- Added `st.subheader("新苗头")` above the 新苗头 caption in `gap_ui.py` tab_m.
+- Added `test_report_empty_new_methods_shows_none` for report "None" placeholder.
 
 ## Tests
 
+```powershell
+cd fulltext_workflow
+python -m pytest tests/test_weekly_hotspot_new_methods.py tests/test_weekly_hotspot_maturity.py tests/test_weekly_hotspot_method_role.py -v
 ```
-pytest tests/test_feasibility_sparse_annotation_floor.py tests/test_feasibility.py -v
-24 passed in 2.68s
-```
+
+**Result:** 15 passed in 11.28s
+
+**TDD (C1 regression):**
+
+- RED (buggy code): `test_new_methods_max_applied_after_nascent_sort_not_emerging_pool` → `assert 0 == 1` (LLM filled limit=1 slot; nascent filter yielded `[]`).
+- GREEN (fix applied): same test PASSED; retained row is `one-paper-nascent` with `corpus_paper_cnt=1`.
+
+## Files changed
+
+- `fulltext_workflow/analysis/weekly_hotspot.py`
+- `fulltext_workflow/tests/test_weekly_hotspot_new_methods.py`
+- `fulltext_workflow/gap_ui.py`
 
 ## Concerns
 
-None. No commit per instructions.
+- Uncapped pool (1M) is a sentinel, not unbounded SQL; performance unchanged vs prior 500 cap on typical corpora. Very large method sets could still benefit from a DB-side nascent query later (out of scope).

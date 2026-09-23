@@ -162,3 +162,93 @@ No candidate identifier here.
     assert "Missing identity" not in filtered
     assert enforcement["removed_candidate_ids"] == ["G02"]
     assert validate_moderator_handoff(filtered, review)["status"] == "handoff_checked"
+
+
+def test_moderator_handoff_retains_labeled_weak_candidates_when_none_verified():
+    from analysis.research_quality import enforce_moderator_handoff, validate_moderator_handoff
+
+    review = {
+        "verified_gaps": [],
+        "false_gaps": [{"candidate_id": "G03"}],
+        "weak_evidence_gaps": [
+            {"candidate_id": "G01"},
+            {"candidate_id": "G02"},
+        ],
+    }
+    report = """## Research gap analysis
+### Research gap 1: Prospective CRC validation
+**Candidate ID**: G01
+Evidence remains incomplete.
+### Research gap 2: CRC multimodal bridge
+**Candidate ID**: G02
+Evidence remains incomplete.
+### Research gap 3: Refuted direction
+**Candidate ID**: G03
+This direction is contradicted.
+
+## Priority ranking
+| Rank | Candidate ID | Direction |
+|---|---|---|
+| 1 | G01 | Validation |
+| 2 | G02 | Multimodal |
+| 3 | G03 | Refuted |
+"""
+
+    filtered, enforcement = enforce_moderator_handoff(report, review)
+
+    assert "Candidate ID**: G01" in filtered
+    assert "Candidate ID**: G02" in filtered
+    assert "Candidate ID**: G03" not in filtered
+    assert filtered.count("**Evidence status**: needs_verification") == 2
+    assert "No candidate met the verified-evidence threshold" in filtered
+    assert "| 3 | G03 |" not in filtered
+    assert enforcement["weak_fallback_enabled"] is True
+    assert enforcement["retained_weak_candidate_ids"] == ["G01", "G02"]
+    assert enforcement["removed_candidate_ids"] == ["G03"]
+    audit = validate_moderator_handoff(filtered, review)
+    assert audit["status"] == "handoff_checked"
+    assert audit["rendered_weak_candidate_ids"] == ["G01", "G02"]
+
+
+def test_moderator_handoff_keeps_weak_candidates_alongside_verified_gaps():
+    from analysis.research_quality import enforce_moderator_handoff, validate_moderator_handoff
+    from pipeline_utils import parse_gap_sections
+
+    review = {
+        "verified_gaps": [{"candidate_id": "G01"}],
+        "weak_evidence_gaps": [{"candidate_id": "G02"}],
+        "false_gaps": [{"candidate_id": "G03"}],
+    }
+    report = """## Research gap analysis
+### Research gap 1: Verified CRC direction
+**Candidate ID**: G01
+### Research gap 2: Exploratory CRC direction
+**Candidate ID**: G02
+### Research gap 3: Refuted CRC direction
+**Candidate ID**: G03
+"""
+
+    filtered, enforcement = enforce_moderator_handoff(
+        report, review, target_count=3
+    )
+
+    assert "Candidate ID**: G01" in filtered
+    assert "Candidate ID**: G02" in filtered
+    assert "### Excluded candidate 3: Refuted CRC direction" in filtered
+    assert "Candidate ID**: G03" in filtered
+    assert "**Recommendation status**: not_recommended" in filtered
+    assert [title for title, _ in parse_gap_sections(filtered)] == [
+        "Verified CRC direction",
+        "Exploratory CRC direction",
+    ]
+    assert filtered.count("**Evidence status**: needs_verification") == 1
+    assert "includes Reviewer-designated weak-evidence candidates" in filtered
+    assert enforcement["weak_fallback_enabled"] is False
+    assert enforcement["weak_candidates_enabled"] is True
+    assert enforcement["retained_weak_candidate_ids"] == ["G02"]
+    assert enforcement["displayed_candidate_count"] == 3
+    assert enforcement["displayed_rejected_candidate_ids"] == ["G03"]
+    assert enforcement["unfilled_slots"] == 0
+    audit = validate_moderator_handoff(filtered, review)
+    assert audit["status"] == "handoff_checked"
+    assert audit["rendered_weak_candidate_ids"] == ["G02"]

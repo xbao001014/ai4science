@@ -109,7 +109,11 @@ from analysis.feasibility_tools import (  # noqa: E402
 )
 from feasibility.disease_mapper import map_gap_to_disease  # noqa: E402
 from feasibility.landscape import bootstrap_landscape  # noqa: E402
-from pipeline_utils import parse_gap_titles  # noqa: E402
+from pipeline_utils import parse_gap_sections, parse_gap_titles  # noqa: E402
+from analysis.candidate_evidence_packet import (  # noqa: E402
+    coerce_candidate_evidence_packet,
+    find_candidate_evidence_packet,
+)
 from debate_labels import (  # noqa: E402
     DEBATE_FLOW_HELP,
     DEBATE_ROLE_CARDS,
@@ -127,7 +131,6 @@ from utils.tool_result_summary import (  # noqa: E402
 )
 from utils.proposal_difficulty_ui import (  # noqa: E402
     difficulty_display_target,
-    support_pmids_from_evidence,
 )
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
@@ -2329,6 +2332,7 @@ def main() -> None:
         ("landscape_msg", ""),
         ("hotspot_brief", ""),
         ("evidence_viewer", None),
+        ("candidate_evidence_packets", {}),
     ]:
         if _k not in st.session_state:
             st.session_state[_k] = _v
@@ -2541,10 +2545,17 @@ def main() -> None:
 
     if load_history_button and selected_history_id:
         historical = fetch_debate_session(selected_history_id) or {}
+        try:
+            historical_state = json.loads(historical.get("state_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            historical_state = {}
         st.session_state.update({
             "report": historical.get("final_report") or "",
             "run_focus": historical.get("focus_raw") or "全部",
             "debate_session_id": selected_history_id,
+            "candidate_evidence_packets": historical_state.get(
+                "candidate_evidence_packets"
+            ) or {},
         })
         remember_main_tab(POST_DEBATE_TAB_SLUG)
 
@@ -2570,6 +2581,7 @@ def main() -> None:
                 "run_top_n": effective_top_n, "debate_confidence": 0.0,
                 "debate_session_id": resume_id, "ops_run_id": None,
                 "ops_run_focus_key": "",
+                "candidate_evidence_packets": {},
             })
             live_events: list[dict] = []
             tool_step = 0
@@ -2668,6 +2680,9 @@ def main() -> None:
                         st.session_state["debate_confidence"] = event.get(
                             "confidence", 0.0
                         )
+                        st.session_state["candidate_evidence_packets"] = event.get(
+                            "candidate_evidence_packets"
+                        ) or {}
                         if final_md.strip():
                             # P0: land on deliverable instead of debate-process log.
                             remember_main_tab(POST_DEBATE_TAB_SLUG)
@@ -2907,7 +2922,9 @@ def main() -> None:
         with tab_proposal:
             st.subheader("研究提案生成器")
             report_for_parse = st.session_state.get("report", "")
-            parsed = parse_gap_titles(report_for_parse) if report_for_parse else []
+            parsed_sections = (
+                parse_gap_sections(report_for_parse) if report_for_parse else []
+            )
 
             gap_source = st.radio(
                 "空白来源",
@@ -2918,17 +2935,22 @@ def main() -> None:
                 on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
             )
             if gap_source == "从报告选择":
-                gap_input = (
+                selected_gap_idx = (
                     st.selectbox(
                         "选择空白",
-                        parsed,
+                        options=range(len(parsed_sections)),
+                        format_func=lambda idx: parsed_sections[idx][0],
                         key="gap_sel",
                         on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
                     )
-                    if parsed
-                    else ""
+                    if parsed_sections
+                    else None
                 )
-                if not parsed:
+                if selected_gap_idx is None:
+                    gap_input, selected_section = "", ""
+                else:
+                    gap_input, selected_section = parsed_sections[selected_gap_idx]
+                if not parsed_sections:
                     st.info("请先运行空白辩论以填充空白标题。")
             else:
                 gap_input = st.text_area(
@@ -2937,6 +2959,7 @@ def main() -> None:
                     key="gap_manual",
                     on_change=remember_main_tab_for(_PROPOSAL_TAB_LABEL),
                 )
+                selected_section = str(gap_input or "").strip()
 
             target_difficulty_input = st.selectbox(
                 "目标难度",
@@ -2970,12 +2993,17 @@ def main() -> None:
             )
 
             if gen_btn and gap_input:
-                support_pmids = support_pmids_from_evidence(
-                    extract_evidence(st.session_state.get("events") or [])
-                )
-                proposal_gap_data = (
-                    {"support_pmids": support_pmids} if support_pmids else None
-                )
+                if gap_source == "从报告选择":
+                    proposal_gap_data = find_candidate_evidence_packet(
+                        st.session_state.get("candidate_evidence_packets"),
+                        title=str(gap_input).strip(),
+                        section_md=selected_section,
+                    )
+                else:
+                    proposal_gap_data = coerce_candidate_evidence_packet(
+                        str(gap_input).strip(),
+                        {"section_md": selected_section},
+                    )
                 st.session_state.update({
                     "idea_events": [], "proposal": "",
                     "proposal_gap_text": str(gap_input).strip(),

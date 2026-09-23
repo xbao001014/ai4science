@@ -76,6 +76,7 @@ def test_moderator_prompt_prefers_feasibility_tools():
 def test_stream_gap_debate_agent_uses_matching_role_bundles(monkeypatch):
     bundle_calls = []
     agent_calls = []
+    user_prompts = []
 
     def fake_build_bundle(role):
         bundle_calls.append(role)
@@ -89,16 +90,15 @@ def test_stream_gap_debate_agent_uses_matching_role_bundles(monkeypatch):
 
     def fake_run_tool_agent(*, messages, tools, tool_schemas, role, **_kwargs):
         agent_calls.append((role, list(tools), tool_schemas))
+        user_prompts.append((role, messages[-1]["content"]))
         if role == "skeptic":
             content = '{"overall_confidence": 5.0, "verified_gaps": [], "false_gaps": []}'
         elif role == "moderator":
             moderator_call_count = sum(call[0] == "moderator" for call in agent_calls)
             content = (
-                "```json\n"
-                '{"accept": false, "overall_confidence": 5.0, "revision_priority": "revise"}'
-                "\n```"
+                "## Premature Markdown report"
                 if moderator_call_count == 1
-                else "# Final report"
+                else "## Final report"
             )
         else:
             content = "Optimist proposal"
@@ -112,13 +112,23 @@ def test_stream_gap_debate_agent_uses_matching_role_bundles(monkeypatch):
     monkeypatch.setattr(gap_agent, "_corpus_context", lambda _focus: "corpus")
     monkeypatch.setattr(gap_agent, "resolve_ops_memory_block", lambda *_args: "")
 
-    list(
+    events = list(
         gap_agent.stream_gap_debate_agent(
             focus="test focus",
+            top_n=3,
             max_debate_rounds=2,
             use_ops_memory=False,
         )
     )
+
+    feedback = next(event for event in events if event.get("type") == "debate_feedback")
+    assert feedback["structured_feedback"]["moderator_output_format"] == "markdown_draft"
+    assert "low_review_confidence" in feedback["continuation_reasons"]
+    assert "recommendation_shortfall:0/3" in feedback["continuation_reasons"]
+    assert feedback["structured_feedback"]["requested_replacement_count"] == 3
+    second_optimist_prompt = [text for role, text in user_prompts if role == "optimist"][1]
+    assert "Replacement slots required**: 3" in second_optimist_prompt
+    assert events[-1]["rounds"] == 2
 
     assert bundle_calls == ["optimist", "skeptic", "moderator"]
     expected_round_calls = [

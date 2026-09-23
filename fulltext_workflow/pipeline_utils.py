@@ -10,6 +10,7 @@ def parse_gap_titles(report_text: str) -> list[str]:
     patterns = [
         r"###\s*研究空白\s*\d+[：:]\s*(.+)",
         r"###\s*Research\s+Gap\s*\d+[：:]\s*(.+)",
+        r"###\s*Candidate\s+Gap\s*\d+[：:]\s*(.+)",
         r"###\s*Gap\s*\d+[：:]\s*(.+)",
         r"###\s*研究空白\s*\d+\s*[：:]\s*(.+)",
         r"###\s*候选空白\s*\d+[：:]\s*(.+)",
@@ -29,12 +30,16 @@ def parse_gap_titles(report_text: str) -> list[str]:
 
 def parse_gap_sections(report_text: str) -> list[tuple[str, str]]:
     """Return list of (title, full_section_markdown)."""
-    pattern = r"(###\s*(?:研究空白|Research\s+Gap|Gap|候选空白)\s*\d+[：:]\s*.+?)(?=\n###\s*(?:研究空白|Research\s+Gap|Gap|候选空白|##\s)|\Z)"
+    gap_heading = r"(?:研究空白|Research\s+Gap|Candidate\s+Gap|Gap|候选空白)"
+    pattern = (
+        rf"(###\s*{gap_heading}\s*\d+[：:]\s*.+?)"
+        rf"(?=\n(?:###\s*{gap_heading}\s*\d+|##\s)|\Z)"
+    )
     sections: list[tuple[str, str]] = []
     for m in re.finditer(pattern, report_text, re.IGNORECASE | re.DOTALL):
         block = m.group(1).strip()
         title_m = re.match(
-            r"###\s*(?:研究空白|Research\s+Gap|Gap|候选空白)\s*\d+[：:]\s*(.+)",
+            r"###\s*(?:研究空白|Research\s+Gap|Candidate\s+Gap|Gap|候选空白)\s*\d+[：:]\s*(.+)",
             block,
             re.IGNORECASE,
         )

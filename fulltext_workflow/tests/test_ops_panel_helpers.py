@@ -119,3 +119,25 @@ def test_clear_confirm_resets_on_manual_scope_switch(monkeypatch):
     at.radio(key="ops_clear_scope").set_value("全部")
     at.run()
     assert at.session_state["ops_clear_confirm"] is False
+
+
+@pytest.mark.skipif(AppTest is None, reason="streamlit AppTest not available")
+def test_clear_execute_resets_confirm_without_session_state_error(monkeypatch):
+    """After a successful clear, confirm must disarm on the next run without
+    mutating the widget key after the checkbox is instantiated."""
+    _tmp_db(monkeypatch)
+
+    at = AppTest.from_function(
+        _clear_memory_app, kwargs={"focus_hint": "", "root": str(_ROOT)}
+    )
+    at.run()
+    at.checkbox(key="ops_clear_confirm").set_value(True)
+    at.run()
+    assert at.session_state["ops_clear_confirm"] is True
+
+    at.button(key="ops_clear_execute_btn").click()
+    at.run()
+
+    assert not at.exception
+    assert at.session_state["ops_clear_confirm"] is False
+    assert any("已清空" in s.value for s in at.success)

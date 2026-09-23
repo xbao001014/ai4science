@@ -180,10 +180,31 @@ def validate_review(review, evidence, *, candidate_ids=None, cutoff_year=None):
     return result
 
 
-def validate_moderator_handoff(report: str, review: dict) -> dict:
-    """Check candidate identity and prevent Reviewer-to-Moderator re-promotion.
+_WEAK_FALLBACK_MARKER = (
+    "**Evidence status**: needs_verification — weak-evidence candidate; "
+    "not a verified research gap."
+)
+_FALSE_AUDIT_MARKER = (
+    "**Recommendation status**: not_recommended — Reviewer classified this "
+    "direction as false_gap; retained only to explain the rejected slot."
+)
 
-    This validates workflow state, not scientific usefulness or novelty.
+
+def _is_explicit_weak_fallback(block: str) -> bool:
+    return bool(
+        re.search(
+            r"(?im)^\*\*Evidence status\*\*\s*:\s*needs_verification\b",
+            block or "",
+        )
+    )
+
+
+def validate_moderator_handoff(report: str, review: dict) -> dict:
+    """Check identity and prevent unlabeled Reviewer-to-Moderator re-promotion.
+
+    A weak candidate may be rendered only when it carries the deterministic
+    needs-verification fallback marker.  This validates workflow state, not
+    scientific usefulness or novelty.
     """
     buckets = ("verified_gaps", "false_gaps", "weak_evidence_gaps")
     ids_by_bucket = {
@@ -196,9 +217,11 @@ def validate_moderator_handoff(report: str, review: dict) -> dict:
     }
     reviewed = set().union(*ids_by_bucket.values())
     verified = ids_by_bucket["verified_gaps"]
-    unverified = ids_by_bucket["false_gaps"] | ids_by_bucket["weak_evidence_gaps"]
+    false = ids_by_bucket["false_gaps"]
+    weak = ids_by_bucket["weak_evidence_gaps"]
     matches = list(re.finditer(r"(?im)^###\s+Research gap\s+(\d+)\s*:[^\n]*", report or ""))
     promoted: list[str] = []
+    rendered_weak: list[str] = []
     issues: list[str] = []
     for idx, match in enumerate(matches):
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(report or "")
@@ -210,8 +233,13 @@ def validate_moderator_handoff(report: str, review: dict) -> dict:
             continue
         cid = found.group(1)
         promoted.append(cid)
-        if cid in unverified:
+        if cid in false:
             issues.append(f"promoted_unverified_candidate:{cid}")
+        elif cid in weak:
+            if _is_explicit_weak_fallback(block):
+                rendered_weak.append(cid)
+            else:
+                issues.append(f"promoted_unverified_candidate:{cid}")
         elif cid not in reviewed:
             issues.append(f"unknown_candidate_id:{cid}")
     duplicates = sorted({cid for cid in promoted if promoted.count(cid) > 1})
@@ -222,21 +250,58 @@ def validate_moderator_handoff(report: str, review: dict) -> dict:
         "promoted_candidate_ids": promoted,
         "reviewed_candidate_ids": sorted(reviewed),
         "verified_candidate_ids": sorted(verified),
+        "rendered_weak_candidate_ids": sorted(set(rendered_weak)),
         "omitted_verified_candidate_ids": sorted(verified - set(promoted)),
         "check_scope": "candidate_identity_and_classification_only",
     }
 
 
-def enforce_moderator_handoff(report: str, review: dict) -> tuple[str, dict]:
-    """Remove final gap sections that were not verified by the Reviewer."""
+def enforce_moderator_handoff(
+    report: str,
+    review: dict,
+    *,
+    target_count: int | None = None,
+) -> tuple[str, dict]:
+    """Render verified and explicitly labeled weak gaps.
+
+    Weak candidates are useful discovery outputs even when verified candidates
+    also exist.  They remain needs-verification and false gaps are never admitted.
+    """
     verified = {
         str(item.get("candidate_id"))
         for item in review.get("verified_gaps", [])
         if isinstance(item, dict) and item.get("candidate_id")
     }
+    weak = {
+        str(item.get("candidate_id"))
+        for item in review.get("weak_evidence_gaps", [])
+        if isinstance(item, dict) and item.get("candidate_id")
+    }
+    false = {
+        str(item.get("candidate_id"))
+        for item in review.get("false_gaps", [])
+        if isinstance(item, dict) and item.get("candidate_id")
+    }
+    weak_fallback = not verified and bool(weak)
+    allowed = verified | weak
     text = report or ""
     starts = list(re.finditer(r"(?im)^###\s+Research gap\s+\d+\s*:[^\n]*", text))
+    present_allowed: set[str] = set()
+    present_false_order: list[str] = []
+    for idx, match in enumerate(starts):
+        end = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
+        block = text[match.start():end]
+        found = re.search(r"(?im)^\*\*Candidate ID\*\*\s*:\s*(G\d{2,})\b", block)
+        cid = found.group(1) if found else None
+        if cid in allowed:
+            present_allowed.add(cid)
+        elif cid in false and cid not in present_false_order:
+            present_false_order.append(cid)
+    target = target_count if isinstance(target_count, int) and target_count > 0 else 0
+    display_shortfall = max(0, target - len(present_allowed))
+    false_display_ids = set(present_false_order[:display_shortfall])
     removed: list[str] = []
+    displayed_false: list[str] = []
     missing_id = 0
     pieces: list[str] = []
     cursor = 0
@@ -248,8 +313,34 @@ def enforce_moderator_handoff(report: str, review: dict) -> tuple[str, dict]:
         block = text[match.start():end]
         found = re.search(r"(?im)^\*\*Candidate ID\*\*\s*:\s*(G\d{2,})\b", block)
         cid = found.group(1) if found else None
-        if cid in verified:
+        if cid in allowed:
+            if cid in weak and not _is_explicit_weak_fallback(block):
+                heading_end = match.end() - match.start()
+                block = (
+                    block[:heading_end]
+                    + "\n"
+                    + _WEAK_FALLBACK_MARKER
+                    + block[heading_end:]
+                )
             pieces.append(block)
+        elif cid in false_display_ids:
+            block = re.sub(
+                r"(?im)^###\s+Research gap\s+(\d+)\s*:",
+                r"### Excluded candidate \1:",
+                block,
+                count=1,
+            )
+            heading_end = block.find("\n")
+            if heading_end < 0:
+                heading_end = len(block)
+            block = (
+                block[:heading_end]
+                + "\n"
+                + _FALSE_AUDIT_MARKER
+                + block[heading_end:]
+            )
+            pieces.append(block)
+            displayed_false.append(cid)
         else:
             if cid:
                 removed.append(cid)
@@ -258,27 +349,83 @@ def enforce_moderator_handoff(report: str, review: dict) -> tuple[str, dict]:
         cursor = end
     pieces.append(text[cursor:])
     filtered = "".join(pieces)
-    unverified = {
-        str(item.get("candidate_id"))
-        for bucket in ("false_gaps", "weak_evidence_gaps")
-        for item in review.get(bucket, [])
-        if isinstance(item, dict) and item.get("candidate_id")
-    }
+    remaining_slots = max(0, target - len(present_allowed) - len(displayed_false))
+    if remaining_slots:
+        synthetic: list[str] = []
+        for item in review.get("false_gaps", []):
+            if remaining_slots <= 0:
+                break
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("candidate_id") or "").strip()
+            if not cid or cid in displayed_false:
+                continue
+            title = str(item.get("title") or "Rejected research-gap claim").strip()
+            issue = str(item.get("issue") or item.get("rationale") or "").strip()
+            suggestion = str(item.get("suggestion") or "").strip()
+            block_lines = [
+                f"### Excluded candidate {len(displayed_false) + 1}: {title}",
+                _FALSE_AUDIT_MARKER,
+                f"**Candidate ID**: {cid}",
+            ]
+            if issue:
+                block_lines.append(f"**Why rejected**: {issue}")
+            if suggestion:
+                block_lines.append(f"**Replacement direction**: {suggestion}")
+            synthetic.append("\n".join(block_lines))
+            displayed_false.append(cid)
+            remaining_slots -= 1
+        if synthetic:
+            addition = "\n\n" + "\n\n---\n\n".join(synthetic) + "\n\n"
+            ranking = re.search(r"(?im)^##\s+Priority ranking\b", filtered)
+            if ranking:
+                filtered = filtered[:ranking.start()] + addition + filtered[ranking.start():]
+            else:
+                filtered = filtered.rstrip() + addition
+    excluded_from_ranking = false
     filtered = re.sub(
         r"(?im)^\|[^\n]*\|\s*(G\d{2,})\s*\|[^\n]*$",
-        lambda m: "" if m.group(1) in unverified else m.group(0),
+        lambda m: "" if m.group(1) in excluded_from_ranking else m.group(0),
         filtered,
     )
+    notices: list[str] = []
+    if weak_fallback:
+        notices.append(
+            "> No candidate met the verified-evidence threshold. The report retains "
+            "Reviewer-designated weak-evidence candidates for exploration; each remains "
+            "needs_verification and must not be presented as a confirmed research gap."
+        )
+    elif weak:
+        notices.append(
+            "> This report includes Reviewer-designated weak-evidence candidates for "
+            "exploration alongside verified gaps. Each weak candidate is explicitly marked "
+            "needs_verification and must not be presented as a confirmed research gap."
+        )
+    if displayed_false:
+        notices.append(
+            "> To preserve the requested output count, rejected candidates are shown only "
+            "as not_recommended audit cards. They are excluded from proposal generation."
+        )
     if removed or missing_id:
-        notice = (
-            "> Automated handoff guard removed unverified final-gap sections: "
+        notices.append(
+            "> Automated handoff guard removed disallowed final-gap sections: "
             + (", ".join(sorted(set(removed))) if removed else "none")
             + (f"; missing candidate ID sections: {missing_id}" if missing_id else "")
-            + ".\n\n"
+            + "."
         )
-        filtered = notice + filtered.lstrip()
+    if notices:
+        filtered = "\n\n".join(notices) + "\n\n" + filtered.lstrip()
     return filtered, {
         "removed_candidate_ids": sorted(set(removed)),
         "removed_missing_id_sections": missing_id,
         "verified_allowlist": sorted(verified),
+        "weak_fallback_enabled": weak_fallback,
+        "weak_candidates_enabled": bool(weak),
+        "retained_weak_candidate_ids": sorted(weak),
+        "target_count": target or None,
+        "displayed_candidate_count": len(present_allowed) + len(displayed_false),
+        "displayed_rejected_candidate_ids": sorted(set(displayed_false)),
+        "unfilled_slots": max(
+            0, target - len(present_allowed) - len(displayed_false)
+        ),
     }

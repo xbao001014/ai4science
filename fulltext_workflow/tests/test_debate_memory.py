@@ -181,6 +181,26 @@ def test_tool_events_and_completion_are_persisted():
     assert session["final_report"] == "# Final"
 
 
+def test_candidate_evidence_packets_survive_session_round_trip():
+    _reset_db()
+    state = create_debate_session(focus="colorectal cancer", max_rounds=1, top_n=1)
+    state.candidate_evidence_packets = {
+        "G01": {
+            "schema_version": "candidate-evidence-packet/v1",
+            "candidate": {"candidate_id": "G01", "title": "CRC validation"},
+        }
+    }
+    complete_debate_session(
+        state,
+        final_report="### Research Gap 1: CRC validation",
+        validation_status="evidence_checked",
+    )
+
+    loaded = load_debate_state(state.session_id)
+    assert loaded is not None
+    assert loaded.candidate_evidence_packets["G01"]["candidate"]["title"] == "CRC validation"
+
+
 def test_structured_handoff_tracks_objections_and_unresolved_questions():
     _reset_db()
     state = create_debate_session(focus="npc", max_rounds=2, top_n=2)

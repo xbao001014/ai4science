@@ -171,6 +171,15 @@ def _render_clear_memory_section(focus_hint: str) -> None:
     focus_norm = normalize_focus(focus_hint)
     scope_options = ["全部"] + (["仅当前焦点"] if focus_norm else [])
 
+    # Deferred confirm reset must run before the checkbox widget is created;
+    # Streamlit forbids mutating a widget key after instantiation in the same run.
+    if st.session_state.pop("_ops_clear_pending_confirm_reset", False):
+        st.session_state["ops_clear_confirm"] = False
+
+    success_msg = st.session_state.pop("_ops_clear_success_msg", None)
+    if success_msg:
+        st.success(success_msg)
+
     # When the option set itself changes (e.g. the sidebar focus is cleared
     # and "仅当前焦点" disappears), Streamlit silently snaps the radio back to
     # the first option while leaving any checked confirm box armed. Detect
@@ -228,8 +237,9 @@ def _render_clear_memory_section(focus_hint: str) -> None:
         )
         if delete_files:
             msg += f"；已删除文件 {result.get('files_removed', 0)} 个"
-        st.session_state["ops_clear_confirm"] = False
-        st.success(msg)
+        # Defer widget-key reset + success toast to the next run (before checkbox).
+        st.session_state["_ops_clear_pending_confirm_reset"] = True
+        st.session_state["_ops_clear_success_msg"] = msg
         st.rerun()
 
 

@@ -53,6 +53,10 @@ def test_stream_emits_difficulty_once_and_enriches_final(monkeypatch):
         )
     )
 
+    assert events[0]["evidence_packet_schema_version"] == "candidate-evidence-packet/v1"
+    assert events[0]["candidate_evidence_packet"]["candidate"]["section_md"] == (
+        "NPC survival prediction"
+    )
     assessed_events = [event for event in events if event["type"] == "difficulty_assessed"]
     assert len(assessed_events) == 1
     assessed = assessed_events[0]
