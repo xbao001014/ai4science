@@ -217,11 +217,11 @@ def load_supporting_papers_by_pmids(
     if lim < 0:
         lim = 0
     sql = f"""
-        SELECT p.pmid, p.title, p.year, p.journal_name, p.journal_abbr,
+        SELECT COALESCE(p.source_key,p.pmid) AS pmid, p.title, p.year, p.journal_name, p.journal_abbr,
                p.citation_count, j.quartile, j.impact_factor
         FROM papers p
         LEFT JOIN journals j ON p.journal_id = j.id
-        WHERE p.pmid IN ({placeholders})
+        WHERE COALESCE(p.source_key,p.pmid) IN ({placeholders})
         ORDER BY p.year DESC
         LIMIT ?
     """

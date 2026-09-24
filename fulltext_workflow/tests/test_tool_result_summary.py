@@ -33,6 +33,19 @@ def test_list_results_keep_records_wording():
     assert message == "2 records"
 
 
+def test_literature_search_counts_source_records():
+    result = {
+        "source_records": [{"source_pmid": "123"}, {"source_pmid": "456"}],
+        "retrieval_metadata": {"retrieved_records": 2},
+    }
+    assert format_tool_result_summary("literature_evidence_search", result) == "2 records"
+    stats = compute_stats([
+        {"type": "tool_result", "name": "literature_evidence_search", "result": result},
+    ])
+    assert stats["records_retrieved"] == 2
+    assert stats["summary_results"] == 0
+
+
 def test_compute_stats_separates_records_from_summary_results():
     stats = compute_stats([
         {"type": "tool_call", "name": "corpus_focus_coverage"},

@@ -159,13 +159,25 @@ def score_retrieval_fields(
     matched_units: set[str] = set()
     matched_by_field: dict[str, list[str]] = {}
     score = 0.0
+    # Abstracts and aggregated entity names can be long. Normalize each field
+    # once per paper rather than once for every synonym of every query unit.
+    surfaces = {
+        field: f" {_surface(fields.get(field))} "
+        for field in field_weights
+        if fields.get(field)
+    }
     for field, weight in field_weights.items():
-        text = fields.get(field)
-        if not text:
+        haystack = surfaces.get(field)
+        if not haystack:
             continue
         field_hits: list[str] = []
         for unit in plan.get("units", []):
-            if any(_contains(text, phrase) for phrase in unit.get("phrases", [])):
+            if any(
+                (needle in haystack if re.search(r"[\u3400-\u9fff]", needle)
+                 else f" {needle} " in haystack)
+                for needle in (_surface(phrase) for phrase in unit.get("phrases", []))
+                if needle
+            ):
                 unit_id = str(unit["id"])
                 matched_units.add(unit_id)
                 field_hits.append(str(unit["canonical"]))

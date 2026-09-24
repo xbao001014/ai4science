@@ -344,7 +344,7 @@ def export_gold_template(path: str | Path, *, size: int = 400) -> dict[str, obje
                    JOIN relations r ON r.object_id=e.id
                      AND r.object_type='Method' AND r.relation='APPLIES_METHOD'
                      AND COALESCE(r.status, 'active')='active'
-                   LEFT JOIN papers p ON p.pmid=r.source_pmid
+                   LEFT JOIN papers p ON COALESCE(p.source_key,p.pmid)=r.source_pmid
                    LEFT JOIN method_family_assignments a ON a.method_entity_id=e.id
                      AND a.taxonomy_version=? AND a.candidate_rank=1
                      AND a.status='review'

@@ -105,6 +105,7 @@ SEARCH_YEAR_END = int(os.getenv("FULLTEXT_SEARCH_YEAR_END", str(SEARCH_YEAR_END)
 # Weekly incremental fetch: limit PubMed search to recently indexed records (EDAT).
 # 0 = disabled (full year-window search). CLI --since-days overrides this.
 FETCH_EDAT_DAYS: int = int(os.getenv("FETCH_EDAT_DAYS", "0"))
+LITERATURE_SOURCES: str = os.getenv("LITERATURE_SOURCES", "pubmed,europepmc,arxiv")
 
 # Weekly hotspot detection (papers.pub_date publication window; day/month precision)
 def _default_hotspot_window() -> int:
@@ -303,6 +304,12 @@ EXTRACT_OTHER_FALLBACK_MIN_CHARS: int = int(
 )
 EXTRACT_SECTION_WORKERS: int = int(os.getenv("EXTRACT_SECTION_WORKERS", "1"))
 EXTRACT_PAPER_WORKERS: int = int(os.getenv("EXTRACT_PAPER_WORKERS", "1"))
+EXTRACT_METHOD_CONTEXT_PROMPT: bool = os.getenv(
+    "EXTRACT_METHOD_CONTEXT_PROMPT", "false"
+).lower() in ("1", "true", "yes", "on")
+EXTRACT_ENTITY_MENTION_ANNOTATIONS: bool = os.getenv(
+    "EXTRACT_ENTITY_MENTION_ANNOTATIONS", "true"
+).lower() in ("1", "true", "yes", "on")
 EXTRACT_MAX_SECTION_CHARS: int = int(os.getenv("EXTRACT_MAX_SECTION_CHARS", "12000"))
 EXTRACT_SKIP_STUDY_LLM: bool = os.getenv("EXTRACT_SKIP_STUDY_LLM", "false").lower() == "true"
 TOOL_TOP_N: int = int(os.getenv("TOOL_TOP_N", "30"))

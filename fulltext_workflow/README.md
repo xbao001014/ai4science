@@ -2,7 +2,7 @@
 
 病理 AI 文献 **全文知识图谱** 与研究空白分析管线。
 
-- PubMed 元数据 → 全文（JATS / PDF+MinerU）→ 分章节 LLM 抽取 → NetworkX 建图  
+- PubMed、Europe PMC、arXiv 元数据 → 全文（有 PMID 时 JATS / PDF+MinerU；其余先用摘要）→ LLM 抽取 → NetworkX 建图
 - 静态 Gap 报告、多智能体辩论、周热点、ops memory 软去重  
 - 方信 LIS 数据可行性 + 研究方案（idea-pipeline）  
 - Streamlit 八标签页 UI（`gap_ui.py`，含「运维」周更）
@@ -15,8 +15,10 @@
 |------|------|
 | **[PIPELINE.md](PIPELINE.md)** | 分阶段流水线、生产跑法、weekly / ops memory |
 | **[SCRIPTS.md](SCRIPTS.md)** | 常用命令与维护脚本速查 |
+| **[SOURCE_EXPANSION_2026-09-23.md](SOURCE_EXPANSION_2026-09-23.md)** | Europe PMC / arXiv 首次全范围补抓结果 |
 | **[gap_ui_guide.md](gap_ui_guide.md)** | Streamlit UI 操作说明 |
 | 仓库根目录 [README.md](../README.md) | 环境安装与总入口 |
+| 仓库根目录 [DEPLOYMENT.md](../DEPLOYMENT.md) | 跨服务器迁移、备份与验收 |
 
 ## 快速开始
 
@@ -41,13 +43,27 @@ $py = "..\.venv\Scripts\python.exe"
 
 ## 检索范围
 
-查询组与默认年份来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前默认 **2015–2025**、**17** 组启用；`pathomics_radiomics` 默认关闭，因可行性侧无影像数据）。可用环境变量覆盖：
+查询组来自仓库根目录 [`search_queries.py`](../search_queries.py)（当前 **18** 组启用），当前环境检索年份为 **2015–2026**。可用环境变量覆盖：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
 FULLTEXT_SEARCH_YEAR_END=2026
 FETCH_EDAT_DAYS=14
+LITERATURE_SOURCES=pubmed,europepmc,arxiv
 ```
+
+### 扩展来源与去重
+
+`fetch` 默认按 `LITERATURE_SOURCES` 抓取三路文献，也可以单独运行：
+
+```powershell
+& $py main.py fetch --sources europepmc,arxiv --since-days 0
+& $py main.py fetch --sources europepmc,arxiv --since-days 14
+```
+
+`--since-days 0` 覆盖整个配置年份；增量模式中 PubMed 使用入库日期，Europe PMC 使用首次发表日期，arXiv 使用投稿日期。Europe PMC 仅导入 MED 和 PPR；MED 新文献再用 PubMed XML 补足元数据。两个来源均用现有主题组复核标题和摘要，并过滤非病理领域结果。
+
+`papers.pmid` 只存真实 PMID。跨来源记录按真实 PMID、DOI、来源 ID 精确合并，来源 ID 另存于 `paper_external_ids`；无 PMID 的记录用 `papers.source_key`（例如 `arxiv:2401.12345`）作为抽取和图谱证据键。无 PMID 时先分析摘要，获取 PMID 后可继续全文抓取。预印本与正式发表版本仅在标识符一致时自动合并。
 
 ### 本地检索与实体同义词
 
@@ -71,6 +87,7 @@ Disease / Method 概念实际命中，避免仅凭一个高频词返回噪声文
 
 ```powershell
 & $py main.py init | fetch | enrich-s2 | import-if | fetch-fulltext
+& $py main.py fetch --sources europepmc,arxiv --since-days 14
 & $py main.py extract --limit 0 --core-only
 & $py main.py compute-gap-lifecycle
 & $py main.py build | viz | analyze | stats

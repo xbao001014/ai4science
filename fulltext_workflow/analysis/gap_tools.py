@@ -172,7 +172,7 @@ def tool_literature_evidence_search(
     top_k = max(1, min(int(top_k or 10), 50))
     cutoff = int(cutoff_year or datetime.now().year)
     f = normalize_focus(focus)
-    focus_clause = focus_pmid_in_clause("p.pmid", f) if f else ""
+    focus_clause = focus_pmid_in_clause("COALESCE(p.source_key,p.pmid)", f) if f else ""
     from analysis.retrieval import (
         build_retrieval_plan,
         candidate_phrases,
@@ -210,14 +210,14 @@ def tool_literature_evidence_search(
         candidate_params = [f"%{phrase}%" for phrase in phrases]
     rows = _q(
         f"""
-        SELECT p.pmid AS source_pmid, p.title, p.abstract, p.year,
+        SELECT COALESCE(p.source_key,p.pmid) AS source_pmid, p.title, p.abstract, p.year,
                p.keywords, p.mesh_terms, p.source_queries,
                r.relation, e.name AS entity_name, e.aliases AS entity_aliases,
                COALESCE(NULLIF(rev.evidence_quote, ''), r.evidence_quote) AS evidence_quote,
                COALESCE(NULLIF(rev.evidence_section, ''), r.evidence_section) AS evidence_section,
                COALESCE(rev.support_status, 'unchecked') AS support_status
         FROM relations r
-        JOIN papers p ON p.pmid = r.source_pmid
+        JOIN papers p ON COALESCE(p.source_key,p.pmid) = r.source_pmid
         JOIN entities e ON e.id = r.object_id
         LEFT JOIN relation_evidence rev ON rev.id = (
             SELECT MIN(x.id) FROM relation_evidence x
@@ -429,9 +429,9 @@ def tool_corpus_focus_coverage(focus: str | None = None) -> dict:
             "warnings": ["No focus keyword — subset stats not computed."],
         }
 
-    pmid_clause = focus_pmid_in_clause("p.pmid", f)
+    pmid_clause = focus_pmid_in_clause("COALESCE(p.source_key,p.pmid)", f)
     row = _q(f"""
-        SELECT COUNT(DISTINCT p.pmid) AS focus_papers,
+        SELECT COUNT(DISTINCT COALESCE(p.source_key,p.pmid)) AS focus_papers,
                SUM(CASE WHEN p.extraction_done = 1 THEN 1 ELSE 0 END) AS focus_extracted
         FROM papers p
         WHERE 1=1 {pmid_clause}
@@ -528,21 +528,28 @@ def tool_method_disease_combo_gap(focus: str | None = None) -> dict:
     if not method_names or not disease_names:
         return {"description": "Method-disease combination gaps", "gaps": []}
 
-    rows = _q("""
+    # Only the displayed top entities can contribute to the candidate grid.
+    # Grouping every method/disease pair in the KG makes this tool stall as
+    # the corpus grows, even though nearly all grouped rows are discarded.
+    method_slots = ",".join("?" for _ in method_names)
+    disease_slots = ",".join("?" for _ in disease_names)
+    rows = _q(f"""
         WITH pm AS (
-            SELECT r.source_pmid, e.name AS method
+            SELECT DISTINCT r.source_pmid, e.name AS method
             FROM relations r JOIN entities e ON r.object_id=e.id
             WHERE e.type='Method' AND r.relation='APPLIES_METHOD'
+              AND e.name IN ({method_slots})
         ),
         pd AS (
-            SELECT r.source_pmid, e.name AS disease
+            SELECT DISTINCT r.source_pmid, e.name AS disease
             FROM relations r JOIN entities e ON r.object_id=e.id
             WHERE e.type='Disease' AND r.relation='TARGETS_DISEASE'
+              AND e.name IN ({disease_slots})
         )
         SELECT pm.method, pd.disease, COUNT(*) AS cnt
         FROM pm JOIN pd ON pm.source_pmid=pd.source_pmid
         GROUP BY pm.method, pd.disease
-    """)
+    """, tuple(method_names + disease_names))
     existing = {(r["method"], r["disease"]): r["cnt"] for r in rows}
     gaps = []
     for m in method_names:
@@ -696,7 +703,7 @@ def tool_limitation_gap_status(focus: str | None = None) -> dict:
 
 def _paper_impact_join() -> str:
     return """
-        LEFT JOIN papers p ON r.source_pmid = p.pmid
+        LEFT JOIN papers p ON r.source_pmid = COALESCE(p.source_key,p.pmid)
         LEFT JOIN journals j ON p.journal_id = j.id
     """
 
@@ -778,7 +785,7 @@ def tool_hotspot_entities(focus: str | None = None) -> dict:
                ROUND(COUNT(DISTINCT r.source_pmid) * AVG(COALESCE(p.citation_count, 0)), 0) AS heat_score
         FROM relations r
         JOIN entities e ON r.object_id = e.id
-        LEFT JOIN papers p ON r.source_pmid = p.pmid
+        LEFT JOIN papers p ON r.source_pmid = COALESCE(p.source_key,p.pmid)
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE 1=1 {pmid_fc}
           AND (e.type != 'Method' OR r.relation = 'APPLIES_METHOD')
@@ -798,10 +805,10 @@ def tool_hotspot_entities(focus: str | None = None) -> dict:
 
 def tool_recent_highcite_papers(focus: str | None = None) -> dict:
     # Disease entity OR title match (same semantics as other focus tools)
-    pmid_fc = focus_pmid_in_clause("p.pmid", focus)
+    pmid_fc = focus_pmid_in_clause("COALESCE(p.source_key,p.pmid)", focus)
     rows = _q(f"""
         SELECT p.title, p.year, p.study_type, p.citation_count,
-               p.journal_name, j.impact_factor, j.quartile, p.pmid,
+               p.journal_name, j.impact_factor, j.quartile, COALESCE(p.source_key,p.pmid) AS pmid,
                ROUND(1.0 * COALESCE(p.citation_count, 0)
                      / MAX(2026 - COALESCE(p.year, {config.SEARCH_YEAR_END}), 1), 1) AS cite_per_year
         FROM papers p
@@ -818,26 +825,35 @@ def tool_recent_highcite_papers(focus: str | None = None) -> dict:
 
 
 def _combo_support_papers(method: str, disease: str) -> list[dict]:
-    return _q(
+    pair_pmids = _q(
         """
-        WITH pm AS (
-            SELECT r.source_pmid FROM relations r
-            JOIN entities e ON r.object_id = e.id
-            WHERE e.type = 'Method' AND e.name = ? AND r.relation = 'APPLIES_METHOD'
-        ),
-        pd AS (
-            SELECT r.source_pmid FROM relations r
-            JOIN entities e ON r.object_id = e.id
-            WHERE e.type = 'Disease' AND e.name = ? AND r.relation = 'TARGETS_DISEASE'
-        )
-        SELECT p.pmid, p.year, p.citation_count, j.impact_factor, j.quartile
-        FROM papers p
-        JOIN pm ON p.pmid = pm.source_pmid
-        JOIN pd ON p.pmid = pd.source_pmid
-        LEFT JOIN journals j ON p.journal_id = j.id
+        SELECT r.source_pmid FROM relations r
+        JOIN entities e ON r.object_id = e.id
+        WHERE e.type = 'Method' AND e.name = ? AND r.relation = 'APPLIES_METHOD'
+        INTERSECT
+        SELECT r.source_pmid FROM relations r
+        JOIN entities e ON r.object_id = e.id
+        WHERE e.type = 'Disease' AND e.name = ? AND r.relation = 'TARGETS_DISEASE'
         """,
         (method, disease),
     )
+    if not pair_pmids:
+        return []
+    # SQLite can choose a papers table scan for the three-way join above.
+    # These exact lookups use idx_papers_effective_source_key instead.
+    rows: list[dict] = []
+    with get_conn() as conn:
+        for item in pair_pmids:
+            rows.extend(dict(row) for row in conn.execute(
+                """
+        SELECT COALESCE(p.source_key,p.pmid) AS pmid, p.year, p.citation_count, j.impact_factor, j.quartile
+        FROM papers p
+        LEFT JOIN journals j ON p.journal_id = j.id
+        WHERE COALESCE(p.source_key,p.pmid) = ?
+                """,
+                (item["source_pmid"],),
+            ).fetchall())
+    return rows
 
 
 def tool_literature_impact_priority_matrix(focus: str | None = None) -> dict:
@@ -900,12 +916,12 @@ _WRITE_SQL_KEYWORDS = frozenset(
 # Compact schema card for tool description + schema-error recovery.
 _KG_SQL_SCHEMA_HINT = (
     "Key columns (do NOT invent names): "
-    "papers(id, pmid, title, abstract, year, study_type, citation_count, full_text_status); "
+    "papers(id, pmid, source_key, title, abstract, year, study_type, citation_count, full_text_status); "
     "entities(id, name, type, access_class); "
     "relations(id, subject_type, subject_id, relation, object_type, object_id, "
     "source_pmid, evidence_section, evidence_quote, status); "
     "paper_entity_bindings(id, source_pmid, method_entity_id, disease_entity_id, "
-    "dataset_entity_id) — join papers.pmid = paper_entity_bindings.source_pmid "
+    "dataset_entity_id) — join COALESCE(papers.source_key,papers.pmid) = paper_entity_bindings.source_pmid "
     "(never papers.id = source_pmid); "
     "limitation_temporal(limitation_id, limitation_name, paper_cnt, temporal_status, "
     "avg_cite, impact_tier) — cache only, NO source_pmid/paper join; prefer curated "
@@ -915,8 +931,8 @@ _KG_SQL_SCHEMA_HINT = (
     "pis.action_type (papers also have columns that make bare confidence ambiguous); "
     "column is action_type NOT suggestion_type; "
     "document_sections(id, paper_id, section_type, content). "
-    "There is no papers.paper_id or entities.entity_id — use papers.id / papers.pmid "
-    "and entities.id. Join bindings via source_pmid (= papers.pmid) and entity id columns. "
+    "There is no papers.paper_id or entities.entity_id — use papers.id and entities.id. "
+    "Join bindings via source_pmid (= COALESCE(papers.source_key,papers.pmid)) and entity id columns. "
     "method_disease_combo_gap is a tool name, not a SQL table. "
     "Improvement suggestions live in paper_improvement_suggestions, not as entity type "
     "ImprovementSuggestion. "
@@ -1158,7 +1174,7 @@ TOOL_SCHEMAS: list[dict] = [
                             "A SELECT or WITH SQL statement using real columns only. "
                             "Example: SELECT e.name, COUNT(*) AS cnt FROM relations r "
                             "JOIN entities e ON e.id=r.object_id "
-                            "JOIN papers p ON p.pmid=r.source_pmid "
+                            "JOIN papers p ON COALESCE(p.source_key,p.pmid)=r.source_pmid "
                             "WHERE e.type='Limitation' AND COALESCE(r.status,'active')='active' "
                             "AND LOWER(p.title) LIKE '%breast%' GROUP BY e.name "
                             "ORDER BY cnt DESC LIMIT 20"

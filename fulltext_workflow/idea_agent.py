@@ -65,42 +65,54 @@ def tool_related_papers(keyword: str) -> dict:
 
 
 def tool_methods_for_topic(keyword: str) -> dict:
-    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
+    pmid_fc = topic_keyword_pmid_in_clause("r_m.source_pmid", keyword)
     rows = _q(f"""
-        SELECT e_m.name AS method,
-               COUNT(DISTINCT r_m.source_pmid) AS paper_cnt,
-               MIN(p.year) AS first_used,
-               MAX(p.year) AS last_used
-        FROM relations r_d
-        JOIN entities e_d ON r_d.object_id = e_d.id
-        JOIN papers p ON r_d.source_pmid = p.pmid
-        JOIN relations r_m ON r_m.source_pmid = p.pmid
+        SELECT e_m.name AS method, r_m.source_pmid
+        FROM relations r_m
         JOIN entities e_m ON r_m.object_id = e_m.id
         WHERE r_m.relation = 'APPLIES_METHOD' AND e_m.type = 'Method'
           {pmid_fc}
-        GROUP BY e_m.id
-        ORDER BY paper_cnt DESC LIMIT {config.TOOL_TOP_N}
     """)
+    pmids_by_method: dict[str, set[str]] = {}
+    for row in rows:
+        pmids_by_method.setdefault(str(row["method"]), set()).add(
+            str(row["source_pmid"])
+        )
+    top_methods = sorted(
+        pmids_by_method.items(), key=lambda item: (-len(item[1]), item[0])
+    )[:config.TOOL_TOP_N]
+    selected_pmids = set().union(*(pmids for _, pmids in top_methods)) if top_methods else set()
+    years = {
+        str(row["source_pmid"]): int(row["year"])
+        for row in _q("SELECT COALESCE(source_key,pmid) AS source_pmid, year FROM papers WHERE year IS NOT NULL")
+        if str(row["source_pmid"]) in selected_pmids
+    }
+    result_rows = []
+    for method, pmids in top_methods:
+        used_years = [years[pmid] for pmid in pmids if pmid in years]
+        result_rows.append({
+            "method": method,
+            "paper_cnt": len(pmids),
+            "first_used": min(used_years) if used_years else None,
+            "last_used": max(used_years) if used_years else None,
+        })
     return {
         "description": (
             f"AI methods in '{keyword}' research (APPLIES_METHOD only; "
             "SURVEYS_METHOD ≠ APPLIES_METHOD — surveyed methods not included)"
         ),
-        "count": len(rows),
-        "data": rows,
+        "count": len(result_rows),
+        "data": result_rows,
     }
 
 
 def tool_datasets_for_topic(keyword: str) -> dict:
-    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
+    pmid_fc = topic_keyword_pmid_in_clause("r_ds.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_ds.name AS dataset,
                COALESCE(e_ds.access_class, 'unknown') AS access_class,
                COUNT(DISTINCT r_ds.source_pmid) AS used_by_papers
-        FROM relations r_d
-        JOIN entities e_d ON r_d.object_id = e_d.id
-        JOIN papers p ON r_d.source_pmid = p.pmid
-        JOIN relations r_ds ON r_ds.source_pmid = p.pmid
+        FROM relations r_ds
         JOIN entities e_ds ON r_ds.object_id = e_ds.id
         WHERE r_ds.relation = 'USES_DATASET' AND e_ds.type = 'Dataset'
           AND COALESCE(r_ds.status, 'active') = 'active'
@@ -126,22 +138,30 @@ def tool_datasets_for_topic(keyword: str) -> dict:
 
 
 def tool_metrics_for_topic(keyword: str) -> dict:
-    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
+    pmid_fc = topic_keyword_pmid_in_clause("r_mt.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_mt.name AS metric, r_mt.metric_value,
-               p.title, p.year, p.pmid,
+               r_mt.source_pmid AS pmid,
                r_mt.evidence_section, r_mt.evidence_quote,
                r_mt.extraction_granularity
-        FROM relations r_d
-        JOIN entities e_d ON r_d.object_id = e_d.id
-        JOIN papers p ON r_d.source_pmid = p.pmid
-        JOIN relations r_mt ON r_mt.source_pmid = p.pmid
+        FROM relations r_mt
         JOIN entities e_mt ON r_mt.object_id = e_mt.id
         WHERE r_mt.relation = 'ACHIEVES_METRIC' AND e_mt.type = 'Metric'
           {pmid_fc}
-        ORDER BY p.year DESC LIMIT {config.TOOL_TOP_N}
     """)
-    return {"description": f"Metrics with evidence for '{keyword}'", "count": len(rows), "data": rows}
+    paper_by_pmid = {
+        str(row["pmid"]): row
+        for row in _q("SELECT COALESCE(source_key,pmid) AS pmid, title, year FROM papers")
+    }
+    out = []
+    for row in rows:
+        paper = paper_by_pmid.get(str(row["pmid"]))
+        if paper is None:
+            continue
+        out.append({**row, "title": paper["title"], "year": paper["year"]})
+    out.sort(key=lambda row: -(int(row.get("year") or 0)))
+    out = out[:config.TOOL_TOP_N]
+    return {"description": f"Metrics with evidence for '{keyword}'", "count": len(out), "data": out}
 
 
 def tool_author_limitations_for_topic(keyword: str) -> dict:
@@ -152,7 +172,6 @@ def tool_author_limitations_for_topic(keyword: str) -> dict:
                r.extraction_granularity
         FROM relations r
         JOIN entities e ON r.object_id = e.id
-        JOIN papers p ON r.source_pmid = p.pmid
         WHERE (r.relation = 'REPORTS_LIMITATION' OR e.type = 'Limitation')
           AND COALESCE(r.status, 'active') = 'active'
           {pmid_fc}
@@ -187,14 +206,11 @@ def tool_improvement_suggestions_for_topic(keyword: str) -> dict:
 
 
 def tool_modality_coverage_for_topic(keyword: str) -> dict:
-    pmid_fc = topic_keyword_pmid_in_clause("r_d.source_pmid", keyword)
+    pmid_fc = topic_keyword_pmid_in_clause("r_m.source_pmid", keyword)
     rows = _q(f"""
         SELECT e_m.name AS modality,
                COUNT(DISTINCT r_m.source_pmid) AS paper_cnt
-        FROM relations r_d
-        JOIN entities e_d ON r_d.object_id = e_d.id
-        JOIN papers p ON r_d.source_pmid = p.pmid
-        JOIN relations r_m ON r_m.source_pmid = p.pmid
+        FROM relations r_m
         JOIN entities e_m ON r_m.object_id = e_m.id
         WHERE r_m.relation = 'USES_MODALITY' AND e_m.type = 'Modality'
           {pmid_fc}
@@ -210,7 +226,7 @@ def tool_recent_papers_for_topic(keyword: str) -> dict:
         limit=config.TOOL_TOP_N,
         select_columns=(
             "p.title, p.year, p.journal_name, p.study_type, "
-            "p.abstract, p.pmid, p.full_text_status"
+            "p.abstract, COALESCE(p.source_key,p.pmid) AS pmid, p.full_text_status"
         ),
     )
     desc = f"Recent papers ({config.SEARCH_YEAR_START}+) for '{keyword}'"

@@ -23,7 +23,7 @@ networkx>=3.3
 pyvis>=0.3.2             # KG HTML export (visualize)
 
 # Gap UI
-streamlit>=1.32.0
+streamlit>=1.55.0
 plotly>=5.22.0
 
 # Full-text PDF / MinerU (fetch-fulltext tier 2; may pull torch)

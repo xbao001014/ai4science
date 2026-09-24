@@ -82,6 +82,7 @@ except ModuleNotFoundError:
 import config  # noqa: E402
 from db.schema import (  # noqa: E402
     db_stats,
+    fetch_debate_cost_events,
     fetch_debate_session,
     get_all_landscape,
     init_db,
@@ -132,6 +133,12 @@ from utils.tool_result_summary import (  # noqa: E402
 from utils.proposal_difficulty_ui import (  # noqa: E402
     difficulty_display_target,
 )
+from utils.debate_cost_ui import (  # noqa: E402
+    diagnostic_rows,
+    format_cost_summary,
+    summarize_cost_events,
+)
+from utils.time_display import format_beijing_time  # noqa: E402
 from analysis.focus_filter import debate_or_corpus_papers, normalize_focus  # noqa: E402
 from utils.tab_state import build_tab_sync_script, normalize_tab_label  # noqa: E402
 from utils.journey_guide import (  # noqa: E402
@@ -401,7 +408,12 @@ def _render_methods_by_role(rows: list[dict]) -> None:
         if not part:
             continue
         st.subheader(f"{title}（{len(part)}）")
-        safe_table(pd.DataFrame(part))
+        df = pd.DataFrame(part)
+        leading = [c for c in (
+            "name", "annotated_papers", "paper_full_forms",
+            "paper_surface_names", "annotation_status", "annotation_pmids",
+        ) if c in df.columns]
+        safe_table(df[leading + [c for c in df.columns if c not in leading]])
 
 
 def remember_main_tab(label_or_slug: str) -> None:
@@ -414,6 +426,7 @@ def remember_main_tab(label_or_slug: str) -> None:
     if slug not in MAIN_TAB_BY_SLUG:
         return
     st.session_state["active_main_tab"] = slug
+    st.session_state["pending_main_tab"] = MAIN_TAB_BY_SLUG[slug]
     try:
         st.query_params["main_tab"] = slug
     except Exception:
@@ -445,7 +458,23 @@ def get_requested_main_tab() -> str:
 
 
 def bootstrap_main_tab_state() -> None:
-    get_requested_main_tab()
+    slug = get_requested_main_tab()
+    pending = st.session_state.pop("pending_main_tab", None)
+    if pending in MAIN_TAB_LABELS:
+        st.session_state["main_tabs"] = pending
+    elif "main_tabs" not in st.session_state:
+        st.session_state["main_tabs"] = MAIN_TAB_BY_SLUG[slug]
+
+
+def on_main_tab_change() -> None:
+    label = st.session_state.get("main_tabs")
+    slug = MAIN_TAB_SLUG_BY_LABEL.get(label)
+    if slug:
+        st.session_state["active_main_tab"] = slug
+        try:
+            st.query_params["main_tab"] = slug
+        except Exception:
+            pass
 
 
 def render_main_tab_sync() -> None:
@@ -2093,6 +2122,8 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         "（与「可视化」共用，在侧栏调整）。"
     )
     payload = _load_weekly_hotspot_payload(len(weeks), window_days, min_recent)
+    from analysis.hotspot_annotations import attach_hotspot_annotations
+    annotation_details = attach_hotspot_annotations(payload, window_days=window_days)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric(
@@ -2160,12 +2191,19 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         st.caption(
             "成熟度 = **nascent**（全库 APPLIES_METHOD ≤ 2 篇，且非成熟黑名单）。"
             "固定最少近窗篇数 = **1**（与侧栏无关）；不做热度 Top-N 截断。"
+            "按全库篇数降序排列，同篇数按热度排序，最多显示配置数量。"
             "**top_pmids** = 近窗来源文献 PMID（最多 3 个，按引用排序）。"
         )
+        st.caption("论文级全称来自原文明确的缩写定义；多种全称会标为待核，不自动归并。")
         new_methods = payload.get("new_methods") or []
         if new_methods:
             cols = [
                 "name",
+                "annotated_papers",
+                "paper_full_forms",
+                "paper_surface_names",
+                "annotation_status",
+                "annotation_pmids",
                 "method_role",
                 "corpus_paper_cnt",
                 "recent_cnt",
@@ -2198,6 +2236,12 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
         _render_methods_by_role(payload.get("emerging_methods", []))
         with st.expander("本周活跃（含成熟常用方法）", expanded=False):
             _render_methods_by_role(payload.get("active_methods", []))
+        with st.expander("方法的论文级注释与原文证据", expanded=False):
+            method_details = [r for r in annotation_details if r["type"] == "Method"]
+            if method_details:
+                safe_table(pd.DataFrame(method_details))
+            else:
+                st.info("当前窗口暂无已保存的方法注释；新抽取和已定位证据回填后会显示。")
     with tab_f:
         release_id = payload.get("method_family_release_id")
         if not release_id:
@@ -2209,7 +2253,19 @@ def render_weekly_hotspot_tab(focus_hint: str = "") -> None:
             )
             safe_table(pd.DataFrame(payload.get("method_families", [])))
     with tab_d:
-        safe_table(pd.DataFrame(payload.get("heating_diseases", [])))
+        st.caption("疾病限定词来自原文且必须保留在病名中；注释只辅助溯源，不自动把亚型并入宽泛疾病。")
+        df_disease = pd.DataFrame(payload.get("heating_diseases", []))
+        leading = [c for c in (
+            "name", "annotated_papers", "paper_full_forms", "paper_surface_names",
+            "disease_qualifiers", "annotation_status", "annotation_pmids",
+        ) if c in df_disease.columns]
+        safe_table(df_disease[leading + [c for c in df_disease.columns if c not in leading]])
+        with st.expander("疾病的论文级注释与原文证据", expanded=False):
+            disease_details = [r for r in annotation_details if r["type"] == "Disease"]
+            if disease_details:
+                safe_table(pd.DataFrame(disease_details))
+            else:
+                st.info("当前窗口暂无已保存的疾病注释；新抽取和已定位证据回填后会显示。")
     with tab_c:
         st.caption(
             "按方法折叠：同方法多病种合并为一行（diseases 列）；"
@@ -2454,6 +2510,7 @@ def main() -> None:
         load_history_button = False
         selected_history_id = ""
         with st.expander("会话历史与断点续跑", expanded=False):
+            st.caption("时间均为北京时间（UTC+8）")
             if not recent_sessions:
                 st.caption("当前焦点暂无已保存会话。")
             else:
@@ -2464,7 +2521,7 @@ def main() -> None:
                     "选择会话",
                     options=list(session_by_id),
                     format_func=lambda sid: (
-                        f"{session_by_id[sid].get('updated_at') or ''} · "
+                        f"{format_beijing_time(session_by_id[sid].get('updated_at'))} · "
                         f"{session_by_id[sid].get('status')} · "
                         f"R{session_by_id[sid].get('current_round')}/"
                         f"{session_by_id[sid].get('max_rounds')} · "
@@ -2480,6 +2537,8 @@ def main() -> None:
                     state_payload = {}
                 if state_payload.get("rolling_summary"):
                     st.caption(state_payload["rolling_summary"])
+                history_cost = summarize_cost_events(fetch_debate_cost_events(selected_history_id))
+                st.caption(format_cost_summary(history_cost))
                 resumable = (
                     selected_row.get("status") in {"running", "failed", "aborted"}
                     and selected_row.get("next_role")
@@ -2622,6 +2681,17 @@ def main() -> None:
                             f"等待 {role_display(event.get('role', ''))} LLM "
                             f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
                         )
+                    elif etype == "cost_finish":
+                        live_id = st.session_state.get("debate_session_id")
+                        if live_id:
+                            live_cost = summarize_cost_events(fetch_debate_cost_events(live_id))
+                            if live_cost:
+                                sw.update(
+                                    label=(f"辩论中 · LLM {live_cost['llm_requests']} 次 · "
+                                           f"工具 {live_cost['tool_calls']} 次 · "
+                                           f"重试 {live_cost['retries']}"),
+                                    expanded=True,
+                                )
                     elif etype == "tool_call":
                         tool_step += 1
                         role = event.get("role", "")
@@ -2649,6 +2719,13 @@ def main() -> None:
                             f"[{event.get('role')}] {event['name']}: "
                             f"{event.get('error')}"
                         )
+                    elif etype == "llm_retry":
+                        st.warning(
+                            f"LLM 重试：{event.get('reason', 'unknown')} "
+                            f"（第 {event.get('attempt_no', '?')} 次尝试）"
+                        )
+                    elif etype == "telemetry_error":
+                        st.caption("运行指标采集不完整")
                     elif etype == "optimist_proposal":
                         st.success(
                             f"机会侦察候选（第 {event['round']} 轮）："
@@ -2724,11 +2801,11 @@ def main() -> None:
                                 )
                             ),
                             state="complete",
-                            expanded=False,
+                            expanded=True,
                         )
                     elif etype == "error":
                         st.error(event.get("content"))
-                        sw.update(label="辩论失败", state="error")
+                        sw.update(label="辩论失败", state="error", expanded=True)
 
     st.divider()
 
@@ -2737,8 +2814,12 @@ def main() -> None:
     (
         tab_debate, tab_hotspot, tab_viz, tab_evidence, tab_report, tab_data,
         tab_proposal, tab_ops,
-    ) = st.tabs(MAIN_TAB_LABELS)
-    render_main_tab_sync()
+    ) = st.tabs(
+        MAIN_TAB_LABELS,
+        default=MAIN_TAB_BY_SLUG[get_requested_main_tab()],
+        key="main_tabs",
+        on_change=on_main_tab_change,
+    )
 
     if not st.session_state["events"]:
         with tab_debate:
@@ -2749,14 +2830,17 @@ def main() -> None:
             )
             render_debate_role_guide()
         with tab_hotspot:
-            render_weekly_hotspot_tab(focus_hint=focus_input)
+            if tab_hotspot.open:
+                render_weekly_hotspot_tab(focus_hint=focus_input)
         with tab_viz:
-            render_gap_visualization_tab([], focus_hint=focus_input)
+            if tab_viz.open:
+                render_gap_visualization_tab([], focus_hint=focus_input)
         with tab_evidence:
-            render_evidence_literature_section(
-                [],
-                normalize_focus(focus_input),
-            )
+            if tab_evidence.open:
+                render_evidence_literature_section(
+                    [],
+                    normalize_focus(focus_input),
+                )
         with tab_report:
             st.info("请运行空白辩论以生成研究空白报告。")
             s = db_stats()
@@ -2766,11 +2850,13 @@ def main() -> None:
             c3.metric("全文可用", s["fulltext_available"])
             c4.metric("知识图谱 + 可行性工具", len(IDEA_TOOLS))
         with tab_data:
-            render_data_feasibility_tab(focus_hint=focus_input)
+            if tab_data.open:
+                render_data_feasibility_tab(focus_hint=focus_input)
         with tab_proposal:
             st.info("请先完成空白辩论，或使用 **数据可行性** 页测试 API。")
         with tab_ops:
-            render_ops_tab(focus_hint=focus_input)
+            if tab_ops.open:
+                render_ops_tab(focus_hint=focus_input)
 
     elif st.session_state["events"]:
         with tab_debate:
@@ -2793,6 +2879,46 @@ def main() -> None:
                 f"工具调用 {summary['tool_steps']} 次 · "
                 "下方为角色轮次与工具详情（默认折叠）。"
             )
+            cost_session_id = st.session_state.get("debate_session_id")
+            cost_rows = fetch_debate_cost_events(cost_session_id) if cost_session_id else []
+            cost_summary = summarize_cost_events(cost_rows)
+            st.caption(format_cost_summary(cost_summary))
+            if cost_rows:
+                with st.expander("运行诊断", expanded=False):
+                    by_role = []
+                    for cost_role in sorted({str(row.get("role") or "") for row in cost_rows if row.get("role")}):
+                        role_summary = summarize_cost_events(
+                            [row for row in cost_rows if row.get("role") == cost_role]
+                        )
+                        if role_summary:
+                            by_role.append({"role": cost_role, **role_summary})
+                    if by_role:
+                        st.dataframe([{
+                            "角色": role_display(row["role"]),
+                            "LLM": row["llm_requests"],
+                            "输入/输出 tokens": f"{row['prompt_tokens']:,} / {row['completion_tokens']:,}",
+                            "工具耗时（秒）": round(row["tool_seconds"], 1),
+                        } for row in by_role], hide_index=True)
+                    slow_rows = diagnostic_rows(cost_rows)
+                    if slow_rows:
+                        st.caption("耗时最高的 5 次操作")
+                        st.dataframe([{
+                            "角色": role_display(str(row.get("role") or "")),
+                            "操作": row.get("tool_name") or "LLM",
+                            "耗时（秒）": round(float(row.get("duration_ms") or 0) / 1000, 2),
+                            "状态": row.get("status"),
+                            "原因": row.get("retry_reason_code") or row.get("error_code") or "",
+                        } for row in slow_rows], hide_index=True)
+                    issues = [row for row in cost_rows if row.get("status") in {"failed", "interrupted"}]
+                    if issues:
+                        labels = [
+                            f"{row.get('tool_name') or 'LLM'}: "
+                            f"{row.get('retry_reason_code') or row.get('error_code') or row.get('status')}"
+                            for row in issues[-3:]
+                        ]
+                        st.caption("异常/重试：" + "；".join(labels))
+                    if cost_summary and (cost_summary["missing_usage"] or cost_summary["interrupted"] or cost_summary["running"]):
+                        st.caption("LLM 次数包含已发起但未闭合的请求；tokens 仅合计已记录用量的请求。")
 
             pairs = group_call_result_pairs(st.session_state["events"])
             debate_cards = [
@@ -2858,26 +2984,29 @@ def main() -> None:
                                 render_tool_result(name, rdict)
 
         with tab_hotspot:
-            render_weekly_hotspot_tab(
-                focus_hint=st.session_state.get("run_focus") or focus_input,
-            )
+            if tab_hotspot.open:
+                render_weekly_hotspot_tab(
+                    focus_hint=st.session_state.get("run_focus") or focus_input,
+                )
 
         with tab_viz:
-            render_gap_visualization_tab(
-                st.session_state["events"],
-                report_text=st.session_state.get("report", ""),
-                focus_hint=st.session_state.get("run_focus") or focus_input,
-            )
+            if tab_viz.open:
+                render_gap_visualization_tab(
+                    st.session_state["events"],
+                    report_text=st.session_state.get("report", ""),
+                    focus_hint=st.session_state.get("run_focus") or focus_input,
+                )
 
         with tab_evidence:
-            focus_lit = (
-                normalize_focus(st.session_state.get("run_focus"))
-                or normalize_focus(focus_input)
-            )
-            render_evidence_literature_section(
-                st.session_state["events"],
-                focus_lit,
-            )
+            if tab_evidence.open:
+                focus_lit = (
+                    normalize_focus(st.session_state.get("run_focus"))
+                    or normalize_focus(focus_input)
+                )
+                render_evidence_literature_section(
+                    st.session_state["events"],
+                    focus_lit,
+                )
 
         with tab_report:
             report_text = st.session_state.get("report", "")
@@ -2915,9 +3044,10 @@ def main() -> None:
                 )
 
         with tab_data:
-            render_data_feasibility_tab(
-                focus_hint=st.session_state.get("run_focus") or focus_input,
-            )
+            if tab_data.open:
+                render_data_feasibility_tab(
+                    focus_hint=st.session_state.get("run_focus") or focus_input,
+                )
 
         with tab_proposal:
             st.subheader("研究提案生成器")
@@ -3061,10 +3191,29 @@ def main() -> None:
                             })
                         if et == "round_start":
                             st.markdown(f"#### 第 {event['round']} / {event['max_rounds']} 轮")
+                        elif et == "llm_request_start":
+                            st.caption(
+                                f"等待 {event.get('role', '')} 模型响应 "
+                                f"（{event.get('iteration', '?')}/{event.get('max_iters', '?')}）…"
+                            )
                         elif et == "tool_call":
                             role = event.get("role", "")
                             lbl = IDEA_TOOL_META.get(event["name"], event["name"])
                             st.write(f"  [{role}] {lbl} · `{event.get('args', {})}`")
+                        elif et == "tool_running":
+                            lbl = IDEA_TOOL_META.get(event["name"], event["name"])
+                            st.caption(f"    … 正在运行 {lbl}")
+                        elif et == "tool_result":
+                            st.write(
+                                "    → " + format_tool_result_summary(
+                                    event.get("name", ""), event.get("result") or {}
+                                )
+                            )
+                        elif et == "tool_error":
+                            st.warning(
+                                f"[{event.get('role', '')}] {event.get('name', '')}: "
+                                f"{event.get('error', '')}"
+                            )
                         elif et == "finalizing_draft":
                             st.caption(event.get("message", "正在生成完整提案…"))
                         elif et == "draft":
@@ -3222,7 +3371,8 @@ def main() -> None:
                 )
 
         with tab_ops:
-            render_ops_tab(focus_hint=focus_input)
+            if tab_ops.open:
+                render_ops_tab(focus_hint=focus_input)
 
 
 if st.runtime.exists():

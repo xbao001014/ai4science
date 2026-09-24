@@ -153,7 +153,8 @@ def _parse_single_article(
     if article is None:
         return data
 
-    data["title"] = article.findtext("ArticleTitle", "").strip()
+    title_el = article.find("ArticleTitle")
+    data["title"] = " ".join("".join(title_el.itertext()).split()) if title_el is not None else ""
 
     abstract_parts = article.findall(".//AbstractText")
     abstract_texts = []

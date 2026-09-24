@@ -97,6 +97,24 @@ def test_context_change_changes_hash_and_inactive_is_excluded(tmp_path, monkeypa
     assert load_method_embedding_inputs() == []
 
 
+def test_source_grounded_context_and_long_form_feed_shadow_input(tmp_path, monkeypatch):
+    import config
+    from db.schema import get_conn, init_db
+
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "context.sqlite"))
+    init_db()
+    with get_conn() as conn:
+        _seed(conn)
+        conn.execute("""UPDATE relation_evidence SET
+            context_text='We used TransMIL for slide aggregation.',
+            method_long_form='Transformer multiple instance learning'
+            WHERE evidence_sha256='hash-1'""")
+    item = load_method_embedding_inputs()[0]
+    assert 'method_full_form: Transformer multiple instance learning' in item.text
+    assert 'method_context: We used TransMIL for slide aggregation.' in item.text
+    assert 'preferred evidence' not in item.text
+
+
 def test_dry_run_plan_has_no_cache_writes(tmp_path, monkeypatch):
     import config
     from db.schema import get_conn, init_db

@@ -140,7 +140,7 @@ def test_new_methods_sorted_by_corpus_then_score(monkeypatch):
 
     payload = compute_weekly_hotspots(window_days=14, prior_days=14, min_recent=1)
     names = [r["name"] for r in payload["new_methods"]]
-    assert names.index("alpha-one-paper") < names.index("beta-two-paper")
+    assert names.index("beta-two-paper") < names.index("alpha-one-paper")
 
 
 def test_report_includes_new_methods_section(monkeypatch):
@@ -156,7 +156,7 @@ def test_report_includes_new_methods_section(monkeypatch):
 
 
 def test_new_methods_max_applied_after_nascent_sort_not_emerging_pool(monkeypatch):
-    """Cap must not pre-slice by emerging_score (drops lowest-count nascent)."""
+    """Cap is applied after maturity filtering and corpus-count ranking."""
     _tmp_db(monkeypatch)
     monkeypatch.setattr(config, "HOTSPOT_NEW_METHODS_MAX", 1)
 
@@ -172,15 +172,35 @@ def test_new_methods_max_applied_after_nascent_sort_not_emerging_pool(monkeypatc
     p_c2b = _paper("c2-b", 3)
     _edge("c2-b", p_c2b, "two-paper-nascent")
 
-    # Nascent corpus=1 — should win after nascent sort + cap.
+    # Nascent corpus=1 — ranks below the two-paper method.
     p_c1 = _paper("c1", 2)
     _edge("c1", p_c1, "one-paper-nascent")
 
     payload = compute_weekly_hotspots(window_days=14, prior_days=14, min_recent=1)
     assert len(payload["new_methods"]) == 1
     row = payload["new_methods"][0]
-    assert row["name"] == "one-paper-nascent"
-    assert int(row["corpus_paper_cnt"]) == 1
+    assert row["name"] == "two-paper-nascent"
+    assert int(row["corpus_paper_cnt"]) == 2
+
+
+def test_two_paper_method_survives_wider_publication_window_cap(monkeypatch):
+    _tmp_db(monkeypatch)
+    monkeypatch.setattr(config, "HOTSPOT_NEW_METHODS_MAX", 2)
+
+    for pmid, days_ago in (("two-a", 2), ("two-b", 3)):
+        _edge(pmid, _paper(pmid, days_ago), "two-paper-method")
+    _edge("recent-single", _paper("recent-single", 4), "recent-single-method")
+    for pmid, days_ago in (("older-a", 70), ("older-b", 80)):
+        _edge(pmid, _paper(pmid, days_ago), f"{pmid}-method")
+
+    for window_days in (60, 90):
+        payload = compute_weekly_hotspots(
+            window_days=window_days, prior_days=90, min_recent=2
+        )
+        names = [row["name"] for row in payload["new_methods"]]
+        assert len(names) == 2
+        assert names[0] == "two-paper-method"
+        assert payload["new_methods"][0]["corpus_paper_cnt"] == 2
 
 
 def test_report_empty_new_methods_shows_none(monkeypatch):

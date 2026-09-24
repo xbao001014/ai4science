@@ -11,7 +11,7 @@
 ### 1. 环境
 
 ```powershell
-cd D:\agent\prototype\build_kg_paper
+# 在目标服务器上的仓库根目录执行
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
@@ -21,6 +21,8 @@ pip install -r requirements-dev.txt
 ```
 
 建议 Python **3.10–3.12**。`mineru` / `scansci-pdf` 已含在主依赖中（体积较大）。
+
+Linux 服务器用 `python3 -m venv .venv`、`source .venv/bin/activate`；其余 Python CLI 命令在 `fulltext_workflow/` 下执行。跨服务器迁移及验收见 [部署指南](DEPLOYMENT.md)。
 
 ### 2. 配置
 
@@ -78,12 +80,14 @@ build_kg_paper/
 | [fulltext_workflow/PIPELINE.md](fulltext_workflow/PIPELINE.md) | 完整阶段说明与生产跑法 |
 | [fulltext_workflow/SCRIPTS.md](fulltext_workflow/SCRIPTS.md) | 脚本与命令速查 |
 | [fulltext_workflow/gap_ui_guide.md](fulltext_workflow/gap_ui_guide.md) | Streamlit UI |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 跨服务器部署、数据迁移与验证 |
+| [Docker 部署](DEPLOYMENT.md#6-docker-compose-部署) | 容器构建、持久目录与启动命令 |
 
 ---
 
 ## 能力概览
 
-1. **建库**：PubMed → 引用/IF → 全文（冷却重试）→ LLM 抽取（摘要→全文可自动重抽）→ KG  
+1. **建库**：PubMed / Europe PMC / arXiv → 引用/IF → 全文（冷却重试）→ LLM 抽取（摘要→全文可自动重抽）→ KG
 2. **周更**：EDAT 增量 + 周热点报告 / LLM 简报（CLI 或 Gap UI「运维」后台）  
 3. **Gap**：静态 SQL 报告 · 三角色辩论 · ops memory 软去重  
 4. **可行性**：方信病理 LIS landscape（API 实测池，无估计 floor）+ idea-pipeline  

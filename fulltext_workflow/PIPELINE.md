@@ -12,7 +12,7 @@
 
 ```powershell
 # 仓库根目录
-cd D:\agent\prototype\build_kg_paper
+# 在仓库根目录执行
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 # 已含 scansci-pdf / mineru[core]（体积较大）
@@ -26,9 +26,9 @@ PUBMED_API_KEY=your-ncbi-key          # 推荐
 
 DASHSCOPE_API_KEY=sk-xxx              # 或 OPENAI_API_KEY
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL=deepseek-v4-flash
-LLM_MODEL_EXTRACT=deepseek-v4-flash   # extract 章节抽取
-LLM_MODEL_AGENT=qwen3.7-plus          # gap-debate / idea-pipeline / gap_ui / hotspot-brief
+LLM_MODEL=deepseek-v4-flash-0731
+LLM_MODEL_EXTRACT=deepseek-v4-flash-0731   # extract 章节抽取
+LLM_MODEL_AGENT=qwen3.8-max               # gap-debate / idea-pipeline / gap_ui / hotspot-brief
 
 # 可选：引用 enrichment 提供商（S2 403 时用 openalex）
 CITATION_PROVIDER=auto
@@ -37,7 +37,7 @@ CITATION_PROVIDER=auto
 JCR_IF_YEAR=2024
 
 # 可选：方信病理 API（idea-pipeline / gap_ui 数据可行性）
-PATHOLOGY_API_BASE_URL=http://ai.gzfxyl.cn/api/v1/pathology
+PATHOLOGY_API_BASE_URL=http://your-pathology-api-host/api/v1/pathology
 PATHOLOGY_API_KEY=your-key
 
 # 可选：周常 ops memory（默认开启）
@@ -57,12 +57,13 @@ cd fulltext_workflow
 $py = "..\.venv\Scripts\python.exe"
 ```
 
-检索范围来自仓库根目录 `search_queries.py`（默认 **2015–2025**、**17** 组启用查询；`pathomics_radiomics` 默认关闭，聚焦病理 AI、对齐方信无影像数据）。可用环境变量覆盖年份：
+检索范围来自仓库根目录 `search_queries.py`（当前环境 **2015–2026**、**18** 组启用查询）。可用环境变量覆盖年份和来源：
 
 ```ini
 FULLTEXT_SEARCH_YEAR_START=2015
 FULLTEXT_SEARCH_YEAR_END=2026
 FETCH_EDAT_DAYS=14                     # 设后 fetch 默认带 EDAT 窗口；0=关闭
+LITERATURE_SOURCES=pubmed,europepmc,arxiv
 ```
 
 ---
@@ -96,7 +97,7 @@ flowchart TD
 | 阶段 | 命令 | 是否必需 | 说明 |
 |------|------|----------|------|
 | 初始化 | `init` | 首次 | 创建/迁移 SQLite 表结构（含 lifecycle / hotspot / ops_*） |
-| 元数据 | `fetch` | 必需 | PubMed 查询组写入 papers |
+| 元数据 | `fetch` | 必需 | PubMed、Europe PMC、arXiv 查询组写入 papers |
 | 引用/IF | `enrich-s2` / `import-if` | 可选 | Gap 影响力加权；纯 KG 可跳过 |
 | 全文 | `fetch-fulltext` | 推荐 | JATS → PDF/MinerU → unavailable |
 | 抽取 | `extract` | 必需 | LLM 按章节抽三元组（默认 core-only） |
@@ -108,6 +109,8 @@ flowchart TD
 | UI | `streamlit run gap_ui.py` | 可选 | 八标签页交互分析（含「运维」） |
 | **建库一键** | `run-db` | 可选 | fetch → enrich → import-if → fulltext → extract |
 | **每周一键** | `run_pipeline.ps1 -Stage weekly` | 周更 | EDAT 增量 + 抽取 + lifecycle + 热点 + stats（不含 build/analyze）；也可在 Gap UI「运维」Tab 后台启动 |
+
+`weekly` 的 CLI 脚本和 UI 运维页都按 fetch → enrich-s2 → fetch-fulltext → extract → compute-gap-lifecycle → hotspot-report → hotspot-brief → stats 执行。UI 默认对新论文只尝试 JATS，并跳过旧论文的 PDF 重试与摘要升级重抽；勾选升级后才启用 PDF/MinerU（默认本轮 50 篇）。PowerShell 脚本按 `fetch-fulltext` 和 `extract` 的常规默认值执行。两者均不更新 GEXF/HTML 或静态 Gap 报告，需要时另跑 `build`、`analyze`。
 
 **运营节奏（约每 1–2 周）**：增量入库 → 周热点 → Gap 辩论（ops soft-dedup）→ 可选可行性 / 研究方案。
 
@@ -121,10 +124,13 @@ flowchart TD
 # 1.1 初始化数据库
 & $py main.py init
 
-# 1.2 拉取 PubMed 元数据（支持断点续传，默认跳过已有 PMID）
+# 1.2 拉取配置的文献来源元数据
 & $py main.py fetch
 
-# 1.2b 每周增量：只搜 PubMed 最近入库（EDAT）的文献
+# 单独补抓 Europe PMC 和 arXiv 的完整年份范围
+& $py main.py fetch --sources europepmc,arxiv --since-days 0
+
+# 1.2b 每周增量：PubMed 按 EDAT，Europe PMC 按首次发表日，arXiv 按投稿日
 & $py main.py fetch --since-days 14
 # 或在 .env 设 FETCH_EDAT_DAYS=14 后直接 python main.py fetch
 
@@ -182,7 +188,7 @@ flowchart TD
 **作用**：三级策略：
 
 1. Europe PMC JATS XML → `raw/pmc_xml/` + `document_sections`
-2. ScanSci PDF + MinerU → `raw/pdfs/`、`raw/mineru_output/`
+2. IEEE 校园网/VPN 直连（仅 DOI `10.1109/`，默认开启）或 ScanSci PDF + MinerU → `raw/pdfs/`、`raw/mineru_output/`；Elsevier 不走直连
 3. 均失败则标记 `full_text_status=unavailable`，后续 extract 退回摘要
 
 **重试：** 默认把冷却期满（`FULLTEXT_RETRY_COOLDOWN_DAYS`，默认 7 天）的 `unavailable` 重置为 `pending` 再抓（按 `fulltext_pdf_attempts` 递增冷却：7→14→28→56 天）。`jats_unavailable` 不在此重试，留待下次 PDF 阶段。JATS 不限量；PDF/MinerU 受 `FULLTEXT_PDF_RETRY_LIMIT`（默认 500）或 CLI `--pdf-retry-limit` 限制——超出限额的论文保持 `jats_unavailable`（deferred），优先尝试 `fulltext_pdf_attempts=0` 的论文，**不会**批量标记为 `unavailable`。`--no-retry` 关闭冷却重试；`--skip-pdf` 跳过 Tier 2；`--force-retry` 忽略冷却（仅 `unavailable`）。运维周常默认勾选关闭时传 `--no-retry --skip-pdf`（本周新 pending 仅试 JATS）；勾选「升级先前仅摘要文献」时启用冷却重试 + Tier2，并用表单「Tier2 PDF 上限」传 `--pdf-retry-limit`（默认 50）。

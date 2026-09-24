@@ -4,7 +4,11 @@ from __future__ import annotations
 
 
 def record_count(result: dict) -> int:
-    return len(result.get("data", result.get("gaps", result.get("results_backed", []))))
+    for key in ("data", "gaps", "results_backed", "source_records"):
+        records = result.get(key)
+        if isinstance(records, list):
+            return len(records)
+    return 0
 
 
 def is_summary_result(tool_name: str, result: dict) -> bool:

@@ -579,8 +579,27 @@ def _apply_survey_cover(
 ) -> None:
     if not _should_apply_survey_cover(study_type):
         return
-    from db.schema import insert_relation, insert_relation_evidence, upsert_entity
+    from db.schema import (
+        get_paper_sections, insert_relation, insert_relation_evidence,
+        upsert_entity, upsert_entity_mention,
+    )
     from extractor.entity_normalize import normalize_entity_name
+    from extractor.mention_context import abbreviation_definitions, local_context, method_expansion
+
+    sections = get_paper_sections(paper_id)
+    definitions = abbreviation_definitions(str(sec["content"] or "") for sec in sections)
+
+    def mention_details(row: dict, name: str) -> tuple[str, str, str]:
+        long_form, definition_quote = method_expansion(name, definitions)
+        quote = str(row.get("quote") or "")
+        for sec in sections:
+            if str(sec["section_type"]) != str(row.get("evidence_section") or ""):
+                continue
+            content = str(sec["content"] or "")
+            span = locate_quote(content, quote)
+            if span is not None:
+                return long_form, definition_quote, local_context(content, *span)
+        return long_form, definition_quote, quote
 
     for row in surveyed:
         name = normalize_entity_name(row["name"], "Method")
@@ -599,7 +618,8 @@ def _apply_survey_cover(
             extraction_pass="fulltext_reconcile",
             status="active",
         )
-        insert_relation_evidence(
+        long_form, definition_quote, context = mention_details(row, row["name"])
+        evidence_id = insert_relation_evidence(
             relation_id,
             source_pmid=pmid,
             evidence_section=row.get("evidence_section") or "fulltext_reconcile",
@@ -607,9 +627,18 @@ def _apply_survey_cover(
             evidence_start=row.get("evidence_start"),
             evidence_end=row.get("evidence_end"),
             evidence_status="located",
+            context_text=context,
+            method_long_form=long_form,
+            method_definition_quote=definition_quote,
             extraction_granularity="fulltext",
             extraction_pass="fulltext_reconcile",
         )
+        if evidence_id:
+            upsert_entity_mention(
+                evidence_id, relation_id, source_pmid=pmid,
+                entity_type="Method", surface_name=row["name"], entity_id=entity_id,
+                explicit_long_form=long_form, definition_quote=definition_quote,
+            )
     for row in covered:
         name = normalize_entity_name(row["name"], "Disease")
         if not name:
@@ -627,7 +656,8 @@ def _apply_survey_cover(
             extraction_pass="fulltext_reconcile",
             status="active",
         )
-        insert_relation_evidence(
+        long_form, definition_quote, context = mention_details(row, row["name"])
+        evidence_id = insert_relation_evidence(
             relation_id,
             source_pmid=pmid,
             evidence_section=row.get("evidence_section") or "fulltext_reconcile",
@@ -635,9 +665,16 @@ def _apply_survey_cover(
             evidence_start=row.get("evidence_start"),
             evidence_end=row.get("evidence_end"),
             evidence_status="located",
+            context_text=context,
             extraction_granularity="fulltext",
             extraction_pass="fulltext_reconcile",
         )
+        if evidence_id:
+            upsert_entity_mention(
+                evidence_id, relation_id, source_pmid=pmid,
+                entity_type="Disease", surface_name=row["name"], entity_id=entity_id,
+                explicit_long_form=long_form, definition_quote=definition_quote,
+            )
 
 
 def _apply_limitation_merges(

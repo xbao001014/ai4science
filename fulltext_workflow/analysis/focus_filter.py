@@ -1,6 +1,10 @@
 """Shared keyword focus matching for SQL tools."""
 from __future__ import annotations
 
+from functools import lru_cache
+import os
+
+import config
 from db.schema import get_conn
 
 _TOKEN_SYNONYMS: dict[str, list[str]] = {
@@ -167,7 +171,7 @@ def focus_pmid_in_clause(pmid_column: str, focus: str | None) -> str:
         JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
         WHERE rd.relation = 'TARGETS_DISEASE'{disease_fc}
         UNION
-        SELECT p.pmid FROM papers p WHERE 1=1{title_fc}
+        SELECT COALESCE(p.source_key,p.pmid) FROM papers p WHERE 1=1{title_fc}
     )"""
 
 
@@ -226,7 +230,7 @@ def _pmids_full_phrase(keyword: str) -> list[str]:
     safe = _escape_sql_like(keyword.strip())
     return _q_pmids(f"""
         SELECT DISTINCT pmid FROM (
-            SELECT p.pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE LOWER(p.title) LIKE LOWER('%{safe}%')
             UNION
             SELECT r.source_pmid AS pmid FROM relations r
@@ -242,12 +246,12 @@ def _pmids_token_scored(tokens: list[str]) -> list[str]:
     entity_score = _token_score_expr("e.name", tokens)
     return _q_pmids(f"""
         SELECT pmid FROM (
-            SELECT p.pmid,
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid,
                 {title_score} + COALESCE((
                     SELECT MAX({entity_score})
                     FROM relations r
                     JOIN entities e ON r.object_id = e.id
-                    WHERE r.source_pmid = p.pmid
+                    WHERE r.source_pmid = COALESCE(p.source_key,p.pmid)
                 ), 0) AS match_score
             FROM papers p
         )
@@ -261,7 +265,7 @@ def _pmids_phrase_or(phrases: list[str]) -> list[str]:
     entity_fc = _phrase_or_expr("e.name", phrases)
     return _q_pmids(f"""
         SELECT DISTINCT pmid FROM (
-            SELECT p.pmid FROM papers p WHERE {title_fc}
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p WHERE {title_fc}
             UNION
             SELECT r.source_pmid AS pmid FROM relations r
             JOIN entities e ON r.object_id = e.id
@@ -276,7 +280,7 @@ def _pmids_disease_or_title(phrases: list[str]) -> list[str]:
     disease_fc = _phrase_or_expr("e.name", phrases)
     return _q_pmids(f"""
         SELECT DISTINCT pmid FROM (
-            SELECT p.pmid FROM papers p WHERE {title_fc}
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p WHERE {title_fc}
             UNION
             SELECT r.source_pmid AS pmid FROM relations r
             JOIN entities e ON r.object_id = e.id
@@ -292,7 +296,7 @@ def _pmids_full_phrase_disease_or_title(keyword: str) -> list[str]:
     safe = _escape_sql_like(keyword.strip())
     return _q_pmids(f"""
         SELECT DISTINCT pmid FROM (
-            SELECT p.pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE LOWER(p.title) LIKE LOWER('%{safe}%')
             UNION
             SELECT r.source_pmid AS pmid FROM relations r
@@ -311,12 +315,12 @@ def _pmids_token_scored_disease_or_title(tokens: list[str]) -> list[str]:
     disease_score = _token_score_expr("e.name", tokens)
     return _q_pmids(f"""
         SELECT pmid FROM (
-            SELECT p.pmid,
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid,
                 {title_score} + COALESCE((
                     SELECT MAX({disease_score})
                     FROM relations r
                     JOIN entities e ON r.object_id = e.id
-                    WHERE r.source_pmid = p.pmid
+                    WHERE r.source_pmid = COALESCE(p.source_key,p.pmid)
                       AND e.type = 'Disease'
                       AND r.relation = 'TARGETS_DISEASE'
                       AND COALESCE(r.status, 'active') = 'active'
@@ -343,6 +347,29 @@ def resolve_topic_pmids(keyword: str) -> tuple[list[str], str]:
 
 
 def _rank_topic_papers(keyword: str) -> tuple[list[dict], str]:
+    def revision(path: str) -> tuple[int, int]:
+        try:
+            stat = os.stat(path)
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return 0, 0
+
+    db_path = config.DB_PATH
+    return _rank_topic_papers_cached(
+        keyword,
+        db_path,
+        revision(db_path),
+        revision(db_path + "-wal"),
+    )
+
+
+@lru_cache(maxsize=8)
+def _rank_topic_papers_cached(
+    keyword: str,
+    _db_path: str,
+    _db_revision: tuple[int, int],
+    _wal_revision: tuple[int, int],
+) -> tuple[list[dict], str]:
     """Rank corpus papers across metadata and extracted entities.
 
     A recognized disease is one query unit rather than a short-circuit. Thus
@@ -380,7 +407,7 @@ def _rank_topic_papers(keyword: str) -> tuple[list[dict], str]:
         rows = [dict(row) for row in conn.execute(
             f"""
             WITH candidate_pmids AS (
-                SELECT p.pmid
+                SELECT COALESCE(p.source_key,p.pmid) AS pmid
                 FROM papers p
                 WHERE {" OR ".join(paper_parts)}
                 UNION
@@ -390,18 +417,19 @@ def _rank_topic_papers(keyword: str) -> tuple[list[dict], str]:
                 WHERE COALESCE(r2.status, 'active') = 'active'
                   AND ({" OR ".join(entity_parts)})
             )
-            SELECT p.pmid, p.title, p.abstract, p.keywords, p.mesh_terms,
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid, p.title, p.abstract, p.keywords, p.mesh_terms,
                    p.source_queries, p.year,
                    COALESCE((
                        SELECT GROUP_CONCAT(e.name || ' ' || COALESCE(e.aliases, ''), ' ')
                        FROM relations r
                        JOIN entities e ON e.id = r.object_id
-                       WHERE r.source_pmid = p.pmid
+                       WHERE r.source_pmid = COALESCE(p.source_key,p.pmid)
                          AND COALESCE(r.status, 'active') = 'active'
                    ), '') AS entity_names
-            FROM candidate_pmids c
-            JOIN papers p ON p.pmid = c.pmid
-            WHERE p.pmid IS NOT NULL
+            FROM papers p
+            WHERE COALESCE(p.source_key,p.pmid) IN (
+                SELECT pmid FROM candidate_pmids
+            )
             """,
             params,
         ).fetchall()]
@@ -498,7 +526,7 @@ def topic_keyword_pmid_in_clause(pmid_column: str, keyword: str) -> str:
 
 _DEFAULT_PAPER_COLUMNS = (
     "p.title, p.year, p.journal_name, p.study_type, "
-    "p.abstract, p.full_text_status, p.pmid"
+    "p.abstract, p.full_text_status, COALESCE(p.source_key,p.pmid) AS pmid"
 )
 
 
@@ -521,7 +549,7 @@ def search_papers_for_topic(
     sql = f"""
         SELECT DISTINCT {select_columns}
         FROM papers p
-        WHERE p.pmid IN ({quoted}){extra_where}
+        WHERE COALESCE(p.source_key,p.pmid) IN ({quoted}){extra_where}
     """
     with get_conn() as conn:
         rows = conn.execute(sql).fetchall()

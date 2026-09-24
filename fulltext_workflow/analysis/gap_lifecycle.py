@@ -27,7 +27,7 @@ def limitation_as_of_year() -> int:
         """
         SELECT MAX(p.year) AS max_year
         FROM relations r
-        JOIN papers p ON r.source_pmid = p.pmid
+        JOIN papers p ON r.source_pmid = p.source_key OR r.source_pmid = p.pmid
         WHERE r.relation = 'REPORTS_LIMITATION'
           AND COALESCE(r.status, 'active') = 'active'
           AND p.year IS NOT NULL
@@ -81,7 +81,7 @@ def _limitation_impact_by_id() -> dict[int, dict[str, Any]]:
                j.impact_factor,
                j.quartile
         FROM relations r
-        JOIN papers p ON r.source_pmid = p.pmid
+        JOIN papers p ON r.source_pmid = p.source_key OR r.source_pmid = p.pmid
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE r.relation = 'REPORTS_LIMITATION'
           AND COALESCE(r.status, 'active') = 'active'
@@ -124,7 +124,7 @@ def compute_limitation_temporal_profiles(
                    GROUP_CONCAT(DISTINCT r.evidence_section) AS sections
             FROM relations r
             JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
-            JOIN papers p ON r.source_pmid = p.pmid
+            JOIN papers p ON r.source_pmid = p.source_key OR r.source_pmid = p.pmid
             WHERE r.relation = 'REPORTS_LIMITATION'
               AND COALESCE(r.status, 'active') = 'active'
               AND p.year IS NOT NULL
@@ -136,7 +136,7 @@ def compute_limitation_temporal_profiles(
                (
                    SELECT COUNT(DISTINCT r2.source_pmid)
                    FROM relations r2
-                   JOIN papers p2 ON r2.source_pmid = p2.pmid
+                   JOIN papers p2 ON r2.source_pmid = p2.source_key OR r2.source_pmid = p2.pmid
                    WHERE r2.object_id = lb.limitation_id
                      AND r2.relation = 'REPORTS_LIMITATION'
                      AND COALESCE(r2.status, 'active') = 'active'
@@ -239,9 +239,9 @@ class _FollowupIndex:
     def _load(self) -> None:
         anchor_rows = _q(
             """
-            SELECT r.object_id AS limitation_id, p.pmid, p.year
+            SELECT r.object_id AS limitation_id, COALESCE(p.source_key,p.pmid) AS pmid, p.year
             FROM relations r
-            JOIN papers p ON r.source_pmid = p.pmid
+            JOIN papers p ON r.source_pmid = p.source_key OR r.source_pmid = p.pmid
             WHERE r.relation = 'REPORTS_LIMITATION'
               AND COALESCE(r.status, 'active') = 'active'
               AND p.year IS NOT NULL
@@ -259,15 +259,15 @@ class _FollowupIndex:
 
         followup_rows = _q(
             """
-            SELECT DISTINCT p.pmid, p.year, ed.name AS disease
+            SELECT DISTINCT COALESCE(p.source_key,p.pmid) AS pmid, p.year, ed.name AS disease
             FROM papers p
-            JOIN relations rd ON rd.source_pmid = p.pmid
+            JOIN relations rd ON rd.source_pmid = COALESCE(p.source_key,p.pmid)
             JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
             WHERE p.year IS NOT NULL
               AND EXISTS (
                   SELECT 1 FROM relations rm
                   JOIN entities em ON rm.object_id = em.id
-                  WHERE rm.source_pmid = p.pmid
+                  WHERE rm.source_pmid = COALESCE(p.source_key,p.pmid)
                     AND em.type IN ('Task', 'Method')
                     AND rm.evidence_section IN ('results', 'methods')
               )
@@ -470,19 +470,19 @@ def _load_followup_by_disease() -> tuple[
     """Preload follow-up papers grouped by disease (one scan)."""
     rows = _q(
         """
-        SELECT DISTINCT p.pmid, p.year, ed.name AS disease
+        SELECT DISTINCT COALESCE(p.source_key,p.pmid) AS pmid, p.year, ed.name AS disease
         FROM papers p
-        JOIN relations rd ON rd.source_pmid = p.pmid
+        JOIN relations rd ON rd.source_pmid = COALESCE(p.source_key,p.pmid)
         JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
         WHERE p.year IS NOT NULL
           AND EXISTS (
               SELECT 1 FROM relations rm
               JOIN entities em ON rm.object_id = em.id
-              WHERE rm.source_pmid = p.pmid
+              WHERE rm.source_pmid = COALESCE(p.source_key,p.pmid)
                 AND em.type IN ('Task', 'Method')
                 AND rm.evidence_section IN ('results', 'methods')
           )
-        ORDER BY ed.name, p.year, p.pmid
+        ORDER BY ed.name, p.year, COALESCE(p.source_key,p.pmid)
         """
     )
     by_disease: dict[str, list[tuple[int, str]]] = {}
@@ -511,7 +511,7 @@ def _load_anchor_diseases_by_limitation() -> dict[int, tuple[int, int | None, se
         JOIN relations r ON r.object_id = lt.limitation_id
             AND r.relation = 'REPORTS_LIMITATION'
             AND COALESCE(r.status, 'active') = 'active'
-        JOIN papers p ON p.pmid = r.source_pmid
+        JOIN papers p ON r.source_pmid = p.source_key OR r.source_pmid = p.pmid
         JOIN relations rd ON rd.source_pmid = r.source_pmid
         JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
         WHERE p.year <= lt.first_year + 1
@@ -793,7 +793,7 @@ def compute_combo_gap_temporal(focus: str | None = None) -> list[dict[str, Any]]
         SELECT pm.method, pd.disease, p.year
         FROM pm
         JOIN pd ON pm.source_pmid = pd.source_pmid
-        JOIN papers p ON p.pmid = pm.source_pmid
+        JOIN papers p ON pm.source_pmid = p.source_key OR pm.source_pmid = p.pmid
         WHERE p.year IS NOT NULL
     """)
     from collections import defaultdict

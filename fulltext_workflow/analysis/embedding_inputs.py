@@ -107,12 +107,18 @@ def _build_one(
         pmid = _clean_inline(row.get("source_pmid"))
         title = _clean_inline(row.get("title"), 400)
         evidence = _clean_inline(row.get("evidence_quote"), 400)
+        context = _clean_inline(row.get("context_text"), 500)
+        long_form = _clean_inline(row.get("method_long_form"), 120)
         has_title = has_title or bool(title)
-        has_evidence = has_evidence or bool(evidence)
+        has_evidence = has_evidence or bool(evidence or context)
         lines.append(f"- pmid: {pmid}")
+        if long_form:
+            lines.append(f"  method_full_form: {long_form}")
         if title:
             lines.append(f"  title: {title}")
-        if evidence:
+        if context:
+            lines.append(f"  method_context: {context}")
+        elif evidence:
             lines.append(f"  evidence: {evidence}")
 
     normalized = "\n".join(lines).strip()
@@ -141,6 +147,14 @@ def load_method_embedding_inputs(
     """Load Methods used by an active APPLIES_METHOD edge, ordered by entity id."""
     resolved_limit = -1 if limit is None or int(limit) <= 0 else int(limit)
     with get_conn() as conn:
+        evidence_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(relation_evidence)")
+        }
+        context_select = (
+            "re.context_text, re.method_long_form"
+            if {"context_text", "method_long_form"} <= evidence_columns
+            else "NULL AS context_text, NULL AS method_long_form"
+        )
         entity_rows = conn.execute(
             """SELECT e.id, e.name, e.aliases, e.method_role
                FROM entities e
@@ -169,9 +183,10 @@ def load_method_embedding_inputs(
                 f"""SELECT r.object_id AS method_entity_id,
                            r.id AS relation_id, r.source_pmid, p.title,
                            COALESCE(NULLIF(re.evidence_section, ''), r.evidence_section) AS evidence_section,
-                           COALESCE(NULLIF(re.evidence_quote, ''), r.evidence_quote) AS evidence_quote
+                           COALESCE(NULLIF(re.evidence_quote, ''), r.evidence_quote) AS evidence_quote,
+                           {context_select}
                     FROM relations r
-                    LEFT JOIN papers p ON p.pmid=r.source_pmid
+                    LEFT JOIN papers p ON COALESCE(p.source_key,p.pmid)=r.source_pmid
                     LEFT JOIN relation_evidence re ON re.id = (
                         SELECT re2.id FROM relation_evidence re2
                         WHERE re2.relation_id=r.id

@@ -30,7 +30,7 @@
 ### 2.1 环境
 
 ```powershell
-cd D:\agent\prototype\build_kg_paper
+# 在仓库根目录执行
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 # 已含 streamlit + plotly；无需再单独装
@@ -40,11 +40,11 @@ python -m venv .venv
 ```ini
 DASHSCOPE_API_KEY=sk-xxx          # 或 OPENAI_API_KEY
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL=deepseek-v4-flash
-LLM_MODEL_AGENT=qwen3.7-plus      # 辩论 / 方案 / hotspot-brief
+LLM_MODEL=deepseek-v4-flash-0731
+LLM_MODEL_AGENT=qwen3.8-max       # 辩论 / 方案 / hotspot-brief
 
 # 可行性（可选）
-PATHOLOGY_API_BASE_URL=http://ai.gzfxyl.cn/api/v1/pathology
+PATHOLOGY_API_BASE_URL=http://your-pathology-api-host/api/v1/pathology
 PATHOLOGY_API_KEY=your-key
 ```
 

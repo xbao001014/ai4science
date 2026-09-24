@@ -39,6 +39,11 @@ class Entity(BaseModel):
     type: EntityTypeLiteral
 
 
+class DiseaseQualifier(BaseModel):
+    kind: Literal["site", "histology", "molecular", "stage", "other"]
+    phrase: str = Field(min_length=1, max_length=100)
+
+
 class Triple(BaseModel):
     subject: Entity
     relation: RelationLiteral
@@ -62,6 +67,15 @@ class Triple(BaseModel):
     method_role_hint: Optional[
         Literal["backbone", "aggregator", "classical_ml", "tool", "unknown"]
     ] = None
+    # Filled deterministically from the source after quote grounding.
+    mention_context: Optional[str] = None
+    method_long_form: Optional[str] = None
+    method_definition_quote: Optional[str] = None
+    disease_long_form: Optional[str] = None
+    disease_definition_quote: Optional[str] = None
+    # Exact source phrases only; verified against the located source sentence.
+    disease_qualifiers: list[DiseaseQualifier] = Field(default_factory=list)
+    mention_surface_name: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -100,6 +114,16 @@ class Triple(BaseModel):
                 if h in ("backbone", "aggregator", "classical_ml", "tool", "unknown")
                 else None
             )
+        qualifiers = out.get("disease_qualifiers")
+        if qualifiers is not None:
+            allowed = {"site", "histology", "molecular", "stage", "other"}
+            out["disease_qualifiers"] = [
+                {"kind": item["kind"], "phrase": item["phrase"].strip()}
+                for item in qualifiers if isinstance(item, dict)
+                and item.get("kind") in allowed
+                and isinstance(item.get("phrase"), str)
+                and 0 < len(item["phrase"].strip()) <= 100
+            ] if isinstance(qualifiers, list) else []
         return out
 
 

@@ -1,0 +1,20 @@
+services:
+  gap-ui:
+    build: .
+    image: pathology-kg:local
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./docker-data/data:/app/fulltext_workflow/data
+      - ./docker-data/raw:/app/fulltext_workflow/raw
+      - ./docker-data/output:/app/fulltext_workflow/output
+      - ./docker-data/cache:/root/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

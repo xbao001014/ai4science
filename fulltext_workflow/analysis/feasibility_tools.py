@@ -142,11 +142,16 @@ def tool_pathology_disease_catalog(
     organ_system: str | None = None,
     min_cases: int = 50,
 ) -> dict:
+    cached_before = bool(_client._catalog_by_code) if hasattr(_client, "_catalog_by_code") else None
     result = _client.get_diseases(organ_system=organ_system, min_cases=min_cases)
     return {
         "description": "方信病种目录 (D-01) — Fangxin LIS API",
         "total": result["total_disease_types"],
         "data": result["diseases"],
+        "_telemetry": {
+            "cache_hit": cached_before,
+            "cache_source": "pathology_catalog" if cached_before is not None else None,
+        },
     }
 
 

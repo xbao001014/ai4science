@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
+import uuid
+from copy import deepcopy
+from datetime import datetime, timezone
+from functools import wraps
 from typing import Any, Generator
 
-from openai import APIError, OpenAI
+from openai import OpenAI
 
 import config
 from llm_utils import llm_extra_body, truncate_for_llm
@@ -15,7 +20,89 @@ _client = OpenAI(
     api_key=config.OPENAI_API_KEY,
     base_url=config.OPENAI_API_BASE,
     timeout=config.LLM_REQUEST_TIMEOUT,
+    max_retries=0,
 )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _field(value: Any, key: str) -> Any:
+    return value.get(key) if isinstance(value, dict) else getattr(value, key, None)
+
+
+def _token_count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _retry_reason(exc: Exception) -> str | None:
+    code = getattr(exc, "status_code", None)
+    name = type(exc).__name__.lower()
+    if code == 429:
+        return "rate_limit"
+    if isinstance(code, int) and code >= 500:
+        return "server_error"
+    if "timeout" in name:
+        return "timeout"
+    if "connection" in name:
+        return "connection"
+    return None
+
+
+def _chat_with_metrics(
+    *, role: str, iteration: int, messages: list[dict], request_kwargs: dict[str, Any]
+) -> Generator[dict, None, tuple[Any | None, str | None]]:
+    """One logical request with observable, bounded application retries."""
+    request_id = str(uuid.uuid4())
+    attempts = min(3, max(1, int(config.LLM_RETRY_ATTEMPTS)))
+    for attempt_no in range(1, attempts + 1):
+        operation_id = str(uuid.uuid4())
+        yield {
+            "type": "cost_start", "event_kind": "llm", "operation_id": operation_id,
+            "request_id": request_id, "attempt_no": attempt_no, "role": role,
+            "iteration": iteration, "model": config.LLM_MODEL_AGENT,
+            "started_at_utc": _utc_now(),
+        }
+        started = time.perf_counter()
+        try:
+            response = _client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            reason = _retry_reason(exc)
+            will_retry = reason is not None and attempt_no < attempts
+            delay_ms = max(0, min(10000, int(config.LLM_RETRY_DELAY * 1000 * (2 ** (attempt_no - 1))))) if will_retry else 0
+            yield {
+                "type": "cost_finish", "event_kind": "llm", "operation_id": operation_id,
+                "role": role, "status": "failed",
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "error_code": type(exc).__name__, "retry_reason_code": reason,
+                "retry_source": "agent" if will_retry else None,
+                "retry_after_ms": delay_ms or None,
+            }
+            if not will_retry:
+                return None, str(exc)
+            yield {"type": "llm_retry", "role": role, "iteration": iteration,
+                   "attempt_no": attempt_no + 1, "reason": reason}
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
+            continue
+        usage = _field(response, "usage")
+        prompt = _token_count(_field(usage, "prompt_tokens"))
+        completion = _token_count(_field(usage, "completion_tokens"))
+        total = _token_count(_field(usage, "total_tokens"))
+        choices = _field(response, "choices") or []
+        yield {
+            "type": "cost_finish", "event_kind": "llm", "operation_id": operation_id,
+            "role": role, "status": "success",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "provider_request_id": _field(response, "id"),
+            "prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": total,
+            "usage_source": "provider" if usage is not None else None,
+            "finish_reason": _field(choices[0], "finish_reason") if choices else None,
+        }
+        return response, None
+    return None, "LLM retry attempts exhausted"
 
 
 def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
@@ -99,6 +186,40 @@ def bind_tools_with_focus(
         bound[name] = _make_wrapper(fn, default_focus)
 
     return bound
+
+
+def memoize_readonly_tools(
+    tools: dict[str, Any], cache: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    """Reuse identical successful read-only tool results within one debate run."""
+    wrapped: dict[str, Any] = {}
+    for name, fn in tools.items():
+        if name == "execute_kg_sql":
+            wrapped[name] = fn
+            continue
+
+        def _make_wrapper(tool_name: str, function: Any):
+            @wraps(function)
+            def _cached(**kwargs: Any) -> Any:
+                key = (tool_name, json.dumps(kwargs, sort_keys=True, ensure_ascii=False, default=str))
+                if key in cache:
+                    hit = deepcopy(cache[key])
+                    hit["_telemetry"] = {"cache_hit": True, "cache_source": "debate_session"}
+                    return hit
+                result = function(**kwargs)
+                if isinstance(result, dict) and "error" not in result:
+                    cache[key] = deepcopy(result)
+                    result = deepcopy(result)
+                    metadata = result.get("_telemetry")
+                    if not isinstance(metadata, dict):
+                        result["_telemetry"] = {
+                            "cache_hit": False, "cache_source": "debate_session",
+                        }
+                return result
+            return _cached
+
+        wrapped[name] = _make_wrapper(name, fn)
+    return wrapped
 
 
 def _safe_invoke_tool(fn: Any, fn_args: dict[str, Any]) -> dict[str, Any]:
@@ -198,8 +319,9 @@ _SQL_FINISH_NOW_HINT = (
 )
 
 _DUPLICATE_TOOL_HINT = (
-    "Tool '{name}' was already called in this phase. Do not call the same tool twice; "
-    "use a different curated tool or write your candidate gaps / review now."
+    "Tool '{name}' was already called with the same arguments in this phase. "
+    "Use a different, specific query only if it checks a distinct claim; "
+    "otherwise use the prior result or finish your review."
 )
 
 
@@ -280,8 +402,8 @@ def run_tool_agent(
     After the budget is reached, execute_kg_sql is removed from subsequent tool schemas;
     a pure post-budget SQL-only turn disables tools on the next iteration to force text.
 
-    disallow_duplicate_tools: when True, a second call to the same tool name in this
-    phase is blocked (useful for Opportunity Scout soft-budget discipline).
+    disallow_duplicate_tools: when True, repeated calls with the same tool name and
+    arguments in this phase are blocked; distinct scoped queries remain available.
     """
     if max_tokens is None:
         max_tokens = config.LLM_MAX_TOKENS
@@ -290,7 +412,7 @@ def run_tool_agent(
     sql_counter = {"n": 0, "attempts": 0}
     active_schemas = list(tool_schemas)
     force_text_next = False
-    called_tool_names: set[str] = set()
+    called_tool_keys: set[tuple[str, str]] = set()
     successful_tools: set[str] = set()
     attempted_calls = 0
     def phase_status():
@@ -322,24 +444,23 @@ def run_tool_agent(
             "iteration": iteration + 1,
             "max_iters": max_iters,
         }
-        try:
-            response = _client.chat.completions.create(
-                model=config.LLM_MODEL_AGENT,
-                messages=messages,
-                tools=active_schemas if active_schemas else None,
-                tool_choice=({"type":"function", "function":{"name":first_tool}}
-                             if first_tool and first_tool not in successful_tools
-                             and any(s["function"]["name"] == first_tool for s in active_schemas)
-                             else ("auto" if active_schemas else "none")),
-                temperature=temperature,
-                max_tokens=max_tokens,
-                extra_body=llm_extra_body(config.OPENAI_API_BASE),
-            )
-        except APIError as exc:
-            yield {"type": "error", "role": role, "content": str(exc)}
-            return
-        except Exception as exc:
-            yield {"type": "error", "role": role, "content": str(exc)}
+        response, request_error = yield from _chat_with_metrics(
+            role=role, iteration=iteration + 1, messages=messages,
+            request_kwargs={
+                "model": config.LLM_MODEL_AGENT,
+                "messages": messages,
+                "tools": active_schemas if active_schemas else None,
+                "tool_choice": ({"type": "function", "function": {"name": first_tool}}
+                                if first_tool and first_tool not in successful_tools
+                                and any(s["function"]["name"] == first_tool for s in active_schemas)
+                                else ("auto" if active_schemas else "none")),
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "extra_body": llm_extra_body(config.OPENAI_API_BASE),
+            },
+        )
+        if response is None:
+            yield {"type": "error", "role": role, "content": request_error or "LLM request failed"}
             return
 
         msg = response.choices[0].message
@@ -362,6 +483,7 @@ def run_tool_agent(
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             fn_args = _parse_tool_arguments(tc.function.arguments)
+            tool_key = (fn_name, json.dumps(fn_args, sort_keys=True, ensure_ascii=False, default=str))
             try:
                 parsed_args = json.loads(tc.function.arguments or "{}")
                 argument_error = not isinstance(parsed_args, dict)
@@ -431,7 +553,7 @@ def run_tool_agent(
                 }
             elif (
                 disallow_duplicate_tools
-                and fn_name in called_tool_names
+                and tool_key in called_tool_keys
                 and fn_name in tools
             ):
                 err = _DUPLICATE_TOOL_HINT.format(name=fn_name)
@@ -451,8 +573,17 @@ def run_tool_agent(
             elif fn_name in tools:
                 attempted_calls += 1
                 yield {"type":"tool_execution", "role":role, "name":fn_name, "args":fn_args, "call_id":tc.id}
+                operation_id = str(uuid.uuid4())
+                yield {
+                    "type": "cost_start", "event_kind": "tool", "operation_id": operation_id,
+                    "role": role, "tool_name": fn_name, "call_id": tc.id,
+                    "started_at_utc": _utc_now(),
+                }
+                tool_started = time.perf_counter()
                 result = _safe_invoke_tool(tools[fn_name], fn_args)
-                called_tool_names.add(fn_name)
+                tool_duration_ms = round((time.perf_counter() - tool_started) * 1000, 2)
+                cache_info = result.pop("_telemetry", {}) if isinstance(result.get("_telemetry"), dict) else {}
+                called_tool_keys.add(tool_key)
                 if (
                     fn_name == "execute_kg_sql"
                     and isinstance(result, dict)
@@ -483,7 +614,7 @@ def run_tool_agent(
                     active_schemas = _schemas_without_sql(active_schemas)
                 if "error" in result:
                     result_str = json.dumps(result, ensure_ascii=False, indent=2)
-                    yield {
+                    output_event = {
                         "type": "tool_error",
                         "role": role,
                         "name": fn_name,
@@ -493,13 +624,28 @@ def run_tool_agent(
                 else:
                     successful_tools.add(fn_name)
                     result_str = compact_json(result, config.LLM_MAX_TOOL_RESULT_CHARS)
-                    yield {
+                    output_event = {
                         "type": "tool_result",
                         "role": role,
                         "name": fn_name,
                         "result": result,
                         "call_id": tc.id,
                     }
+                sent_payload = json.loads(result_str)
+                cache_hit = cache_info.get("cache_hit")
+                yield {
+                    "type": "cost_finish", "event_kind": "tool", "operation_id": operation_id,
+                    "role": role, "status": "failed" if "error" in result else "success",
+                    "duration_ms": tool_duration_ms,
+                    "raw_result_chars": len(json.dumps(result, ensure_ascii=False, default=str)),
+                    "sent_result_chars": len(result_str),
+                    "result_truncated": int(bool(sent_payload.get("evidence_truncated")))
+                    if isinstance(sent_payload, dict) else 0,
+                    "cache_hit": int(cache_hit) if isinstance(cache_hit, bool) else None,
+                    "cache_source": cache_info.get("cache_source"),
+                    "error_code": "tool_error" if "error" in result else None,
+                }
+                yield output_event
             else:
                 phantom = fn_name.strip().lower() in _PHANTOM_FORMAT_TOOLS
                 if phantom:
@@ -569,17 +715,21 @@ def run_tool_agent(
     # Exhaustion is not success. Reserve a single tool-free completion for usable output.
     messages.append({"role":"user", "content":"Iteration limit reached. No more tools. Produce the required final JSON review or full Markdown report now using available evidence. Missing verification is not acceptance."})
     yield {"type":"llm_request_start", "role":role, "iteration":max_iters+1, "max_iters":max_iters+1, "finalization":True}
-    try:
-        response = _client.chat.completions.create(model=config.LLM_MODEL_AGENT, messages=messages,
-            tool_choice="none", temperature=temperature, max_tokens=max_tokens,
-            extra_body=llm_extra_body(config.OPENAI_API_BASE))
+    response, request_error = yield from _chat_with_metrics(
+        role=role, iteration=max_iters + 1, messages=messages,
+        request_kwargs={"model": config.LLM_MODEL_AGENT, "messages": messages,
+                        "tool_choice": "none", "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "extra_body": llm_extra_body(config.OPENAI_API_BASE)},
+    )
+    if response is not None:
         final = response.choices[0].message
         if final.content and not final.tool_calls:
             messages.append({"role":"assistant", "content":final.content})
         else:
             yield {"type":"error", "role":role, "content":"Finalization returned no tool-free output"}
-    except Exception as exc:
-        yield {"type":"error", "role":role, "content":str(exc)}
+    else:
+        yield {"type":"error", "role":role, "content":request_error or "LLM request failed"}
     yield phase_status()
 
 

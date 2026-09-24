@@ -4,7 +4,7 @@
 > 完整流水线说明见 [PIPELINE.md](PIPELINE.md)
 
 ```powershell
-cd D:\agent\prototype\build_kg_paper\fulltext_workflow
+# 在仓库的 fulltext_workflow/ 目录执行
 $py = "..\.venv\Scripts\python.exe"
 ```
 
@@ -27,15 +27,15 @@ $py = "..\.venv\Scripts\python.exe"
 | 参数 | 说明 |
 |------|------|
 | `-Stage` | `init` / `fetch` / `enrich` / `fulltext` / `extract` / `build` / `analyze` / `debate` / `landscape` / `stats` / `db` / `weekly` / `all` / `quick` |
-| `-SinceDays N` | fetch 只搜最近 N 天 EDAT |
+| `-SinceDays N` | 增量检索；PubMed 按 EDAT，Europe PMC 按首次发表日，arXiv 按投稿日 |
 | `-CoreOnly` | extract 只抽核心章节 |
 | `-ExtractLimit N` | 抽取篇数（0=全量待处理） |
 | `-SkipEnrich` | 跳过 enrich-s2 / import-if |
 | `-NoResume` | fetch 不跳过已有 PMID |
 
-**`-Stage weekly` 包含**：fetch(14d) → enrich-s2 → fulltext → extract(core) → compute-gap-lifecycle → hotspot-report → hotspot-brief → build → analyze → stats  
+**`-Stage weekly` 包含**：fetch(14d) → enrich-s2 → fulltext → extract(core) → compute-gap-lifecycle → hotspot-report → hotspot-brief → stats
 
-**不含**：`import-if`、`gap-debate`、`bootstrap-landscape`
+**不含**：`import-if`、`build`、`analyze`、`gap-debate`、`bootstrap-landscape`
 
 ### `run_gap_ui.ps1` — Gap 分析 UI
 
@@ -51,7 +51,7 @@ $py = "..\.venv\Scripts\python.exe"
 
 等价于后台执行 `-Stage weekly`（阶段进度 + 日志），并支持清空 ops 记忆：
 
-- 周更参数：`SinceDays` / `ExtractLimit` / `SkipEnrich`
+- 周更参数：`SinceDays` / `ExtractLimit` / `SkipEnrich` / 摘要升级开关 / Tier2 PDF 上限。UI 默认 `--no-retry --skip-pdf` 和 `--no-upgrade-reextract`；勾选升级后启用 PDF/MinerU 与升级重抽。
 - 清空记忆：对应 `scripts/clear_ops_memory.py`（预览 + `--yes` + 可选 `--focus` / `--delete-files`）
 
 ---
@@ -64,6 +64,7 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py init
 & $py main.py fetch
 & $py main.py fetch --since-days 14
+& $py main.py fetch --sources europepmc,arxiv --since-days 0
 & $py main.py watch-fetch                 # 另开终端看 fetch 进度
 & $py main.py backfill-date-precision     # 存量补 date_precision（PubMed 重拉日期）
 & $py main.py backfill-date-precision --limit 200
@@ -76,7 +77,7 @@ $py = "..\.venv\Scripts\python.exe"
 & $py main.py fetch-fulltext --force-retry
 & $py main.py fetch-fulltext --pdf-retry-limit 100
 # env: FULLTEXT_RETRY_COOLDOWN_DAYS=7  FULLTEXT_PDF_RETRY_LIMIT=500
-#      FULLTEXT_PUBLISHER_DIRECT=true   # needs campus/VPN IP; IEEE+Elsevier before ScanSci
+#      FULLTEXT_PUBLISHER_DIRECT=true   # default; campus/VPN IP enables IEEE direct before ScanSci (no Elsevier direct)
 # PDF 队列按 fulltext_pdf_attempts 升序优先从未尝试；失败重试冷却 7→14→28→56 天
 # --skip-pdf: 跳过 Tier2 PDF/MinerU（运维周常默认勾选关闭时使用）
 & $py main.py stats
@@ -97,7 +98,7 @@ $py = "..\.venv\Scripts\python.exe"
 
 `data/pilot_pmids.txt` is local (`fulltext_workflow/data/` is gitignored).
 
-On the `feature/extraction-quality` pilot branch, **`RECONCILE_ENABLED` defaults to `true`** (Pass 2 runs after Pass 1 when fulltext exists). Run pilot QA and review `output/pilot_qa.csv` **before** a full-corpus `--force-reextract`.
+**`RECONCILE_ENABLED` defaults to `true`** (Pass 2 runs after Pass 1 when fulltext exists). Run pilot QA and review `output/pilot_qa.csv` **before** a full-corpus `--force-reextract`.
 
 ```powershell
 & $py main.py extract --pmid-list data/pilot_pmids.txt --force-reextract --limit 0
@@ -313,7 +314,8 @@ Gold 导入以文件 SHA-256 幂等，原 CSV 不会被改写。当前文件的�
 | `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` | LLM |
 | `LLM_MODEL_EXTRACT` | 章节抽取模型 |
 | `LLM_MODEL_AGENT` | gap / idea / hotspot-brief |
-| `FETCH_EDAT_DAYS` | fetch 默认 EDAT 窗口 |
+| `FETCH_EDAT_DAYS` | fetch 默认增量天数（不同来源的日期字段见上） |
+| `LITERATURE_SOURCES` | 默认检索来源，逗号分隔；支持 pubmed,europepmc,arxiv |
 | `PATHOLOGY_API_KEY` | 方信 landscape / 可行性 |
 | `PATHOLOGY_BOOTSTRAP_MAX_DISEASES` | landscape 最多病种（默认 30） |
 | `OPS_MEMORY_ENABLED` | Gap 周常记忆软去重 |

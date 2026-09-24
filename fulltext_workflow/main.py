@@ -49,10 +49,27 @@ def cmd_import_if(args: argparse.Namespace) -> None:
 def cmd_fetch(args: argparse.Namespace) -> None:
     from db.schema import db_stats, init_db
     from fetcher.pubmed_fetcher import fetch_all_queries
+    from fetcher.source_fetcher import fetch_arxiv, fetch_europepmc
 
     init_db()
     since_days = args.since_days if args.since_days is not None else None
-    fetch_all_queries(resume=not args.no_resume, since_days=since_days)
+    sources = [part.strip().lower() for part in getattr(args, "sources", config.LITERATURE_SOURCES).split(",") if part.strip()]
+    invalid = set(sources) - {"pubmed", "europepmc", "arxiv"}
+    if invalid:
+        raise ValueError(f"Unknown literature source(s): {', '.join(sorted(invalid))}")
+    days = since_days if since_days is not None else config.FETCH_EDAT_DAYS
+    if "pubmed" in sources:
+        fetch_all_queries(resume=not args.no_resume, since_days=days)
+    if "europepmc" in sources:
+        print("[Europe PMC]", fetch_europepmc(
+            since_days=days, group_name=getattr(args, "group", None),
+            limit_per_group=getattr(args, "source_limit_per_group", None),
+        ))
+    if "arxiv" in sources:
+        print("[arXiv]", fetch_arxiv(
+            since_days=days, group_name=getattr(args, "group", None),
+            limit_per_group=getattr(args, "source_limit_per_group", None),
+        ))
     print("\n[Fetch] Stats:", db_stats())
 
 
@@ -1221,8 +1238,14 @@ def main() -> None:
     p_family_release_activate.add_argument("--release-id", required=True)
     p_family_release_activate.add_argument("--activated-by", required=True)
 
-    p_fetch = sub.add_parser("fetch", help="Fetch PubMed metadata")
+    p_fetch = sub.add_parser("fetch", help="Fetch PubMed, Europe PMC and arXiv metadata")
     p_fetch.add_argument("--no-resume", action="store_true")
+    p_fetch.add_argument("--sources", default=config.LITERATURE_SOURCES,
+                         help="Comma-separated: pubmed,europepmc,arxiv")
+    p_fetch.add_argument("--group", default=None,
+                         help="Restrict Europe PMC/arXiv to one enabled query group")
+    p_fetch.add_argument("--source-limit-per-group", type=int, default=None,
+                         help="Cap Europe PMC/arXiv results per group (smoke tests)")
     p_fetch.add_argument(
         "--since-days",
         type=int,

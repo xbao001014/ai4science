@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS journals (
 CREATE TABLE IF NOT EXISTS papers (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     pmid                    TEXT UNIQUE,
+    source_key              TEXT UNIQUE,
     doi                     TEXT,
     pmc_id                  TEXT,
     s2id                    TEXT,
@@ -158,6 +159,9 @@ CREATE TABLE IF NOT EXISTS relation_evidence (
     source_pmid             TEXT,
     evidence_section        TEXT,
     evidence_quote          TEXT NOT NULL,
+    context_text            TEXT,
+    method_long_form        TEXT,
+    method_definition_quote TEXT,
     evidence_start          INTEGER,
     evidence_end            INTEGER,
     evidence_status         TEXT DEFAULT 'unverified',
@@ -172,6 +176,27 @@ CREATE TABLE IF NOT EXISTS relation_evidence (
 CREATE INDEX IF NOT EXISTS idx_relation_evidence_relation ON relation_evidence(relation_id);
 CREATE INDEX IF NOT EXISTS idx_relation_evidence_pmid ON relation_evidence(source_pmid);
 CREATE INDEX IF NOT EXISTS idx_relation_evidence_support ON relation_evidence(support_status);
+
+-- A paper-local mention is kept separate from the corpus-wide entity name.
+-- It can remain unresolved when an acronym or disease subtype is ambiguous.
+CREATE TABLE IF NOT EXISTS entity_mentions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    relation_evidence_id  INTEGER NOT NULL UNIQUE REFERENCES relation_evidence(id) ON DELETE CASCADE,
+    relation_id           INTEGER NOT NULL REFERENCES relations(id) ON DELETE CASCADE,
+    source_pmid           TEXT NOT NULL,
+    entity_type           TEXT NOT NULL CHECK(entity_type IN ('Method', 'Disease')),
+    surface_name          TEXT NOT NULL,
+    entity_id             INTEGER REFERENCES entities(id),
+    method_role_hint      TEXT,
+    explicit_long_form    TEXT,
+    definition_quote      TEXT,
+    qualifiers_json       TEXT NOT NULL DEFAULT '[]',
+    resolution_status     TEXT NOT NULL DEFAULT 'unresolved',
+    annotation_version    TEXT NOT NULL,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_pmid ON entity_mentions(source_pmid, entity_type);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity ON entity_mentions(entity_id);
 
 -- Section-level observability for the complete extraction path. This records
 -- silent truncation, model empties and policy/grounding losses without storing
@@ -391,6 +416,40 @@ CREATE TABLE IF NOT EXISTS debate_tool_events (
 );
 CREATE INDEX IF NOT EXISTS idx_debate_tool_events_session_round
     ON debate_tool_events(session_id, round_no, role, id);
+
+CREATE TABLE IF NOT EXISTS debate_cost_events (
+    operation_id        TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+    round_no            INTEGER NOT NULL,
+    role                TEXT NOT NULL,
+    event_kind          TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'running',
+    request_id          TEXT,
+    iteration           INTEGER,
+    attempt_no          INTEGER,
+    model               TEXT,
+    provider_request_id TEXT,
+    tool_name           TEXT,
+    call_id             TEXT,
+    started_at_utc      TEXT NOT NULL,
+    duration_ms         REAL,
+    prompt_tokens       INTEGER,
+    completion_tokens   INTEGER,
+    total_tokens        INTEGER,
+    usage_source        TEXT,
+    finish_reason       TEXT,
+    raw_result_chars    INTEGER,
+    sent_result_chars   INTEGER,
+    result_truncated    INTEGER,
+    cache_hit           INTEGER,
+    cache_source        TEXT,
+    retry_reason_code   TEXT,
+    retry_source        TEXT,
+    retry_after_ms      INTEGER,
+    error_code          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_debate_cost_events_session
+    ON debate_cost_events(session_id, round_no, role, started_at_utc);
 
 CREATE TABLE IF NOT EXISTS debate_candidates (
     session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
@@ -1069,6 +1128,13 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     journal_cols = {r[1] for r in conn.execute("PRAGMA table_info(journals)").fetchall()}
     entity_cols = {r[1] for r in conn.execute("PRAGMA table_info(entities)").fetchall()}
     relation_cols = {r[1] for r in conn.execute("PRAGMA table_info(relations)").fetchall()}
+    evidence_cols = {r[1] for r in conn.execute("PRAGMA table_info(relation_evidence)").fetchall()}
+    for column in ("context_text", "method_long_form", "method_definition_quote"):
+        if column not in evidence_cols:
+            conn.execute(f"ALTER TABLE relation_evidence ADD COLUMN {column} TEXT")
+    mention_cols = {r[1] for r in conn.execute("PRAGMA table_info(entity_mentions)").fetchall()}
+    if "method_role_hint" not in mention_cols:
+        conn.execute("ALTER TABLE entity_mentions ADD COLUMN method_role_hint TEXT")
 
     if "access_class" not in entity_cols:
         conn.execute("ALTER TABLE entities ADD COLUMN access_class TEXT")
@@ -1087,6 +1153,7 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
             conn.execute(ddl)
 
     for col, ddl in (
+        ("source_key", "ALTER TABLE papers ADD COLUMN source_key TEXT"),
         ("s2id", "ALTER TABLE papers ADD COLUMN s2id TEXT"),
         ("citation_count", "ALTER TABLE papers ADD COLUMN citation_count INTEGER DEFAULT 0"),
         ("open_access", "ALTER TABLE papers ADD COLUMN open_access INTEGER DEFAULT 0"),
@@ -1098,6 +1165,21 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     ):
         if col not in paper_cols:
             conn.execute(ddl)
+
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_source_key ON papers(source_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_papers_effective_source_key "
+        "ON papers(COALESCE(source_key, pmid))"
+    )
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS paper_external_ids (
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            PRIMARY KEY (source, external_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_paper_external_ids_paper ON paper_external_ids(paper_id);
+    """)
 
     for col, ddl in (
         ("impact_factor", "ALTER TABLE journals ADD COLUMN impact_factor REAL"),
@@ -1277,6 +1359,40 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
         CREATE INDEX IF NOT EXISTS idx_debate_tool_events_session_round
             ON debate_tool_events(session_id, round_no, role, id);
 
+        CREATE TABLE IF NOT EXISTS debate_cost_events (
+            operation_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
+            round_no INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            request_id TEXT,
+            iteration INTEGER,
+            attempt_no INTEGER,
+            model TEXT,
+            provider_request_id TEXT,
+            tool_name TEXT,
+            call_id TEXT,
+            started_at_utc TEXT NOT NULL,
+            duration_ms REAL,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            total_tokens INTEGER,
+            usage_source TEXT,
+            finish_reason TEXT,
+            raw_result_chars INTEGER,
+            sent_result_chars INTEGER,
+            result_truncated INTEGER,
+            cache_hit INTEGER,
+            cache_source TEXT,
+            retry_reason_code TEXT,
+            retry_source TEXT,
+            retry_after_ms INTEGER,
+            error_code TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_debate_cost_events_session
+            ON debate_cost_events(session_id, round_no, role, started_at_utc);
+
         CREATE TABLE IF NOT EXISTS debate_candidates (
             session_id          TEXT NOT NULL REFERENCES debate_sessions(session_id) ON DELETE CASCADE,
             candidate_id        TEXT NOT NULL,
@@ -1351,6 +1467,17 @@ CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
         CREATE INDEX IF NOT EXISTS idx_pis_status ON paper_improvement_suggestions(status);
     """)
 
+    cost_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(debate_cost_events)").fetchall()
+    }
+    for column, sql_type in (
+        ("iteration", "INTEGER"),
+        ("usage_source", "TEXT"),
+        ("retry_source", "TEXT"),
+    ):
+        if column not in cost_cols:
+            conn.execute(f"ALTER TABLE debate_cost_events ADD COLUMN {column} {sql_type}")
+
     prop_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(ops_proposals)").fetchall()
     }
@@ -1403,6 +1530,19 @@ def upsert_paper(data: dict[str, Any]) -> int:
 
         new_queries: list[str] = data.get("source_queries", [])
         if existing:
+            # A preprint/external record may be discovered by DOI before PubMed
+            # assigns a PMID. Keep its stable source_key for existing evidence.
+            conn.execute(
+                """UPDATE papers SET
+                   pmid=COALESCE(NULLIF(pmid, ''), NULLIF(?, '')),
+                   doi=COALESCE(NULLIF(doi, ''), NULLIF(?, '')),
+                   full_text_status=CASE
+                     WHEN pmid IS NULL AND NULLIF(?, '') IS NOT NULL
+                          AND full_text_status='unavailable' THEN 'pending'
+                     ELSE full_text_status END
+                   WHERE id=?""",
+                (data.get("pmid"), data.get("doi"), data.get("pmid"), existing["id"]),
+            )
             old_queries = json.loads(existing["source_queries"] or "[]")
             merged = list(set(old_queries) | set(new_queries))
             # Backfill date fields only when date_precision is still unset.
@@ -1915,6 +2055,9 @@ def insert_relation_evidence(
     source_pmid: str = "",
     evidence_section: str = "",
     evidence_quote: str,
+    context_text: str = "",
+    method_long_form: str = "",
+    method_definition_quote: str = "",
     evidence_start: int | None = None,
     evidence_end: int | None = None,
     evidence_status: str = "unverified",
@@ -1956,7 +2099,57 @@ def insert_relation_evidence(
                  AND evidence_start IS ? AND evidence_end IS ?""",
             (relation_id, digest, evidence_start, evidence_end),
         ).fetchone()
+        if row and (context_text or method_long_form or method_definition_quote):
+            conn.execute(
+                """UPDATE relation_evidence SET context_text=?, method_long_form=?,
+                   method_definition_quote=? WHERE id=?""",
+                (context_text or None, method_long_form or None,
+                 method_definition_quote or None, row["id"]),
+            )
         return row["id"] if row else None
+
+
+def upsert_entity_mention(
+    relation_evidence_id: int,
+    relation_id: int,
+    *,
+    source_pmid: str,
+    entity_type: str,
+    surface_name: str,
+    entity_id: int,
+    method_role_hint: str = "",
+    explicit_long_form: str = "",
+    definition_quote: str = "",
+    qualifiers: list[dict] | None = None,
+    annotation_version: str = "mention/v1",
+) -> None:
+    """Store a grounded paper-local annotation without declaring a concept match."""
+    if entity_type not in ("Method", "Disease"):
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO entity_mentions
+               (relation_evidence_id, relation_id, source_pmid, entity_type,
+                surface_name, entity_id, method_role_hint, explicit_long_form, definition_quote,
+                qualifiers_json, resolution_status, annotation_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,'unresolved',?)
+               ON CONFLICT(relation_evidence_id) DO UPDATE SET
+                 surface_name=excluded.surface_name,
+                 entity_id=excluded.entity_id,
+                 method_role_hint=excluded.method_role_hint,
+                 explicit_long_form=excluded.explicit_long_form,
+                 definition_quote=excluded.definition_quote,
+                 qualifiers_json=excluded.qualifiers_json,
+                 annotation_version=excluded.annotation_version""",
+            (
+                relation_evidence_id, relation_id, source_pmid, entity_type,
+                surface_name, entity_id, method_role_hint or None,
+                explicit_long_form or None,
+                definition_quote or None,
+                json.dumps(qualifiers or [], ensure_ascii=False),
+                annotation_version,
+            ),
+        )
 
 
 def insert_extraction_audit(
@@ -2129,8 +2322,8 @@ def get_papers_by_pmids(pmids: list[str]) -> list[sqlite3.Row]:
     placeholders = ",".join("?" * len(pmids))
     with get_conn() as conn:
         return conn.execute(
-            f"SELECT * FROM papers WHERE pmid IN ({placeholders})",
-            tuple(pmids),
+            f"SELECT * FROM papers WHERE pmid IN ({placeholders}) OR source_key IN ({placeholders})",
+            (*pmids, *pmids),
         ).fetchall()
 
 
@@ -2997,6 +3190,63 @@ def insert_debate_tool_event(
             ),
         )
         return int(cur.lastrowid)
+
+
+_COST_FINISH_FIELDS = frozenset({
+    "status", "duration_ms", "provider_request_id", "prompt_tokens",
+    "completion_tokens", "total_tokens", "finish_reason", "raw_result_chars",
+    "usage_source", "retry_source",
+    "sent_result_chars", "result_truncated", "cache_hit", "cache_source",
+    "retry_reason_code", "retry_after_ms", "error_code",
+})
+
+
+def insert_debate_cost_event(session_id: str, *, round_no: int, event: dict[str, Any]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO debate_cost_events
+               (operation_id, session_id, round_no, role, event_kind, status,
+                request_id, iteration, attempt_no, model, tool_name, call_id, started_at_utc)
+               VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event["operation_id"], session_id, round_no, event["role"],
+                event["event_kind"], event.get("request_id"), event.get("iteration"),
+                event.get("attempt_no"),
+                event.get("model"), event.get("tool_name"), event.get("call_id"),
+                event["started_at_utc"],
+            ),
+        )
+
+
+def finish_debate_cost_event(operation_id: str, fields: dict[str, Any]) -> None:
+    values = {key: value for key, value in fields.items() if key in _COST_FINISH_FIELDS}
+    if not values:
+        return
+    columns = ", ".join(f"{key}=?" for key in values)
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE debate_cost_events SET {columns} WHERE operation_id=?",
+            (*values.values(), operation_id),
+        )
+
+
+def interrupt_running_debate_cost_events(session_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE debate_cost_events SET status='interrupted'
+               WHERE session_id=? AND status='running'""",
+            (session_id,),
+        )
+
+
+def fetch_debate_cost_events(session_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM debate_cost_events WHERE session_id=?
+               ORDER BY started_at_utc, operation_id""",
+            (session_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def upsert_debate_candidate(

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from extractor.study_prompts.packs import PACKS, StudyTypePack
 from extractor.study_prompts.shared import (
+    ENTITY_MENTION_ANNOTATION_PROMPT,
+    METHOD_ABBREVIATION_PROMPT,
     RECONCILE_SHARED_CORE,
     REVIEW_META_SECTION_HINTS,
     SECTION_HINTS,
@@ -49,12 +51,21 @@ Evidence contract (mandatory):
 """
 
 
-def build_section_system(section_type: str, study_type: str | None) -> str:
+def build_section_system(
+    section_type: str, study_type: str | None, *, method_context: bool = False,
+    mention_annotations: bool = False,
+) -> str:
     st = (study_type or "other").lower()
     pack = PACKS.get(st, PACKS["other"])
     hint = section_hint_for(section_type, st)
+    context_prompt = f"{METHOD_ABBREVIATION_PROMPT}\n\n" if method_context else ""
+    annotation_prompt = (
+        f"{ENTITY_MENTION_ANNOTATION_PROMPT}\n\n" if mention_annotations else ""
+    )
     return (
         f"{SECTION_SHARED_CORE}\n\n"
+        f"{context_prompt}"
+        f"{annotation_prompt}"
         f"Study type pack: {pack.study_type}\n"
         f"{pack.section_lens}\n\n"
         f"Section focus: {hint}\n\n{GROUNDING_CONTRACT}"

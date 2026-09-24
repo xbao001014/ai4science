@@ -104,6 +104,7 @@ class KGBuilder:
                 node_type="Paper",
                 color=STUDY_TYPE_COLORS.get(study_type, NODE_COLORS["Paper"]),
                 pmid=p.get("pmid") or "",
+                source_key=p.get("source_key") or p.get("pmid") or "",
                 year=p.get("year"),
                 study_type=study_type,
                 full_text_status=p.get("full_text_status") or "pending",

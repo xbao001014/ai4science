@@ -68,3 +68,10 @@ def test_shared_prompt_has_task_naming_policy():
     assert "Task naming policy" in SECTION_SHARED_CORE
     assert "tumor segmentation" in SECTION_SHARED_CORE
     assert "BAD:" in SECTION_SHARED_CORE
+
+
+def test_method_abbreviation_context_is_not_relation_evidence():
+    text = build_section_system("methods", "ai_algorithm", method_context=True)
+    assert "paper_abbreviations" in text
+    assert "never as evidence" in text
+    assert "do not invent a full form" in text

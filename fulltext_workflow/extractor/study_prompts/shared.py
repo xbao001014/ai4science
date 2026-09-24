@@ -210,6 +210,32 @@ Object type MUST match the relation as listed above.
 ]}
 """
 
+METHOD_ABBREVIATION_PROMPT = """
+Method abbreviation context:
+  - The input may include paper_abbreviations: explicit long form (SHORT)
+    definitions found elsewhere in the SAME paper. Use them only to understand
+    a short Method name appearing in section_text, never as evidence that this
+    section uses, proposes, compares, or surveys that Method.
+  - Keep a distinctive acronym as the Method name when the section uses it;
+    do not replace it with a guessed expansion or discard a supported Method
+    merely because its name is short. The source-grounded long form is stored
+    separately after extraction.
+  - If the acronym is absent from section_text, or the section only cites it
+    as background, do not emit a Method triple. If its meaning remains
+    ambiguous, do not invent a full form or a more specific method class.
+"""
+
+ENTITY_MENTION_ANNOTATION_PROMPT = """
+For each Disease triple, optionally return disease_qualifiers as a list of
+{kind: site|histology|molecular|stage|other, phrase: exact text present in
+both the Disease name and evidence_quote}. Preserve specific subtypes in the Disease name; do not replace
+them with an organ-level parent or infer an ontology identifier. Return [] when
+the evidence does not explicitly state a qualifier. A Method abbreviation's
+full form must never be guessed; it is recorded separately from explicit
+same-paper definitions after quote grounding. The same rule applies to Disease
+abbreviations such as subtype acronyms.
+"""
+
 SECTION_HINTS: dict[str, str] = {
     "methods": (
         "Focus on THIS study's backbones, contribution-level algorithms/modules, "

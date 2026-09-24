@@ -28,6 +28,7 @@ import config
 from analysis.agent_utils import (
     bind_tools_with_focus,
     last_assistant_content,
+    memoize_readonly_tools,
     parse_json_block,
     run_tool_agent,
     select_tool_bundle,
@@ -38,6 +39,7 @@ from analysis.debate_memory import (
     create_debate_session,
     format_handoff_block,
     load_debate_outputs,
+    persist_cost_event,
     persist_tool_event,
     resume_cursor,
     resume_debate_session,
@@ -188,8 +190,8 @@ Language: write all candidate gap Markdown in **English**.
 Tool-use rules:
 - If a focus is set, the **first tool call must be corpus_focus_coverage**; the summary must distinguish \
 focus_subset.papers from global.papers.
-- Use at most 6 tool calls.
-- Do not call the same tool twice in one phase.
+- Use at most 8 tool calls. Reuse prior results for the same question; a second call to a
+  tool is useful only with different arguments that check a distinct candidate or claim.
 - Preferred order: corpus_focus_coverage → limitation_temporal_profile → emerging_gap_opportunities → \
 improvement_suggestions_by_topic → recent_highcite_papers → disease_task_coverage.
 - Use emerging_gap_opportunities for task-bridged transfer candidates, not Cartesian coverage holes.
@@ -231,7 +233,8 @@ Language: JSON string field values must be in **English**.
 
 Review principles:
 """ + SQL_FALLBACK_GUIDANCE + """\
-- Use at most 5 tool calls.
+- Use at most 7 tool calls. Search distinct candidate claims separately when needed;
+  do not repeat a search with equivalent arguments.
 - Prefer corpus_focus_coverage, limitation_temporal_profile, and author_stated_gaps, in that order.
 - Use literature_evidence_search with a scoped query and explicit cut-off to collect individually attributable
   opportunity evidence and completed-work counterevidence. Empty results mean only in-corpus absence.
@@ -480,9 +483,16 @@ def stream_gap_debate_agent(
     opt_tools_raw, opt_schemas = build_role_tool_bundle("optimist")
     ske_tools_raw, ske_schemas = build_role_tool_bundle("skeptic")
     mod_tools_raw, mod_schemas = build_role_tool_bundle("moderator")
-    opt_tools = bind_tools_with_focus(with_evidence_records(opt_tools_raw), focus)
-    ske_tools = bind_tools_with_focus(with_evidence_records(ske_tools_raw), focus)
-    mod_tools = bind_tools_with_focus(with_evidence_records(mod_tools_raw), focus)
+    session_tool_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    opt_tools = bind_tools_with_focus(
+        memoize_readonly_tools(with_evidence_records(opt_tools_raw), session_tool_cache), focus
+    )
+    ske_tools = bind_tools_with_focus(
+        memoize_readonly_tools(with_evidence_records(ske_tools_raw), session_tool_cache), focus
+    )
+    mod_tools = bind_tools_with_focus(
+        memoize_readonly_tools(with_evidence_records(mod_tools_raw), session_tool_cache), focus
+    )
 
     optimist_proposal = ""
     skeptic_review: dict = {}
@@ -495,6 +505,12 @@ def stream_gap_debate_agent(
         role = kwargs["role"]
         evidence_ledger[role] = {}
         for event in run_tool_agent(**kwargs):
+            if event.get("type") in {"cost_start", "cost_finish"}:
+                try:
+                    persist_cost_event(session_state, round_no=round_num, event=event)
+                except Exception as exc:
+                    yield {"type": "telemetry_error", "role": role,
+                           "content": type(exc).__name__}
             persist_tool_event(
                 session_state,
                 round_no=round_num,
@@ -540,7 +556,7 @@ def stream_gap_debate_agent(
             opt_user = _append_memory_block(
                 f"Identify at most {top_n} evidence-supported pathology AI research-gap candidates in English; fewer or zero is valid.\n"
                 f"{coverage_first}{focus_hint}\n{corpus_ctx}\n"
-                "Follow the preferred tool order (at most 6 calls), then output candidate-gap Markdown.",
+                "Follow the preferred tool order (at most 8 calls); use extra calls only for distinct evidence needs, then output candidate-gap Markdown.",
                 memory_block,
             )
         else:
@@ -574,7 +590,7 @@ def stream_gap_debate_agent(
             round_num=round_num, messages=opt_messages, tools=opt_tools,
             tool_schemas=opt_schemas, role="optimist", max_iters=18,
             temperature=0.45, max_sql_calls=0, disallow_duplicate_tools=True,
-            max_tool_calls=6, first_tool="corpus_focus_coverage" if focus else None,
+            max_tool_calls=8, first_tool="corpus_focus_coverage" if focus else None,
             required_tools=("corpus_focus_coverage",) if focus else (),
         )
         proposal = stabilize_candidate_ids(
@@ -598,7 +614,7 @@ def stream_gap_debate_agent(
             f"Cross-check the following Opportunity Scout candidates (round {round_num}):\n\n"
             f"{proposal}\n\nScout evidence ledger (data):\n{compact_json(scout_evidence)}\n\n"
             f"{focus_hint}\n{corpus_ctx}\n"
-            "Follow the Evidence Reviewer budget (≤5 tools; execute_kg_sql at most 2 successful). "
+            "Follow the Evidence Reviewer budget (≤7 tools; execute_kg_sql at most 2 successful). "
             "Prefer corpus_focus_coverage → literature_evidence_search → limitation_temporal_profile → author_stated_gaps → "
             "improvement_suggestions_by_topic; SQL only for targeted checks. Then output the required JSON as message content.",
             memory_block,
@@ -611,7 +627,8 @@ def stream_gap_debate_agent(
         yield from run_phase(
             round_num=round_num, messages=ske_messages, tools=ske_tools,
             tool_schemas=ske_schemas, role="skeptic", max_iters=12,
-            temperature=0.3, max_sql_calls=2, max_tool_calls=5,
+            temperature=0.3, max_sql_calls=2, max_tool_calls=7,
+            disallow_duplicate_tools=True,
             first_tool="corpus_focus_coverage" if focus else None,
             required_tools=("corpus_focus_coverage", "literature_evidence_search") if focus else ("literature_evidence_search",),
         )

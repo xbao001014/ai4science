@@ -179,12 +179,12 @@ def _compute_emerging_method_entities(
     edge_rows = _q(
         f"""
         WITH recent_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
@@ -198,7 +198,8 @@ def _compute_emerging_method_entities(
                COALESCE(j.impact_factor, 0) AS impact_factor
         FROM relations r
         JOIN entities e ON r.object_id = e.id
-        JOIN papers p ON r.source_pmid = p.pmid
+        JOIN papers p ON p.source_key = r.source_pmid
+          OR (p.source_key IS NULL AND p.pmid = r.source_pmid)
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE e.type = 'Method'
           AND r.relation = 'APPLIES_METHOD'
@@ -288,7 +289,7 @@ def compute_new_methods(
     nascent = [row for row in rows if row.get("method_maturity") == "nascent"]
     nascent.sort(
         key=lambda row: (
-            int(row.get("corpus_paper_cnt") or 0),
+            -int(row.get("corpus_paper_cnt") or 0),
             -float(row.get("emerging_score") or 0),
             str(row.get("name") or ""),
         )
@@ -328,12 +329,12 @@ def compute_emerging_entities(
     rows = _q(
         f"""
         WITH recent_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
@@ -358,7 +359,8 @@ def compute_emerging_entities(
                    THEN COALESCE(j.impact_factor, 0) END), 2) AS avg_if
         FROM relations r
         JOIN entities e ON r.object_id = e.id
-        JOIN papers p ON r.source_pmid = p.pmid
+        JOIN papers p ON p.source_key = r.source_pmid
+          OR (p.source_key IS NULL AND p.pmid = r.source_pmid)
         LEFT JOIN journals j ON p.journal_id = j.id
         WHERE e.type = ?
           {relation_filter}
@@ -386,9 +388,10 @@ def _top_pmids_for_entity(entity_name: str, entity_type: str, window_days: int) 
     window_pub = _window_pub_predicate("p")
     rows = _q(
         f"""
-        SELECT DISTINCT p.pmid, e.name
+        SELECT DISTINCT COALESCE(p.source_key,p.pmid) AS pmid, e.name
         FROM papers p
-        JOIN relations r ON r.source_pmid = p.pmid
+        JOIN relations r ON r.source_pmid = p.source_key
+          OR (p.source_key IS NULL AND r.source_pmid = p.pmid)
         JOIN entities e ON r.object_id = e.id
         WHERE e.type = ?
           {relation_filter}
@@ -526,30 +529,32 @@ def compute_hot_combo_boards(
     rows = _q(
         f"""
         WITH recent_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
         ),
         prior_pmids AS (
-            SELECT pmid FROM papers p
+            SELECT COALESCE(p.source_key,p.pmid) AS pmid FROM papers p
             WHERE {window_pub}
               AND date(p.pub_date) >= date('now', ?)
               AND date(p.pub_date) < date('now', ?)
         )
         SELECT em.name AS method,
                ed.name AS disease,
-               p.pmid,
-               p.pmid IN (SELECT pmid FROM recent_pmids) AS in_recent,
-               p.pmid IN (SELECT pmid FROM prior_pmids) AS in_prior
+               COALESCE(p.source_key,p.pmid) AS pmid,
+               COALESCE(p.source_key,p.pmid) IN (SELECT pmid FROM recent_pmids) AS in_recent,
+               COALESCE(p.source_key,p.pmid) IN (SELECT pmid FROM prior_pmids) AS in_prior
         FROM papers p
-        JOIN relations rm ON rm.source_pmid = p.pmid
+        JOIN relations rm ON rm.source_pmid = p.source_key
+          OR (p.source_key IS NULL AND rm.source_pmid = p.pmid)
             AND rm.relation = 'APPLIES_METHOD'
         JOIN entities em ON rm.object_id = em.id AND em.type = 'Method'
-        JOIN relations rd ON rd.source_pmid = p.pmid
+        JOIN relations rd ON rd.source_pmid = p.source_key
+          OR (p.source_key IS NULL AND rd.source_pmid = p.pmid)
             AND rd.relation = 'TARGETS_DISEASE'
         JOIN entities ed ON rd.object_id = ed.id AND ed.type = 'Disease'
-        WHERE p.pmid IN (SELECT pmid FROM recent_pmids)
-           OR p.pmid IN (SELECT pmid FROM prior_pmids)
+        WHERE COALESCE(p.source_key,p.pmid) IN (SELECT pmid FROM recent_pmids)
+           OR COALESCE(p.source_key,p.pmid) IN (SELECT pmid FROM prior_pmids)
         """,
         (recent_start, prior_start, prior_end),
     )
@@ -647,7 +652,8 @@ def compute_emerging_limitations(
                ROUND(AVG(COALESCE(p.citation_count, 0)), 1) AS avg_cite
         FROM relations r
         JOIN entities e ON r.object_id = e.id AND e.type = 'Limitation'
-        JOIN papers p ON r.source_pmid = p.pmid
+        JOIN papers p ON p.source_key = r.source_pmid
+          OR (p.source_key IS NULL AND p.pmid = r.source_pmid)
         WHERE r.relation = 'REPORTS_LIMITATION'
           AND COALESCE(r.status, 'active') = 'active'
           AND {window_pub}

@@ -11,10 +11,13 @@ import config
 from analysis.ops_memory import jaccard_overlap, normalize_focus_key
 from db.schema import (
     fetch_debate_session,
+    finish_debate_cost_event,
     fetch_debate_turns,
     init_db,
+    insert_debate_cost_event,
     insert_debate_session,
     insert_debate_tool_event,
+    interrupt_running_debate_cost_events,
     reopen_debate_session,
     update_debate_session_checkpoint,
     upsert_debate_candidate,
@@ -144,6 +147,7 @@ def resume_debate_session(session_id: str) -> DebateSessionState:
             f"Invalid debate checkpoint role {state.next_role!r} for {session_id}"
         )
     state.status = "running"
+    interrupt_running_debate_cost_events(session_id)
     reopen_debate_session(session_id)
     return state
 
@@ -484,6 +488,16 @@ def persist_tool_event(
         result_json=result_json,
         error_text=str(event.get("error") or ""),
     )
+
+
+def persist_cost_event(
+    state: DebateSessionState, *, round_no: int, event: dict[str, Any]
+) -> None:
+    kind = event.get("type")
+    if kind == "cost_start":
+        insert_debate_cost_event(state.session_id, round_no=round_no, event=event)
+    elif kind == "cost_finish":
+        finish_debate_cost_event(str(event["operation_id"]), event)
 
 
 def complete_debate_session(

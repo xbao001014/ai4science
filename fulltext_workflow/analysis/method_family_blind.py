@@ -194,7 +194,7 @@ def export_blind_set(
                    JOIN relations r ON r.object_id=e.id
                     AND r.object_type='Method' AND r.relation='APPLIES_METHOD'
                     AND COALESCE(r.status, 'active')='active'
-                   LEFT JOIN papers p ON p.pmid=r.source_pmid
+                   LEFT JOIN papers p ON COALESCE(p.source_key,p.pmid)=r.source_pmid
                    WHERE e.type='Method'
                    GROUP BY e.id, e.name, e.method_role
                    ORDER BY e.id"""
